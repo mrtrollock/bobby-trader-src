@@ -105,5 +105,5 @@ Test child processes run with every `*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASS*` env
 never leak into a test.
 
 ## Disclaimer
-Personal project, not financial advice. Trading perpetuals with leverage can lose more than you expect. Use dry run
+MIT licensed (see `LICENSE`). Personal project, not financial advice. Trading perpetuals with leverage can lose more than you expect. Use dry run
 and testnet first.
