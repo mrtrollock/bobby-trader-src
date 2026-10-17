@@ -1,0 +1,8 @@
+node_modules/
+venv/
+dist/
+batches.json
+*.log
+.env
+tests/e2e_journal.png
+__pycache__/

@@ -1,0 +1,6 @@
+# Python side: send_batch.py uses only the standard library.
+# These are only needed for the parity tests (reference signers).
+requests
+cryptography
+hyperliquid-python-sdk
+eth-account
