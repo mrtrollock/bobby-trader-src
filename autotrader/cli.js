@@ -115,14 +115,16 @@ async function runGuard(cfg, net, state, { readOnly = false } = {}) {
 // Bobby-owned Arcus markets live in state.json (state.guard.__arcusOwn); cfg.arcusOwn points at that object.
 const bindOwn = (cfg, state) => { state.guard ||= {}; state.guard.__arcusOwn ||= {}; cfg.arcusOwn = state.guard.__arcusOwn; };
 // autotrader/entropy_status.json (balances.py + briefing.py): Entropy state for the Bobby subaccount; no keys/addresses
-let lastEntropyState = null, hlVolErr = null;
+let lastEntropyState = null, lastEntropyMode = null, hlVolErr = null;
 function writeEntropyStatus(o) { try { writeFileSync(join(DIR, 'entropy_status.json'), JSON.stringify({ t: new Date().toISOString(), ...o })); } catch { /* best effort */ } }
 function entropyGate(st) {
   const m = C.entropyMarginStatus(st);
   if (m.state !== 'unknown') writeEntropyStatus(m);
+  if (m.mode && lastEntropyMode && m.mode !== lastEntropyMode) log('INFO', `Entropy: subaccount account mode changed ${lastEntropyMode} -> ${m.mode}`);
+  if (m.mode) lastEntropyMode = m.mode;
   if (m.state !== lastEntropyState && m.state !== 'unknown') {
     log('INFO', m.state === 'waiting' ? `Entropy: ${m.reason}; idling (proposals stay queued), re-checking every tick`
-      : `Entropy: margin on EntropyIO present ($${m.free} free); Entropy active`);
+      : `Entropy: margin on EntropyIO present ($${m.free} usable, account mode ${m.mode}); Entropy active`);
     lastEntropyState = m.state;
   }
   return m;

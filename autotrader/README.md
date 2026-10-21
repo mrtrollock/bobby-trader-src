@@ -310,6 +310,12 @@ margin gate is active (it idles with "waiting for margin on EntropyIO" until the
   Monday / 00:00 UTC, alert); margin <= free; isolated liquidation distance >= 3 x stop distance; max 2 markets;
   cooldown 30-120 s after a round trip. `autotrader/STOP` halts everything; `STOP_VOLUME` or `STOP_ENTROPY` pause new
   entries (exits still managed).
+- Account mode of the subaccount (info `userAbstraction`, read on every check): `unifiedAccount` / `portfolioMargin`
+  -> margin = spot USDC total - holds, equity = that + io uPnL (per-dex perp states are not meaningful);
+  `dexAbstraction` -> io + the subaccount's main-dex balance; standard (`disabled`) -> the io dex balance only (spot
+  USDC does not count). The margin gate turns Entropy on by itself once >= $10 is usable.
+- Action budget: Hyperliquid caps unified accounts at 50k actions/day; this mode counts what it sends per UTC day and
+  stops new entries at 80 % of `ENTROPY_VOL_MAX_ACTIONS_PER_DAY` (5000), everything at 100 % (exchange SL/TP stay).
 - Fees: io maker ~0.0246 %, taker ~0.0298 % (measured on the master's io fills); Entropy cashback is not counted.
 - Report: `node tools/entropy_vol_report.mjs <fromISO> <toISO> ...` (subaccount io fills: round trips, volume, fees, PnL,
   loss per volume in bp, projected month).

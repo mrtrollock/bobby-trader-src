@@ -418,3 +418,19 @@ test('loop source: Entropy proposals stay queued while the margin gate is not ac
   const src = readFileSync(new URL('../autotrader/cli.js', import.meta.url), 'utf8');
   assert.match(src, /em && em\.state !== 'active' && \/\^\(entropy\|hl\|hyperliquid\)\$\/i/);
 });
+
+test('Entropy margin modes (read every check): unified/portfolio -> spot USDC - holds; standard -> io dex only (spot USDC is not io margin)', async () => {
+  const cfg = cfgOf();
+  const run = async (mode, spot, io = '0') => { const net = mockNet(cfg); const inner = net.hlInfo; let modeReads = 0;
+    net.hlInfo = async (b) => { if (b.type === 'userAbstraction') { modeReads += 1; assert.equal(String(b.user).toLowerCase(), SUB); return mode; }
+      if (b.type === 'spotClearinghouseState') return { balances: [{ coin: 'USDC', total: spot, hold: '20' }] };
+      if (b.type === 'clearinghouseState') return { marginSummary: { accountValue: io }, withdrawable: io, assetPositions: [] };
+      return inner(b); };
+    const st = await C.accountState('entropy', cfg, net); assert.equal(modeReads, 1); return { st, gate: C.entropyMarginStatus(st) }; };
+  for (const mode of ['unifiedAccount', 'portfolioMargin']) {
+    const { st, gate } = await run(mode, '300');
+    assert.equal(st.equity, 300); assert.equal(st.free, 280); assert.deepEqual([gate.state, gate.mode], ['active', mode]);
+  }
+  const std = await run('disabled', '300'); assert.equal(std.st.free, 0); assert.equal(std.gate.state, 'waiting'); assert.match(std.gate.reason, /account mode disabled/);
+  const stdIo = await run('disabled', '0', '150'); assert.equal(stdIo.gate.state, 'active');
+});

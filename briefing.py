@@ -438,7 +438,9 @@ def entropy_note(path, now_ts, fresh_s=30 * 60):
     if now_ts - t > fresh_s or h.get("state") not in ("waiting", "disabled"):
         return None
     if h["state"] == "waiting":
-        return "Bobby subaccount: waiting for margin on EntropyIO (move USDC to the EntropyIO dex or enable the shared balance across dexes); Entropy starts by itself once it arrives"
+        mode = h.get("mode") or "standard"
+        return ("Bobby subaccount: waiting for margin on EntropyIO (account mode: " + str(mode) + "; switch the Bobby subaccount to "
+                "unified account so its USDC backs the io dex); Entropy starts by itself once usable USDC is there")
     return "Bobby subaccount: " + str(h.get("reason") or "Entropy disabled")[:200]
 
 

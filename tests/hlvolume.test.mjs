@@ -128,3 +128,18 @@ test('executor: STOP file (kill), dry run, unverified subaccount or switch off -
     assert.equal(net.sent.length, 0);
   }
 });
+
+test('daily action budget (unified accounts: 50k/day): >= 80 % no new entries, >= 100 % nothing; executor counts sent actions', async () => {
+  const day = HV.dayKey(NOW);
+  let r = HV.decideHlVolume({ vc: VC, st: ST(), mk: MK, quotes: QUOTES, pool: ['io:OAI'], vstate: { actions: { day, n: 4000 } }, now: NOW, rng: seq(0.5), limits: LIM });
+  assert.equal(r.actions.filter((a) => a.kind === 'enter').length, 0); assert.ok(r.notes.some((n) => /4000\/5000/.test(n)));
+  const pos = { market: 'io:OAI', side: 'long', size: 0.9, entry: 380, mark: 380 };
+  r = HV.decideHlVolume({ vc: VC, st: ST({ positions: [pos] }), mk: MK, quotes: QUOTES, pool: [], vstate: { actions: { day, n: 4500 }, markets: { 'io:OAI': { phase: 'pos', filledAt: NOW, requotes: [] } } }, now: NOW, limits: LIM });
+  assert.ok(r.actions.some((a) => a.kind === 'exit')); // exits still managed between 80 % and 100 %
+  r = HV.decideHlVolume({ vc: VC, st: ST({ positions: [pos] }), mk: MK, quotes: QUOTES, pool: [], vstate: { actions: { day, n: 5000 }, markets: { 'io:OAI': { phase: 'pos', filledAt: NOW, requotes: [] } } }, now: NOW, limits: LIM });
+  assert.equal(r.actions.length, 0);
+  assert.equal(HV.actionsToday({ actions: { day: '2026-10-20', n: 4999 } }, NOW), 0); // new UTC day resets
+  HV._resetCache(); const net = mockNet(); const vs = {};
+  await HV.hlVolumeTick(cfgOf(), net, vs, IO()); assert.equal(HV.actionsToday(vs, NOW), net.sent.length); assert.ok(net.sent.length > 0);
+  assert.throws(() => HV.loadHlVolumeConfig({ ...ENV, ENTROPY_VOL_MAX_ACTIONS_PER_DAY: '60000' }), /50k/);
+});

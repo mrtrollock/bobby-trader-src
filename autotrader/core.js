@@ -471,7 +471,9 @@ export async function accountState(pf, cfg, net, { sinceMs } = {}) {
   // equity = spot USDC + unrealized PnL of the dex positions, free = USDC not on hold. Other spot tokens never count.
   const dexEquity = equity, dexFree = free;
   const sp = await hlSpotUsdc(net, user);
-  if (sp && (sp.unified || equity <= 0)) {
+  // unifiedAccount / portfolioMargin: all balances + holds live in spot (per-dex perp states are not meaningful).
+  // Spot USDC as a fallback only when the mode is unknown: in standard mode spot USDC is NOT io margin.
+  if (sp && (sp.unified || (sp.mode == null && equity <= 0))) {
     equity = sp.total + positions.reduce((a, x) => a + (Number(x.upnl) || 0), 0); free = Math.max(0, sp.total - sp.hold); }
   // HIP-3 dex abstraction: the io dex draws its collateral from the same account's main-dex perp balance
   if (sp && sp.mode === 'dexAbstraction' && !cfg.dexes.includes('')) {
@@ -832,9 +834,12 @@ export const lastGuardRead = {};
 export const HL_MIN_MARGIN_USD = 10;
 export function entropyMarginStatus(st, min = HL_MIN_MARGIN_USD) {
   if (!st) return { state: 'unknown', margin: null };
+  // margin mode is read on every check (info userAbstraction of the subaccount): unifiedAccount / portfolioMargin -> spot
+  // USDC total - holds (+ io uPnL in equity); dexAbstraction -> io + the subaccount's main-dex balance; else io dex only
+  const mode = st.marginMode || 'disabled';
   const margin = Math.max(Number(st.equity) || 0, 0), free = Math.max(Number(st.free) || 0, 0);
-  return free >= min || (st.positions || []).length ? { state: 'active', margin: +margin.toFixed(2), free: +free.toFixed(2) }
-    : { state: 'waiting', margin: +margin.toFixed(2), free: +free.toFixed(2), reason: `waiting for margin on EntropyIO ($${free.toFixed(2)} free < $${min})` };
+  return free >= min || (st.positions || []).length ? { state: 'active', mode, margin: +margin.toFixed(2), free: +free.toFixed(2) }
+    : { state: 'waiting', mode, margin: +margin.toFixed(2), free: +free.toFixed(2), reason: `waiting for margin on EntropyIO ($${free.toFixed(2)} usable < $${min}, account mode ${mode})` };
 }
 export async function guardTick(cfg, net, memo, io, { readOnly = false } = {}) {
   const report = [];

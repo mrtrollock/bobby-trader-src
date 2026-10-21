@@ -55,6 +55,8 @@ export function loadHlVolumeConfig(env = process.env) {
     minNotional: numEnv(env, 'ENTROPY_VOL_MIN_NOTIONAL_USD', 11),
     picksRefreshS: numEnv(env, 'ENTROPY_VOL_PICKS_REFRESH_S', 600),
     capital: numEnv(env, 'HL_CAPITAL_USD', 300),
+    // Hyperliquid unified/portfolio-margin accounts are capped at 50k actions/day: stay far below (entries stop at 80 %)
+    maxActionsPerDay: numEnv(env, 'ENTROPY_VOL_MAX_ACTIONS_PER_DAY', 5000),
   };
   const bad = [];
   if (!(Number.isInteger(vc.leverage) && vc.leverage >= 1 && vc.leverage <= 3)) bad.push('ENTROPY_VOL_LEVERAGE must be an integer 1..3');
@@ -69,11 +71,17 @@ export function loadHlVolumeConfig(env = process.env) {
   if (!(vc.maxHoldS >= 300)) bad.push('ENTROPY_VOL_MAX_HOLD_S must be >= 300 (a short hold was worse on QFEX)');
   if (!(vc.cooldownS[0] >= 10 && vc.cooldownS[1] >= vc.cooldownS[0])) bad.push('ENTROPY_VOL_COOLDOWN_S must be MIN-MAX seconds, MIN >= 10');
   if (!(vc.capital > 0 && vc.capital <= 300)) bad.push('HL_CAPITAL_USD must be > 0 and <= 300');
+  if (!(vc.maxActionsPerDay >= 100 && vc.maxActionsPerDay <= 20000)) bad.push('ENTROPY_VOL_MAX_ACTIONS_PER_DAY must be 100..20000 (unified accounts: 50k/day)');
   if (bad.length) throw new Error('Entropy volume mode config: ' + bad.join('; '));
   return vc;
 }
 // take-profit at least 2 maker fees + a net minimum (0.1 % default vs ~0.05 % round-trip maker fees on io)
 export const tpPctFor = (vc) => Math.max(vc.tpPct, 2 * Math.abs(vc.maker) + vc.tpNetMinPct);
+
+// ---------------------------------------------------------------- daily action budget (persisted in vstate)
+export const dayKey = (ms) => new Date(ms).toISOString().slice(0, 10);
+export function actionsToday(vstate, now) { const a = vstate.actions; return a && a.day === dayKey(now) ? a.n : 0; }
+export function countActions(vstate, now, n) { const d = dayKey(now); if (!vstate.actions || vstate.actions.day !== d) vstate.actions = { day: d, n: 0 }; vstate.actions.n += n; return vstate.actions.n; }
 
 // ---------------------------------------------------------------- sizing / risk for one entry (pure, isolated margin)
 export function entryRisk({ isLong, px, qty, vc, szDecimals, maxLev, lev, free, pendingMargin, limits }) {
@@ -96,8 +104,12 @@ export function entryRisk({ isLong, px, qty, vc, szDecimals, maxLev, lev, free, 
 // ---------------------------------------------------------------- pure decision step (unit-tested)
 // input: { vc, st (entropy accountState: subaccount, io dex), mk {COIN: {asset, szDecimals, maxLev}}, quotes {COIN: {bid, ask,
 //          mark, depthUsd}}, pool [COIN] (low-OI picks in rank order), vstate, now, rng, canEnter, limits {perTrade, weeklyCap, dailyCap} }
+// vstate.actions = {day, n}: HL actions sent today; >= 80 % of ENTROPY_VOL_MAX_ACTIONS_PER_DAY -> no new entries, >= 100 % -> nothing
 export function decideHlVolume({ vc, st, mk, quotes, pool, vstate, now, rng = Math.random, canEnter = true, limits }) {
   const actions = [], notes = []; vstate.markets ||= {}; vstate.stats ||= { roundTrips: 0, stopsOrOther: 0 };
+  const used = actionsToday(vstate, now), cap = vc.maxActionsPerDay || 5000;
+  if (used >= cap) return { actions, notes: [`daily action budget used (${used}/${cap}): nothing sent until 00:00 UTC (exchange SL/TP stay)`] };
+  if (used >= 0.8 * cap) { canEnter = false; notes.push(`daily action budget at ${used}/${cap}: no new entries until 00:00 UTC`); }
   const ms = vstate.markets, mkt = (s) => ms[s] || (ms[s] = { phase: 'idle', cooldownUntil: 0, requotes: [] });
   const { weeklyCap, dailyCap } = limits;
   if (vstate.halted && now >= vstate.halted.until) { notes.push('halt expired: ' + vstate.halted.reason); delete vstate.halted; }
@@ -234,7 +246,7 @@ export async function hlVolumeTick(cfg, net, vstate, io) {
   const limits = { perTrade: Math.min(3, caps.maxTradePct * Math.min(Math.max(st.equity, 0), caps.capital)), weeklyCap: caps.weekly, dailyCap: caps.daily };
   const send = io.live && !io.kill;
   const { actions, notes } = decideHlVolume({ vc, st, mk, quotes, pool, vstate, now, rng: io.rng || Math.random, canEnter: io.canEnter !== false && !io.kill, limits });
-  const report = { enabled: true, live: send, actions: [], notes, halted: vstate.halted || null, stats: vstate.stats, weeklyLoss: st.weeklyLoss, dailyLoss: st.dailyLoss, pool };
+  const report = { enabled: true, live: send, actions: [], notes, halted: vstate.halted || null, stats: vstate.stats, weeklyLoss: st.weeklyLoss, dailyLoss: st.dailyLoss, pool, marginMode: st.marginMode || null };
   for (const a of actions) {
     if (a.kind === 'halt') { io.log('ALERT', `Entropy volume mode halted: ${a.reason}`); io.alert({ pf: 'entropy', kind: 'volume-halt', reason: a.reason }); report.actions.push(a); continue; }
     if (!send) { report.actions.push({ ...a, sent: false, held: io.kill || 'dry run' }); continue; }
@@ -260,7 +272,8 @@ export async function hlVolumeTick(cfg, net, vstate, io) {
         reqs = [{ label: 'close (reduce-only IOC)', d: sign(act) }];
       }
     } catch (e) { report.actions.push({ ...a, ok: false, error: e.message }); io.log('ERROR', `entropy volume ${a.kind} ${a.market}: ${e.message}`); continue; }
-    const res = await C.send('entropy', reqs, net); const ok = res.length === reqs.length && res.every((x) => x.ok);
+    if (actionsToday(vstate, now) + reqs.length > (vc.maxActionsPerDay || 5000)) { report.actions.push({ ...a, sent: false, held: 'daily action budget' }); continue; }
+    const res = await C.send('entropy', reqs, net); countActions(vstate, now, res.length); const ok = res.length === reqs.length && res.every((x) => x.ok);
     const err = res.map((x) => x.error).filter(Boolean).join(' | ');
     if (a.kind === 'enter') {
       if (ok) Object.assign(m, { phase: 'entry', since: now, lastSide: a.side, risk: a.risk.worstLoss, margin: a.risk.margin, cancelled: false });
