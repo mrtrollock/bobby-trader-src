@@ -232,3 +232,14 @@ Never create keys through "builder wallet registration" / wallet sign-in: those 
 to registered addresses. The bot refuses the main (primary) account for that reason. QFEX cannot report a key's
 permissions, so withdraw capability is not directly detectable; what is enforced: the ack, single-account scope (a key that
 can read another of your accounts is refused), subaccount only, and a code path that cannot reach any funding endpoint.
+
+## Arcus master switch, capital cap, low-OI picks and liquidity gate
+- `AUTOTRADER_ARCUS=1` is required for Arcus orders (default off; the key is still validated, read-only `status` works without it).
+- Usable capital = live equity capped at `ARCUS_CAPITAL_USD` / `HL_CAPITAL_USD` (default and maximum $300); per-trade loss = 1 % of it.
+- `node autotrader/cli.js picks [--pf arcus|entropy|txflow]`: key-less, read-only list of the lowest-OI markets that pass the
+  liquidity rules (src/lowoi.js). `ARCUS_PREFER_LOW_OI` / `ENTROPY_PREFER_LOW_OI` / `TXFLOW_PREFER_LOW_OI` (default 1) sort low OI first;
+  thresholds: `LOWOI_MIN_OI_USD` (20000), `LOWOI_MIN_VOL24H_USD` (50000), `LOWOI_MAX_SPREAD` (0.002), `LOWOI_SLIPPAGE_BUDGET` (0.003),
+  `LOWOI_STRESS_MULT` (2), `LOWOI_SL_PCT` (0.01), `LOWOI_LIMIT` (5); each also as `<PF>_LOWOI_*`.
+- Every Arcus/Entropy entry passes a fail-closed liquidity gate: live book two-sided, spread <= max, OI and 24h volume above the minimum,
+  and loss at SL + stressed stop slippage (this trade's size walked on the live book x stress multiplier) <= the per-trade cap.
+  Post-only, 1x and the mandatory SL are unchanged. The current book is only a proxy for the book when a stop fires.
