@@ -90,6 +90,9 @@ export async function processQueue(cfg, net, { queue, state, stopExists, logFn =
     logFn(ok ? 'PLACED' : 'ERROR', `${q.id}: ${res.map((x) => `${x.label}: ${x.ok ? 'ok' : x.error}`).join(' | ')}`);
     journalFn({ id: q.id, decision: ok ? 'placed' : 'failed', plan: { pf: pfKey, market: ev.ctx.market, side: ev.p.sd, size: ev.ctx.size, px: ev.p.px, sl: ev.p.sl, tp: ev.p.tp }, risk: ev.risk, results: res.map(({ label, status, ok: o, error, body }) => ({ label, status, ok: o, error, ...(body ? { echo: C.echoOf(body) } : {}) })), mode });
     state[mode][q.id] = { status: ok ? 'placed' : 'failed', t: Date.now() };
+    // Arcus: the market is Bobby's from the moment an entry is sent (even if the reply was an error: fail closed, the
+    // guard releases it after 5 min when Bobby has neither a position nor an order there)
+    if (pfKey === 'arcus' && cfg.arcusOwn) cfg.arcusOwn[ev.ctx.market] = { t: Date.now(), id: q.id };
     delete stCache[pfKey];
     results.push({ id: q.id, status: ok ? 'placed' : 'failed' });
   }
@@ -102,9 +105,11 @@ async function runGuard(cfg, net, state, { readOnly = false } = {}) {
   return C.guardTick(cfg, net, state.guard, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal: readOnly ? quiet : journal, alert: readOnly ? quiet : alert,
     plans: C.plansFromJournal(readJournal()) }, { readOnly });
 }
+// Bobby-owned Arcus markets live in state.json (state.guard.__arcusOwn); cfg.arcusOwn points at that object.
+const bindOwn = (cfg, state) => { state.guard ||= {}; state.guard.__arcusOwn ||= {}; cfg.arcusOwn = state.guard.__arcusOwn; };
 async function once(ctx) {
   const { cfg, net } = ctx || await boot();
-  const state = loadState();
+  const state = loadState(); bindOwn(cfg, state);
   // guard BEFORE new entries (repairs come first) and again after them (a fill during this tick is seen next tick)
   const guard = await runGuard(cfg, net, state);
   saveState(state);
@@ -132,7 +137,7 @@ function volumeStatus(cfg) {
     active: Object.entries(vs.markets || {}).filter(([, m]) => m.phase !== 'idle').map(([k, m]) => ({ market: k, phase: m.phase })) };
 }
 async function status(sinceMs, only) {
-  const cfg = C.loadConfig(process.env); SECRETS = C.secretsOf(cfg);
+  const cfg = C.loadConfig(process.env); SECRETS = C.secretsOf(cfg); bindOwn(cfg, JSON.parse(JSON.stringify(loadState())));
   const net = C.realNet(cfg);
   const out = { network: cfg.network, t: Date.now(), since: sinceMs ?? null, dryRun: !cfg.live, enabled: cfg.enabled, stop: existsSync(P.stop), platforms: {} };
   for (const [pf, has] of [['arcus', cfg.arcusAddress], ['entropy', cfg.hlAddress], ['qfex', cfg.qfex]]) {
@@ -144,6 +149,8 @@ async function status(sinceMs, only) {
         positions: st.positions.map((p) => { const sl = st.orders.filter((o) => o.market === p.market && o.kind === 'SL').map((o) => o.trig),
           tp = st.orders.filter((o) => o.market === p.market && o.kind === 'TP').map((o) => o.trig);
           return { ...strip(p), sl, tp, protected: sl.length > 0 && tp.length > 0 }; }),
+        ...(pf === 'arcus' ? { weeklyLossAccount: st.weeklyLossAccount, bobbyMarkets: st.bobbyMarkets, bobbyWeekFills: st.bobbyWeekFills,
+          limits: { weeklyLossCap: 50, weeklyRemaining: Math.max(0, 50 - st.weeklyLoss) } } : {}),
         ...(pf === 'qfex' ? { volume: st.volume, dailyLoss: st.dailyLoss, volumeMode: volumeStatus(cfg) } : {}),
         ...(pf === 'qfex' ? { limits: { weeklyLossCap: cfg.qfex.weeklyLossCap, weeklyRemaining: Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss),
           maxTradeLoss: Math.min(cfg.qfex.maxTradeLossUsd, 0.05 * st.equity, Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss)) } } : {}),
@@ -155,7 +162,7 @@ async function status(sinceMs, only) {
 
 async function reduceCmd(kind, pf, market, oid) {
   if (!C.PLATFORMS.includes(pf)) throw new Error('platform must be arcus, entropy or qfex');
-  const { cfg, net } = await boot();
+  const { cfg, net } = await boot(); bindOwn(cfg, loadState());
   const reqs = kind === 'cancel' ? await C.buildCancel(pf, market, oid, cfg, net) : await C.buildClose(pf, market, cfg, net);
   const kill = C.killReason(cfg, existsSync(P.stop));
   if (kill) { log('HOLD', `${kind} ${pf} ${market}: not sent (kill switch: ${kill})`); return; }
@@ -193,7 +200,8 @@ async function main(argv) {
     case 'once': { const r = await once(); console.log(JSON.stringify({ results: r.map(({ requests, ...x }) => x), guard: r.guard })); return; }
     case 'guard': { // read-only: decisions are computed and printed, nothing is sent, the persisted guard memo is not changed
       const cfg = C.loadConfig(process.env); SECRETS = C.secretsOf(cfg);
-      const rep = await runGuard(cfg, C.realNet(cfg), { guard: JSON.parse(JSON.stringify(loadState().guard || {})) }, { readOnly: true });
+      const gs = { guard: JSON.parse(JSON.stringify(loadState().guard || {})) }; bindOwn(cfg, gs);
+      const rep = await runGuard(cfg, C.realNet(cfg), gs, { readOnly: true });
       console.log(JSON.stringify(rep, null, 1)); return; }
     case 'picks': { // public market data only; never loads or uses a key
       const pfs = flag('--pf') ? [flag('--pf')] : ['arcus', 'entropy', 'txflow'];

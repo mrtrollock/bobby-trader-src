@@ -72,30 +72,31 @@ export function marketOrder(ctx, m, side, qty, { slippage = 0.02, reduceOnly = f
   return req(ctx, '/v1/placeOrder', body, { 'X-Timestamp': ts.toString(), 'X-Signature': signHex(ctx.priv, payload) });
 }
 
-export function closePosition(ctx, m, position, { slippage = 0.02 } = {}) {
+export function closePosition(ctx, m, position, { slippage = 0.02, clientId = null } = {}) {
   const size = String(position.size).trim().replace(/^[-+]/, '');
   const side = ['LONG', 'BUY'].includes(String(position.side).toUpperCase()) ? 'SELL' : 'BUY';
-  return marketOrder(ctx, m, side, size, { slippage, reduceOnly: true });
+  return marketOrder(ctx, m, side, size, { slippage, reduceOnly: true, clientId });
 }
 
-function tpslLegs(ctx, m, ts, g, closeSide, qty, tp, sl, slippage) {
+function tpslLegs(ctx, m, ts, g, closeSide, qty, tp, sl, slippage, cids = {}) {
   const legs = [];
   for (const [kind, trig] of [['TAKE_PROFIT', tp], ['STOP_LOSS', sl]]) {
     if (trig == null || trig === '') continue;
     const stop = D.snap(String(trig), tickFor(m, String(trig)), 'floor');
     const price = protectivePrice(m, closeSide, stop, slippage);
-    const payload = orderPayload(ctx, OP_PLACE_UNTRIGGERED, m, ts, closeSide, price, qty, 'IOC', true, g);
-    const body = orderBody(ctx, m, ts, closeSide, 'MARKET', String(qty), price, 'IOC', true, g, null, { tpslType: kind, stopPrice: String(stop) });
+    const cid = (kind === 'STOP_LOSS' ? cids.sl : cids.tp) || null;
+    const payload = orderPayload(ctx, OP_PLACE_UNTRIGGERED, m, ts, closeSide, price, qty, 'IOC', true, g, cid);
+    const body = orderBody(ctx, m, ts, closeSide, 'MARKET', String(qty), price, 'IOC', true, g, cid, { tpslType: kind, stopPrice: String(stop) });
     body.signature = signHex(ctx.priv, payload);
     legs.push(body);
   }
   return legs;
 }
 
-export function positionTpsl(ctx, m, positionSide, { takeProfit = null, stopLoss = null, slippage = 0.05 } = {}) {
+export function positionTpsl(ctx, m, positionSide, { takeProfit = null, stopLoss = null, slippage = 0.05, clientIds = {} } = {}) {
   const closeSide = ['LONG', 'BUY'].includes(String(positionSide).toUpperCase()) ? 'SELL' : 'BUY';
   const ts = ctx.nowNs(), g = goodTilUs(ctx);
-  const orders = tpslLegs(ctx, m, ts, g, closeSide, 0, takeProfit, stopLoss, slippage);
+  const orders = tpslLegs(ctx, m, ts, g, closeSide, 0, takeProfit, stopLoss, slippage, clientIds);
   if (!orders.length) throw new Error('need take_profit and/or stop_loss');
   return req(ctx, '/v1/batchPlaceOrders', { grouping: 'positionTpsl', orders },
     { 'X-Timestamp': ts.toString(), 'X-Signature': orders[0].signature });
@@ -104,7 +105,7 @@ export function positionTpsl(ctx, m, positionSide, { takeProfit = null, stopLoss
 // Entry + bound TP/SL children (grouping entryTpsl). Same per-leg signing as positionTpsl in arcus.py:
 // entry leg op=1, TPSL children op=4, every leg's ct == shared X-Timestamp; children sized to the entry quantity.
 export function entryTpsl(ctx, m, side, qty, { type = 'market', limitPrice = null, takeProfit = null, stopLoss = null,
-  slippage = 0.02, tpslSlippage = 0.05, clientId = null, postOnly = false } = {}) {
+  slippage = 0.02, tpslSlippage = 0.05, clientId = null, legClientIds = {}, postOnly = false } = {}) {
   const ts = ctx.nowNs(), g = goodTilUs(ctx);
   let price, orderType, tif;
   if (type === 'market') { price = protectivePrice(m, side, m.markPrice, slippage); orderType = 'MARKET'; tif = 'IOC'; }
@@ -113,7 +114,7 @@ export function entryTpsl(ctx, m, side, qty, { type = 'market', limitPrice = nul
   const entry = orderBody(ctx, m, ts, side, orderType, qty, price, tif, false, g, clientId);
   entry.signature = signHex(ctx.priv, payload);
   const closeSide = side === 'BUY' ? 'SELL' : 'BUY';
-  const legs = tpslLegs(ctx, m, ts, g, closeSide, qty, takeProfit, stopLoss, tpslSlippage);
+  const legs = tpslLegs(ctx, m, ts, g, closeSide, qty, takeProfit, stopLoss, tpslSlippage, legClientIds);
   const orders = [entry, ...legs];
   if (!legs.length) { delete entry.signature; return req(ctx, '/v1/placeOrder', entry, { 'X-Timestamp': ts.toString(), 'X-Signature': signHex(ctx.priv, payload) }); }
   return req(ctx, '/v1/batchPlaceOrders', { grouping: 'entryTpsl', orders }, { 'X-Timestamp': ts.toString(), 'X-Signature': entry.signature });

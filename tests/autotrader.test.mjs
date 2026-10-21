@@ -14,7 +14,9 @@ const OWNER = '0x' + '11'.repeat(20), MASTER = '0x' + '22'.repeat(20);
 const ARCUS_KEY = randHex(32), HL_KEY = '0x' + randHex(32);
 const ENV = { AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ARCUS: '1', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: OWNER, ARCUS_ACCOUNT_INDEX: '0',
   HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: MASTER };
-const cfgOf = (extra = {}) => C.loadConfig({ ...ENV, ...extra });
+// legacy fixtures: TSLA-USD and A/B/C-USD are Bobby-owned Arcus markets (the ownership tests below use their own cfg)
+const OWN = () => Object.fromEntries(['TSLA-USD', 'A-USD', 'B-USD', 'C-USD'].map((m) => [m, { t: NOW }]));
+const cfgOf = (extra = {}) => Object.assign(C.loadConfig({ ...ENV, ...extra }), { arcusOwn: OWN() });
 
 // deep two-sided book around mid (5 levels/side, 1 bp apart, $100k each)
 const BOOK = (mid, sz = 100000 / mid, step = 0.0001) => ({ bids: [1, 2, 3, 4, 5].map((i) => [String(+(mid * (1 - i * step)).toFixed(4)), String(sz)]), asks: [1, 2, 3, 4, 5].map((i) => [String(+(mid * (1 + i * step)).toFixed(4)), String(sz)]) });
@@ -97,8 +99,8 @@ test('policy: every hard rule rejects with a reason', async () => {
   await rej({ ...AR, takeProfit: undefined }, /take-profit required/);
   await rej({ ...AR, size: 0.3 }, /loss at SL .* \(1\.0% of \$300\)/);
   await rej(AR, /loss at SL .* of \$100/, { equity: 100 });                       // 1% of LIVE equity
-  await rej(AR, /weekly loss cap reached/, { fills: [{ createdAt: NOW - 3600e3, closedPnl: '-50', fee: '0' }] });
-  await rej(AR, /could exceed the weekly cap/, { fills: [{ createdAt: NOW - 3600e3, closedPnl: '-48', fee: '0' }] });
+  await rej(AR, /weekly loss cap reached/, { fills: [{ createdAt: NOW - 3600e3, closedPnl: '-50', fee: '0', clientId: 'bby-0000000000000000-e' }] });
+  await rej(AR, /could exceed the weekly cap/, { fills: [{ createdAt: NOW - 3600e3, closedPnl: '-48', fee: '0', clientId: 'bby-0000000000000000-e' }] });
   await rej(AR, /margin above free collateral|Margin/, { free: 10 });
   await rej({ ...AR, refPrice: 380 }, /moved/);
   await rej({ ...AR, expiry: NOW / 1000 - 1 }, /expired/);
@@ -165,8 +167,8 @@ test('live mode (mocked exchange): sends exactly leverage + entry per trade; 4th
 test('cancel/close are reduce-only and policy-checked (the only SL of a position cannot be cancelled)', async () => {
   const cfg = cfgOf();
   const pos = [{ marketDisplayName: 'TSLA-USD', side: 'LONG', size: '0.1', averageEntryPrice: '398', unrealizedPnl: '0' }];
-  const sl = { orderId: '77', marketDisplayName: 'TSLA-USD', side: 'SELL', tpslType: 'STOP_LOSS', triggerPrice: '371', price: '0' };
-  const tp = { orderId: '78', marketDisplayName: 'TSLA-USD', side: 'SELL', tpslType: 'TAKE_PROFIT', triggerPrice: '420', price: '0' };
+  const sl = { orderId: '77', marketDisplayName: 'TSLA-USD', side: 'SELL', tpslType: 'STOP_LOSS', triggerPrice: '371', price: '0', clientId: 'bby-00000000000000aa-s' };
+  const tp = { orderId: '78', marketDisplayName: 'TSLA-USD', side: 'SELL', tpslType: 'TAKE_PROFIT', triggerPrice: '420', price: '0', clientId: 'bby-00000000000000aa-t' };
   await assert.rejects(C.buildCancel('arcus', 'TSLA-USD', '77', cfg, mockNet(cfg, { positions: pos, orders: [sl, tp] })), /only stop-loss/);
   const c = await C.buildCancel('arcus', 'TSLA-USD', '78', cfg, mockNet(cfg, { positions: pos, orders: [sl, tp] }));
   assert.equal(c[0].d.path, '/v1/cancelOrder');
@@ -264,7 +266,7 @@ test('liquidity gate (Arcus + Entropy): wide spread, thin book, low OI, missing 
 });
 
 test('Arcus fills: from is sent in microseconds and µs createdAt is converted to ms (weekly loss counted once)', async () => {
-  const cfg = cfgOf(), net = mockNet(cfg, { fills: [{ createdAt: (NOW - 3600e3) * 1000, closedPnl: '-5', fee: '0.1' }] });
+  const cfg = cfgOf(), net = mockNet(cfg, { fills: [{ createdAt: (NOW - 3600e3) * 1000, closedPnl: '-5', fee: '0.1', clientId: 'bby-0000000000000000-s' }] });
   const calls = []; const g = net.arcusGet; net.arcusGet = async (p, q) => { if (p === '/v1/fills') calls.push(q); return g(p, q); };
   const st = await C.accountState('arcus', cfg, net, {});
   assert.ok(calls.length && calls.every((q) => q.from > 1e15), JSON.stringify(calls));
@@ -278,4 +280,85 @@ test('Entropy on a unified Hyperliquid account: equity/free come from spot USDC 
   const st = await C.accountState('entropy', cfg, net, {});
   assert.equal(st.equity, 300.19); assert.equal(st.free, 290.19);
   const plain = await C.accountState('entropy', cfg, mockNet(cfg)); assert.equal(plain.equity, 300); // standard account unchanged
+});
+
+
+// ---------------------------------------------------------------- Arcus account shared with the user's other tools
+const FOREIGN_POS = (m) => ({ marketDisplayName: m, side: 'LONG', size: '1', averageEntryPrice: '700', markPrice: '700', unrealizedPnl: '-1' });
+const cfgNoOwn = (extra) => Object.assign(C.loadConfig({ ...ENV, ...extra }), { arcusOwn: {} });
+
+test('Arcus clientIds: every Bobby order carries a valid "bby-" clientId (<= 36 chars, [A-Za-z0-9_-]); entry marks the market as Bobby-owned', async () => {
+  for (const k of ['e', 's', 't', 'c']) { const c = C.arcusCid('some proposal id with spaces / and ü', k); assert.ok(C.isBobbyCid(c) && c.length <= 36 && /^[A-Za-z0-9_-]+$/.test(c), c); }
+  assert.notEqual(C.arcusCid('a', 'e'), C.arcusCid('b', 'e')); assert.equal(C.isBobbyCid('my-order-42'), false); assert.equal(C.isBobbyCid(null), false);
+  const cfg = cfgNoOwn({ AUTOTRADER_ENABLED: '1', AUTOTRADER_LIVE: '1' }), net = mockNet(cfg), state = {};
+  const r = await processQueue(cfg, net, { queue: [AR], state, stopExists: () => false, ...quiet });
+  assert.deepEqual(r.map((x) => x.status), ['placed']);
+  const entry = JSON.parse(net.sent.find((x) => /batchPlaceOrders/.test(x.d.path)).d.body);
+  assert.ok(entry.orders.every((o) => C.isBobbyCid(o.clientId)), JSON.stringify(entry.orders.map((o) => o.clientId)));
+  assert.equal(new Set(entry.orders.map((o) => o.clientId)).size, 3); assert.equal(entry.orders[0].timeInForce, 'ALO');
+  assert.ok(cfg.arcusOwn['TSLA-USD']);
+});
+
+test('Arcus weekly loss counts only Bobby: "bby-" fills + clientId-less fills in Bobby markets (fail closed); other tools excluded', async () => {
+  const cfg = cfgNoOwn();
+  const f = (m, pnl, cid) => ({ createdAt: (NOW - 3600e3) * 1000, marketDisplayName: m, closedPnl: String(pnl), fee: '0', ...(cid ? { clientId: cid } : {}) });
+  const net = mockNet(cfg, { fills: [f('W-USD', -2, 'bby-00000000000000aa-s'), f('W-USD', -1), f('SPY-USD', -20, 'tread-123'), f('SPY-USD', -10), f('QQQ-USD', 5, 'my-order-42')] });
+  const st = await C.accountState('arcus', cfg, net, {});
+  assert.equal(st.weeklyLoss, 3); assert.equal(st.weeklyLossAccount, 28); assert.equal(st.bobbyWeekFills, 2);
+  assert.deepEqual(st.bobbyMarkets, ['W-USD']);
+  // a Bobby-owned market (entry sent, no fill yet): clientId-less fills there count against Bobby too
+  const own = Object.assign(cfgNoOwn(), { arcusOwn: { 'SPY-USD': { t: NOW } } });
+  assert.equal((await C.accountState('arcus', own, mockNet(own, { fills: [f('SPY-USD', -10), f('SPY-USD', -20, 'tread-1')] }), {})).weeklyLoss, 10);
+  // the other tools' -$45 this week does not block Bobby
+  const ev = await C.evaluate(AR, cfg, mockNet(cfg, { fills: [f('SPY-USD', -45, 'tread-9')] }));
+  assert.deepEqual(ev.reasons, []);
+});
+
+test('Arcus entries skip markets with the other tools\' positions or orders; their positions do not use Bobby\'s slots', async () => {
+  const cfg = cfgNoOwn();
+  const rej = async (o, re) => { const r = await C.evaluate(AR, cfg, mockNet(cfg, o)); assert.equal(r.ok, false); assert.ok(r.reasons.some((x) => re.test(x)), JSON.stringify(r.reasons)); };
+  await rej({ positions: [FOREIGN_POS('TSLA-USD')] }, /another tool of yours holds a position on TSLA-USD/);
+  await rej({ orders: [{ orderId: '9', marketDisplayName: 'TSLA-USD', side: 'BUY', price: '350', clientId: 'tread-1' }] }, /another tool of yours has open orders on TSLA-USD/);
+  await rej({ orders: [{ orderId: '9', marketDisplayName: 'TSLA-USD', side: 'SELL', tpslType: 'STOP_LOSS', triggerPrice: '300' }] }, /open orders on TSLA-USD/); // no clientId = not Bobby's
+  const busy = await C.evaluate(AR, cfg, mockNet(cfg, { positions: ['SPY-USD', 'QQQ-USD', 'NVDA-USD', 'AAPL-USD'].map(FOREIGN_POS) }));
+  assert.deepEqual(busy.reasons, []);
+  const three = ['A', 'B', 'C'].map((x) => ({ orderId: x, marketDisplayName: x + '-USD', side: 'BUY', price: '1', clientId: C.arcusCid(x, 'e') }));
+  await rej({ orders: three }, /max 3 concurrent/); // Bobby's own resting entries do count
+});
+
+test('guard never touches the other tools\' Arcus positions/orders (live mode): only Bobby\'s unprotected position is repaired', async () => {
+  const cfg = Object.assign(cfgNoOwn({ AUTOTRADER_ENABLED: '1', AUTOTRADER_LIVE: '1' }), { arcusOwn: { 'TSLA-USD': { t: NOW - 3600e3 } } });
+  const net = mockNet(cfg, {
+    positions: [FOREIGN_POS('SPY-USD'), { marketDisplayName: 'TSLA-USD', side: 'LONG', size: '0.1', averageEntryPrice: '398', markPrice: '400', unrealizedPnl: '0.2' }, FOREIGN_POS('QQQ-USD')],
+    orders: [{ orderId: '1', marketDisplayName: 'QQQ-USD', tpslType: 'STOP_LOSS', triggerPrice: '600', clientId: 'tread-5' }, { orderId: '2', marketDisplayName: 'SPY-USD', side: 'BUY', price: '650' }] });
+  const memo = {}, plans = { 'arcus:TSLA-USD': { pf: 'arcus', market: 'TSLA-USD', side: 'long', sl: 371, tp: 420 } }, io = { live: true, kill: null, log: () => {}, journal: () => {}, alert: () => {}, plans };
+  for (let i = 0; i < 3; i++) { net.s.now = NOW + i * 70e3; await C.guardTick(cfg, { ...net, now: () => NOW + i * 70e3 }, memo, io); }
+  const rep = await C.guardTick(cfg, { ...net, now: () => NOW + 300e3 }, memo, io);
+  assert.ok(rep.filter((r) => r.kind === 'foreign').map((r) => r.market).sort().join() === 'QQQ-USD,SPY-USD', JSON.stringify(rep));
+  assert.ok(net.sent.length > 0);
+  for (const x of net.sent) {
+    const b = JSON.parse(x.d.body); const legs = b.orders || [b];
+    assert.ok(legs.every((o) => o.marketId === FX('arcus_market_tsla.json').marketId), x.d.path); // TSLA only
+    assert.ok(legs.every((o) => o.clientId == null || C.isBobbyCid(o.clientId)));
+    assert.ok(!/cancel/i.test(x.d.path), 'nothing is cancelled');
+  }
+  assert.ok(!Object.keys(memo).some((k) => /SPY|QQQ/.test(k)));
+  // direct builders refuse foreign targets
+  await assert.rejects(C.buildClose('arcus', 'SPY-USD', cfg, net), /not Bobby's/);
+  await assert.rejects(C.buildProtect('arcus', { market: 'SPY-USD', side: 'long', size: 1, bobby: false }, { sl: 600 }, cfg, net), /not Bobby's/);
+  await assert.rejects(C.buildCancel('arcus', 'SPY-USD', '2', cfg, net), /not Bobby's/);
+});
+
+test('guard with only foreign Arcus positions (no plan, no legs) sends nothing even after the grace period', async () => {
+  const cfg = cfgNoOwn({ AUTOTRADER_ENABLED: '1', AUTOTRADER_LIVE: '1' }), net = mockNet(cfg, { positions: [FOREIGN_POS('SPY-USD')] });
+  const memo = {}, io = { live: true, kill: null, log: () => {}, journal: () => {}, alert: () => { throw new Error('no alert for foreign positions'); }, plans: {} };
+  for (let i = 0; i < 5; i++) await C.guardTick(cfg, { ...net, now: () => NOW + i * 120e3 }, memo, io);
+  assert.equal(net.sent.length, 0);
+});
+
+test('Arcus ownership is released only when Bobby has no position and no order there (after the settle window)', () => {
+  const own = { 'A-USD': { t: NOW - 600e3 }, 'B-USD': { t: NOW - 60e3 }, 'C-USD': { t: NOW - 600e3 }, 'D-USD': { t: NOW - 600e3 } };
+  const st = { positions: [{ market: 'C-USD' }], orders: [{ market: 'D-USD', clientId: C.arcusCid('d', 's') }, { market: 'A-USD', clientId: 'tread-1' }] };
+  C.releaseArcusOwnership(own, st, NOW);
+  assert.deepEqual(Object.keys(own).sort(), ['B-USD', 'C-USD', 'D-USD']); assert.equal(own['C-USD'].open, true);
 });

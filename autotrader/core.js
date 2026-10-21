@@ -8,6 +8,7 @@ import * as API from '../src/api.js';
 import * as F from '../src/fees.js';
 import { loadVolumeConfig } from './volume.js';
 import * as L from '../src/lowoi.js';
+import { createHash } from 'node:crypto';
 import { computeRisk, checkPolicy, POLICY, weekStartUtc, realizedLoss, assertTradeOnly, policyFor } from '../src/risk.js';
 
 export const MAX_POSITIONS = 3;
@@ -196,6 +197,20 @@ function basicChecks(p, cfg, nowS) {
 // ---------------------------------------------------------------- live context per platform (public reads)
 // Arcus /v1/fills: from/to and createdAt are epoch MICROseconds (mainnet answers 400 "from must be a microsecond
 // timestamp" to ms); newest first, paged backwards with `to`. Times are returned in ms.
+// ---- Arcus attribution: account 0 is shared with the user's other tools. Every order Bobby places carries a clientId
+// starting with BOBBY_CID ("bby-"); fills/orders expose clientId (not the API key), so ownership is decided by it.
+export const BOBBY_CID = 'bby-';
+export const isBobbyCid = (c) => typeof c === 'string' && c.startsWith(BOBBY_CID);
+// <= 36 chars, [A-Za-z0-9_-] (Arcus clientId rules); unique per order (DUPLICATE_CLIENT_ID on live reuse)
+export const arcusCid = (seed, kind) => BOBBY_CID + createHash('sha256').update(String(seed)).digest('hex').slice(0, 16) + '-' + kind;
+// Fill attribution (fail closed): clientId "bby-" -> Bobby; no clientId in a market Bobby trades (Bobby fills this week,
+// Bobby orders open, or a Bobby-owned market) -> counted as Bobby's; any other clientId -> the user's other tools.
+export function attributeArcusFills(week, orders, owned = {}) {
+  const mk = new Set([...week.filter((f) => isBobbyCid(f.clientId)).map((f) => up(f.m)), ...orders.filter((o) => isBobbyCid(o.clientId)).map((o) => up(o.market)),
+    ...Object.keys(owned || {}).map(up)]);
+  const bobby = week.filter((f) => isBobbyCid(f.clientId) || (!f.clientId && mk.has(up(f.m))));
+  return { bobby, markets: mk };
+}
 export const arcusMs = (t) => { const n = Number(t); return n > 1e14 ? n / 1000 : n; };
 async function arcusFillsSince(net, addr, ai, fromMs) {
   const out = []; let to;
@@ -205,7 +220,7 @@ async function arcusFillsSince(net, addr, ai, fromMs) {
     if (rows.length < 1000) break;
     const oldest = Math.min(...rows.map((f) => Number(f.createdAt))); if (!(oldest > 1e14)) break; to = oldest - 1;
   }
-  return out.map((f) => ({ time: arcusMs(f.createdAt), closedPnl: f.closedPnl, fee: f.fee, m: f.marketDisplayName, px: f.price, sz: f.size, side: f.side }))
+  return out.map((f) => ({ time: arcusMs(f.createdAt), closedPnl: f.closedPnl, fee: f.fee, m: f.marketDisplayName, px: f.price, sz: f.size, side: f.side, clientId: f.clientId || null, orderId: f.orderId != null ? String(f.orderId) : null }))
     .filter((f) => f.time >= fromMs);
 }
 export async function hlSpotUsdc(net, user) {
@@ -287,14 +302,25 @@ export async function accountState(pf, cfg, net, { sinceMs } = {}) {
     const oo = (await net.arcusGet('/v1/openOrders', { address: addr, accountIndex: ai })).orders || [];
     const week = await arcusFillsSince(net, addr, ai, weekStartUtc(net.now()));
     const fills = sinceMs != null ? await arcusFillsSince(net, addr, ai, sinceMs) : undefined;
-    return {
+    const ws0 = weekStartUtc(net.now());
+    const st = {
       pf, equity: Number(acct.equity), free: Number(acct.freeCollateral),
       positions: pos.map((p) => ({ market: p.marketDisplayName, side: A.isLongSide(p.side) ? 'long' : 'short', size: Number(p.size),
         entry: Number(p.averageEntryPrice), mark: p.markPrice != null ? Number(p.markPrice) : null, upnl: Number(p.unrealizedPnl), raw: p })),
       orders: oo.map((o) => ({ id: String(o.orderId), market: o.marketDisplayName, side: o.side, kind: o.tpslType === 'STOP_LOSS' ? 'SL' : o.tpslType === 'TAKE_PROFIT' ? 'TP' : 'LIMIT',
-        px: o.price != null ? Number(o.price) : null, trig: o.triggerPrice != null ? Number(o.triggerPrice) : null, size: Number(o.remainingSize ?? o.originalSize ?? 0), raw: o })),
-      weeklyLoss: realizedLoss(week, weekStartUtc(net.now()), Infinity, { feeIncluded: true }), fills,
+        px: o.price != null ? Number(o.price) : null, trig: o.triggerPrice != null ? Number(o.triggerPrice) : null, size: Number(o.remainingSize ?? o.originalSize ?? 0), clientId: o.clientId || null, raw: o })),
+      fills,
     };
+    // Bobby-only accounting + ownership (the other tools' positions/orders/fills are never Bobby's)
+    const att = attributeArcusFills(week, st.orders, cfg.arcusOwn);
+    st.bobbyMarkets = [...att.markets];
+    st.weeklyLoss = realizedLoss(att.bobby, ws0, Infinity, { feeIncluded: true });
+    st.weeklyLossAccount = realizedLoss(week, ws0, Infinity, { feeIncluded: true });
+    st.bobbyWeekFills = att.bobby.length;
+    const ownedNow = new Set([...Object.keys(cfg.arcusOwn || {}).map(up), ...st.orders.filter((o) => isBobbyCid(o.clientId)).map((o) => up(o.market))]);
+    for (const p of st.positions) p.bobby = ownedNow.has(up(p.market));
+    for (const o of st.orders) o.bobby = isBobbyCid(o.clientId);
+    return st;
   }
   const user = cfg.hl ? cfg.hl.address : cfg.hlAddress;
   let equity = 0, free = 0; const positions = [], orders = [];
@@ -407,7 +433,14 @@ export async function evaluate(q, cfg, net, stCache = {}) {
   if (c.minNotional && r.notional < c.minNotional) reasons.push(`notional < minimum ($${c.minNotional})`);
   const sameMarket = (x) => String(x.market).toUpperCase() === String(c.market).toUpperCase();
   const entries = st.orders.filter((o) => o.kind === 'LIMIT' && !o.reduceOnly && !(o.raw && o.raw.reduceOnly));
-  const busy = new Set([...st.positions.map((x) => x.market), ...entries.map((o) => o.market)]);
+  // Arcus account 0 is shared with the user's other tools: only Bobby's own positions/orders use Bobby's slots, and a
+  // market where anything that is not Bobby's is open (position or order of any kind) is skipped.
+  const mine = (x) => p.pf !== 'arcus' || x.bobby === true;
+  const busy = new Set([...st.positions.filter(mine).map((x) => x.market), ...entries.filter(mine).map((o) => o.market)]);
+  if (p.pf === 'arcus') {
+    if (st.positions.some((x) => sameMarket(x) && !x.bobby)) reasons.push(`Arcus: another tool of yours holds a position on ${c.market} (skipped)`);
+    if (st.orders.some((o) => sameMarket(o) && !o.bobby)) reasons.push(`Arcus: another tool of yours has open orders on ${c.market} (skipped)`);
+  }
   if (busy.size >= cfg.maxPositions && !busy.has(c.market)) reasons.push(`max ${cfg.maxPositions} concurrent positions/entries on ${p.pf} reached`);
   if (st.positions.some(sameMarket) || entries.some(sameMarket)) reasons.push('a position or resting entry already exists on ' + c.market);
   if (p.pf === 'arcus' || p.pf === 'entropy') reasons.push(...await liquidityGate(p, c, r, cp, cfg, net));
@@ -457,8 +490,9 @@ export async function buildOpen(ev, cfg, net) {
   if (p.pf === 'arcus') {
     const ctx = await arcusCtx(cfg, net);
     return [{ label: 'setLeverage 1x isolated', d: A.setLeverage(ctx, c.m, 1, true) },
-      { label: 'entry ALO + TP/SL', d: (() => { const d = A.entryTpsl(ctx, c.m, p.sd === 'long' ? 'BUY' : 'SELL', c.sizeStr, { type: 'limit', limitPrice: p.px, takeProfit: p.tp, stopLoss: p.sl, postOnly: true });
-        const b = JSON.parse(d.body); if (!b.orders || b.orders[0].timeInForce !== 'ALO' || b.orders.length !== 3) throw new Error('internal: Arcus entry is not ALO with SL+TP'); return d; })() }];
+      { label: 'entry ALO + TP/SL', d: (() => { const d = A.entryTpsl(ctx, c.m, p.sd === 'long' ? 'BUY' : 'SELL', c.sizeStr, { type: 'limit', limitPrice: p.px, takeProfit: p.tp, stopLoss: p.sl, postOnly: true,
+          clientId: arcusCid(p.id, 'e'), legClientIds: { sl: arcusCid(p.id, 's'), tp: arcusCid(p.id, 't') } });
+        const b = JSON.parse(d.body); if (!b.orders || b.orders[0].timeInForce !== 'ALO' || b.orders.length !== 3 || !b.orders.every((o) => isBobbyCid(o.clientId))) throw new Error('internal: Arcus entry is not ALO with SL+TP and Bobby clientIds'); return d; })() }];
   }
   const [lev, order] = H.buildOpen({ asset: c.mk.asset, szDecimals: c.mk.szDecimals, isBuy: p.sd === 'long', sz: p.sz, leverage: 1, isCross: false,
     type: 'limit', limitPx: p.px, markPx: c.mark, tp: p.tp, sl: p.sl, postOnly: true });
@@ -514,6 +548,7 @@ export async function buildCancel(pf, market, orderId, cfg, net) {
   const st = await accountState(pf, cfg, net);
   const o = st.orders.find((x) => x.id === String(orderId) && String(x.market).toUpperCase() === String(market).toUpperCase());
   if (!o) throw new Error(`order ${orderId} not found on ${market}`);
+  if (pf === 'arcus' && !o.bobby) throw new Error(`refusing: Arcus order ${orderId} on ${market} is not Bobby's (another tool of yours)`);
   const pos = st.positions.find((x) => String(x.market).toUpperCase() === String(market).toUpperCase());
   if (pos && o.kind === 'SL' && st.orders.filter((x) => x.kind === 'SL' && x.market === o.market).length <= 1)
     throw new Error('Policy: refusing to cancel the only stop-loss of an open position (close the position instead)');
@@ -540,7 +575,8 @@ export async function buildClose(pf, market, cfg, net) {
   }
   if (pf === 'arcus') {
     const ms = (await net.arcusGet('/v1/markets')).markets; const m = ms.find((x) => x.marketDisplayName === pos.market);
-    const d = A.closePosition(await arcusCtx(cfg, net), m, pos.raw, { slippage: 0.02 });
+    if (!pos.bobby) throw new Error(`refusing: the Arcus position on ${pos.market} is not Bobby's (another tool of yours)`);
+    const d = A.closePosition(await arcusCtx(cfg, net), m, pos.raw, { slippage: 0.02, clientId: arcusCid('close:' + pos.market + ':' + net.now(), 'c') });
     if (!/"reduceOnly":\s*true/.test(d.body)) throw new Error('internal: close is not reduce-only');
     return [{ label: 'close (reduce-only IOC)', d }];
   }
@@ -617,14 +653,28 @@ export async function buildProtect(pf, pos, { sl, tp }, cfg, net) {
       tp != null && { label: `attach take-profit ${r.tp}`, kind: 'ws', d: Q.buildStopOrder({ symbol: pos.market, positionIsLong: isLong, kind: 'TP', qty: pos.size, trig: r.tp }) }].filter(Boolean);
   }
   if (pf === 'arcus') {
+    if (!pos.bobby) throw new Error(`refusing: the Arcus position on ${pos.market} is not Bobby's (another tool of yours)`);
     const ms = (await net.arcusGet('/v1/markets')).markets; const m = ms.find((x) => x.marketDisplayName === pos.market);
     if (!m) throw new Error('Arcus market not found: ' + pos.market);
-    return [{ label: `attach position TP/SL (sl ${sl ?? '-'} tp ${tp ?? '-'})`, d: A.positionTpsl(await arcusCtx(cfg, net), m, isLong ? 'LONG' : 'SHORT', { stopLoss: sl, takeProfit: tp }) }];
+    const seed = 'guard:' + pos.market + ':' + net.now();
+    return [{ label: `attach position TP/SL (sl ${sl ?? '-'} tp ${tp ?? '-'})`, d: A.positionTpsl(await arcusCtx(cfg, net), m, isLong ? 'LONG' : 'SHORT', { stopLoss: sl, takeProfit: tp,
+      clientIds: { sl: arcusCid(seed, 's'), tp: arcusCid(seed, 't') } }) }];
   }
   const c = await marketCtx('entropy', { m: pos.market, sz: 0 }, cfg, net);
   const a = H.buildPositionTpsl({ asset: c.mk.asset, szDecimals: c.mk.szDecimals, positionIsLong: isLong, sl, tp });
   if (!a.orders.every((o) => o.r === true)) throw new Error('internal: TP/SL is not reduce-only');
   return [{ label: `attach position TP/SL (sl ${sl ?? '-'} tp ${tp ?? '-'})`, d: H.exchangeRequest(cfg.hl.priv, a, nextNonce(net), { isMainnet: !cfg.testnet }) }];
+}
+// Bobby-owned Arcus markets (state.guard.__arcusOwn, set when an entry is placed). Released once Bobby has neither a
+// position nor an order there (after a 5-min settle window, so a just-sent entry is not dropped before it shows up).
+export function releaseArcusOwnership(own, st, nowMs, settleMs = 5 * 60e3) {
+  if (!own) return;
+  for (const [mk, o] of Object.entries(own)) {
+    const pos = st.positions.some((x) => up(x.market) === up(mk));
+    const ord = st.orders.some((x) => up(x.market) === up(mk) && isBobbyCid(x.clientId));
+    if (pos) { o.open = true; o.seen = nowMs; continue; }
+    if (!ord && nowMs - Number(o.t || 0) > settleMs) delete own[mk];
+  }
 }
 export const GUARD_PFS = (cfg) => [cfg.arcus && 'arcus', cfg.hl && 'entropy', cfg.qfex && 'qfex'].filter(Boolean);
 // One guard tick. io = { live, kill, log, journal, alert, plans }. readOnly: decide and report, never send.
@@ -640,8 +690,14 @@ export async function guardTick(cfg, net, memo, io, { readOnly = false } = {}) {
       report.push({ pf, kind: 'unknown', error: e.message }); continue;
     }
     delete memo[pf + ':__read'];
-    const resting = st.orders.filter((o) => o.kind === 'LIMIT' && !o.reduceOnly && !o.stop).length;
-    for (const a of decideProtection(pf, st, io.plans || {}, memo, net.now())) {
+    let view = st;
+    if (pf === 'arcus') { // never look at (let alone touch) the user's other tools' positions/orders
+      if (!readOnly) releaseArcusOwnership(cfg.arcusOwn, st, net.now());
+      for (const p of st.positions.filter((x) => !x.bobby)) report.push({ pf, key: guardKey(pf, p.market), market: p.market, kind: 'foreign', size: p.size, side: p.side });
+      view = { ...st, positions: st.positions.filter((x) => x.bobby), orders: st.orders.filter((o) => o.bobby || st.positions.some((x) => x.bobby && up(x.market) === up(o.market))) };
+    }
+    const resting = view.orders.filter((o) => o.kind === 'LIMIT' && !o.reduceOnly && !o.stop).length;
+    for (const a of decideProtection(pf, view, io.plans || {}, memo, net.now())) {
       const { pos, ...pub } = a; const row = { ...pub, size: pos && pos.size, side: pos && pos.side, mark: pos && pos.mark, resting };
       if (a.kind === 'ok' || a.kind === 'grace') { report.push(row); continue; }
       if (a.kind === 'recovered') { io.log('INFO', `guard ${a.key}: protected again`); report.push(row); continue; }
