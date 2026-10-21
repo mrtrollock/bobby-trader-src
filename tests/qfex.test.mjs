@@ -97,19 +97,23 @@ test('key safety: ack required; 403 on the cross-account listing = single-accoun
   let t = setup({}, { QFEX_KEY_SINGLE_ACCOUNT_ACK: '0' });
   try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /QFEX_KEY_SINGLE_ACCOUNT_ACK=1/); } finally { t.restore(); }
   t = setup();
-  try { const v = await C.verifyKeys(t.cfg, t.net); assert.match(v.qfex.scope, /cross-account listing 403/); assert.equal(v.qfex.account, 'subaccount'); assert.equal(v.qfex.websocket, 'authenticated');
+  try { const v = await C.verifyKeys(t.cfg, t.net); assert.match(v.qfex.scope, /cross-account listing 403/); assert.match(v.qfex.account, /^subaccount \(verified/); assert.match(v.qfex.websocket, /authenticated/);
     assert.ok(t.restLog.every((r) => r.method === 'GET' && !/withdraw|transfer|address/.test(r.path)));
     assert.ok(!JSON.stringify(v).includes(PUB) && !JSON.stringify(v).includes(ACCT)); } finally { t.restore(); }
   t = setup({ allAccountsKey: true });
   try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /All accounts/); } finally { t.restore(); }
   t = setup({ foreignReadable: true });
   try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /foreign account/); } finally { t.restore(); }
-  t = setup({ wsAccount: USER, wsUser: USER, ownAccount: USER }, { QFEX_ACCOUNT_ID: USER });
-  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /MAIN account/); } finally { t.restore(); }
-  t = setup({ wsAccount: USER, wsUser: USER, ownAccount: USER }, { QFEX_ACCOUNT_ID: USER, QFEX_ALLOW_MAIN_ACCOUNT: '1' });
+  t = setup({ wsAccount: USER, ownAccount: USER }, { QFEX_ACCOUNT_ID: USER });
+  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /MAIN \(primary\) account/); } finally { t.restore(); }
+  t = setup({ wsAccount: USER, ownAccount: USER }, { QFEX_ACCOUNT_ID: USER, QFEX_ALLOW_MAIN_ACCOUNT: '1' });
   try { assert.match((await C.verifyKeys(t.cfg, t.net)).qfex.account, /main account/); } finally { t.restore(); }
   t = setup({ wsAccount: USER });
   try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /different account/); } finally { t.restore(); }
+  t = setup({ noReferral: true }); // no main/sub signal -> the ack decides, nothing refused
+  try { assert.match((await C.verifyKeys(t.cfg, t.net)).qfex.account, /undetermined/); } finally { t.restore(); }
+  t = setup({}, { QFEX_ACCOUNT_ID: '' });
+  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /set QFEX_ACCOUNT_ID/); } finally { t.restore(); }
   t = setup({ noBalance: true });
   try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /account identity/); } finally { t.restore(); }
   t = setup({ authOk: false });
@@ -235,4 +239,29 @@ test('weekly loss: realised_pnl_change minus fee since Monday 00:00 UTC; second/
     { order_timestamp: mon + 1000, realised_pnl_change: '-5', fee: '0.2' },
     { order_timestamp: (mon + 5000) / 1000, realised_pnl_change: '2', fee: '0.1' }] });
   try { const s = await C.accountState('qfex', t.cfg, t.net); assert.ok(Math.abs(s.weeklyLoss - 3.3) < 1e-9); } finally { t.restore(); }
+});
+
+test('QFEX loss limits: $3/trade (fees + stop slippage), ≤ 5% of live equity, ≤ remaining of the $30 week; env-configurable with ceilings', async () => {
+  const c = cfgOf(); assert.equal(c.qfex.weeklyLossCap, 30); assert.equal(c.qfex.maxTradeLossUsd, 3);
+  assert.throws(() => cfgOf({ QFEX_WEEKLY_LOSS_CAP_USD: '60' }), /<= 50/);
+  assert.throws(() => cfgOf({ QFEX_MAX_TRADE_LOSS_USD: '40' }), /weekly cap/);
+  assert.equal(cfgOf({ QFEX_WEEKLY_LOSS_CAP_USD: '20', QFEX_MAX_TRADE_LOSS_USD: '2' }).qfex.maxTradeLossUsd, 2);
+  const ev = async (q, st, cx) => { const t = setup(st, cx); try { return await C.evaluate(q, t.cfg, t.net); } finally { t.restore(); } };
+  const bal = (eq) => ({ balance: { deposit: eq, realised_pnl: 0, unrealised_pnl: 0, net_funding: 0, available_balance: eq }, equitySeries: [eq] });
+  // $300 equity: 0.0095 lots risk ~$3.18 > $3 (would pass the old 1 %-of-$300 = $3 too); 0.0085 ~ $2.85 passes
+  let e = await ev({ ...QX, sz: 0.0095 }, bal(300)); assert.ok(e.reasons.some((x) => /loss at SL \$3\.\d+ > \$3\.00 \(\$3\.00 max per trade/.test(x)), e.reasons.join('|'));
+  e = await ev({ ...QX, sz: 0.0085 }, bal(300)); assert.deepEqual(e.reasons, []); assert.equal(e.risk.maxLoss, 3);
+  // $40 equity: 5 % = $2 < $3 -> $2 cap
+  e = await ev({ ...QX, sz: 0.0085, sl: 29400 }, bal(40)); assert.equal(e.risk.maxLoss, 2);
+  // weekly: $28.50 used of $30 -> a $2.85 trade would exceed the remaining $1.50
+  e = await ev({ ...QX, sz: 0.0085 }, { ...bal(300), trades: [{ order_timestamp: NOW / 1000 - 60, realised_pnl_change: '-28', fee: '0.5' }] });
+  assert.ok(e.reasons.some((x) => /exceed the weekly cap .* > \$30/.test(x)), e.reasons.join('|'));
+  e = await ev(QX, { ...bal(300), trades: [{ order_timestamp: NOW / 1000 - 60, realised_pnl_change: '-30', fee: '0' }] });
+  assert.ok(e.reasons.some((x) => /weekly loss cap reached \(\$30\.00 \/ \$30\)/.test(x)));
+  // Arcus / Entropy unchanged: 1 % of capital, $50/week
+  const { POLICY, policyFor, checkPolicy } = await import('../src/risk.js');
+  assert.equal(policyFor('arcus'), POLICY); assert.equal(policyFor('hl'), POLICY); assert.equal(POLICY.weeklyLossCap, 50);
+  const r = { slLoss: 3.5, margin: 1 };
+  assert.match(checkPolicy({ pf: 'arcus', act: 'open', et: 'limit', lev: 1, sl: 1 }, r).blocks.join(), /\(1\.0% of \$300\)/);
+  assert.equal(checkPolicy({ pf: 'qfex', act: 'open', et: 'limit', lev: 1, sl: 1 }, r, { policy: policyFor('qfex') }).maxLoss, 3); // web app: 5 % of $100 = $5 -> $3
 });

@@ -18,7 +18,8 @@ TxFlow stays manual (web app). Runs on this box with Node 20; reuses the web app
   * QFEX: see [QFEX](#qfex) — `QFEX_KEY_SINGLE_ACCOUNT_ACK=1` is mandatory; the cross-account listing
     `GET /user/subaccounts/balance` must answer **403** (single-account key; a 200 means "All accounts", the only scope
     that can hold `deposit_withdraw`, and is refused); a random foreign account id must be refused; the trade socket must
-    authenticate and its balance snapshot must name the configured account and NOT the main account (`id == user_id`).
+    authenticate and its balance snapshot `id` must be `QFEX_ACCOUNT_ID`; the account must not be the primary account
+    (referrals `self.user_id`, see QFEX below).
 * **Never moves funds.** withdraw / transfer / vault actions are refused by `assertTradeOnly` in the shared signers
   and network layer (`src/risk.js`), and no code path builds them. QFEX: `assertQfexRest` only allows a handful of GET
   reads + `POST /user/leverage` on `api.qfex.*` (the funding host `banker.qfex.*` is never contacted), and
@@ -77,6 +78,8 @@ nohup node autotrader/cli.js loop >> autotrader/logs/nohup.out 2>&1 &
 | `QFEX_ACCOUNT_ID` | UUID of the subaccount the key is scoped to (required if the key sees more than one account) |
 | `QFEX_KEY_SINGLE_ACCOUNT_ACK` | must be `1`: you confirm the key is single-account, withdraw unticked, created in Developer Settings |
 | optional | `AUTOTRADER_HL_DEXES` (default `io`), `AUTOTRADER_INTERVAL_S` (60), `AUTOTRADER_MAX_POSITIONS` (3), `AUTOTRADER_QUEUE` |
+| `QFEX_WEEKLY_LOSS_CAP_USD` | QFEX weekly realized-loss cap in $ (default **30**, max 50) |
+| `QFEX_MAX_TRADE_LOSS_USD` | QFEX max loss at SL per trade in $, fees + stop slippage included (default **3**, ≤ weekly cap) |
 | optional QFEX | `QFEX_CATEGORIES` (default `INDEX,COMMODITY,EQUITY`; FX is always refused), `QFEX_SL_SLIPPAGE` (fraction, overrides the per-category default), `QFEX_ALLOW_MAIN_ACCOUNT` (`1` to allow the main account; not recommended) |
 
 ## Creating the keys
@@ -98,6 +101,10 @@ Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses
 * **Auth**: HMAC-SHA256 of `"<nonce>:<unix_ts>"` with the secret key; REST headers `x-qfex-public-key`,
   `x-qfex-hmac-signature`, `x-qfex-nonce`, `x-qfex-timestamp` (+ `x-qfex-requested-account-id`); WebSocket `auth`
   message with the same HMAC (+ `account_id`). No builder code, no wallet (SIWE) sign-in, no JWT is ever used.
+* **Main vs subaccount**: the trade socket's balance `user_id` equals the account id even on a subaccount, so it is not
+  a main-account signal. `GET /user/referrals/notional-volume` (user-level) has a `relationship:"self"` row whose
+  `user_id` is the login user = primary account id and whose `account_ids` lists all your accounts: `QFEX_ACCOUNT_ID` must
+  be in that list and differ from that `user_id`. Without that row the ack decides.
 * **Reads** (all work with a single-account key): `/user/positions` (balance: equity = deposit + realised + unrealised +
   funding, capped by the latest `/user/account-equity` point; free = `available_balance`), `/user/trade` (weekly realized loss =
   `realised_pnl_change − fee`, conservative), `/user/fees`, public `/refdata`; mark price + best bid/ask from the MDS
@@ -113,7 +120,9 @@ Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses
 * **Fees / risk**: live `GET /user/fees` when sane, else the Tier-5 schedule (maker 0.02 % index/commodity, 0.05 % stocks;
   taker 0.05 % / 0.10 %). QFEX TP/SL fire as **market** orders on the mark, so the loss at SL = price move + maker entry fee
   + stop leg at `max(taker, floor) + slippage` with floor 0.10 % stocks / 0.05 % index+commodity and default slippage
-  0.10 % stocks / 0.05 % index+commodity (`QFEX_SL_SLIPPAGE`). The total must be ≤ 1 % of live equity (~$3 on $300).
+  0.10 % stocks / 0.05 % index+commodity (`QFEX_SL_SLIPPAGE`). **QFEX limits differ from Arcus/Entropy**: the total must
+  be ≤ `QFEX_MAX_TRADE_LOSS_USD` ($3), never more than 5 % of live equity and never more than what is left of the weekly
+  budget; weekly cap `QFEX_WEEKLY_LOSS_CAP_USD` ($30, Mon 00:00 UTC). Arcus/Entropy keep 1 % of equity and $50/week.
   **Prefer INDEX and COMMODITY markets** (half the fees): e.g. `US100-USD`, `US500-USD`, `GOLD-USD`, `SILVER-USD`,
   `CL-USD`, `NATGAS-USD`, `COPPER-USD`, `NIKKEI-USD`, `KOSPI-USD`, `HSI-USD`. FX is refused (no published fee row).
   `QFEX_CATEGORIES=INDEX,COMMODITY` blocks single stocks entirely. Note `min_quantity` (US100: 0.001 ≈ $30).
@@ -135,6 +144,6 @@ Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses
    chmod 600 env file outside the repo, then `node autotrader/cli.js verify` and a dry-run `once`.
 
 Never create keys through "builder wallet registration" / wallet sign-in: those keys are main-account keys that can withdraw
-to registered addresses. The bot refuses the main account (balance snapshot `id == user_id`) for that reason. QFEX cannot report a key's
+to registered addresses. The bot refuses the main (primary) account for that reason. QFEX cannot report a key's
 permissions, so withdraw capability is not directly detectable; what is enforced: the ack, single-account scope (a key that
 can read another of your accounts is refused), subaccount only, and a code path that cannot reach any funding endpoint.

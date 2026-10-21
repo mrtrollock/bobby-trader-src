@@ -6,7 +6,7 @@ import * as H from '../src/hl.js';
 import * as Q from '../src/qfex.js';
 import * as API from '../src/api.js';
 import * as F from '../src/fees.js';
-import { computeRisk, checkPolicy, POLICY, weekStartUtc, realizedLoss, assertTradeOnly } from '../src/risk.js';
+import { computeRisk, checkPolicy, POLICY, weekStartUtc, realizedLoss, assertTradeOnly, policyFor } from '../src/risk.js';
 
 export const MAX_POSITIONS = 3;
 export const MAX_DRIFT = 0.01;
@@ -33,6 +33,8 @@ export function loadConfig(env = process.env) {
     qfex: env.QFEX_API_PUBLIC_KEY || env.QFEX_API_SECRET_KEY ? { pub: String(env.QFEX_API_PUBLIC_KEY || '').trim(), secret: String(env.QFEX_API_SECRET_KEY || '').trim(),
       accountId: String(env.QFEX_ACCOUNT_ID || '').trim() || null, ack: env.QFEX_KEY_SINGLE_ACCOUNT_ACK === '1', allowMain: env.QFEX_ALLOW_MAIN_ACCOUNT === '1',
       slippage: env.QFEX_SL_SLIPPAGE != null && env.QFEX_SL_SLIPPAGE !== '' ? Number(env.QFEX_SL_SLIPPAGE) : null,
+      weeklyLossCap: env.QFEX_WEEKLY_LOSS_CAP_USD ? Number(env.QFEX_WEEKLY_LOSS_CAP_USD) : POLICY.perPlatform.qfex.weeklyLossCap,
+      maxTradeLossUsd: env.QFEX_MAX_TRADE_LOSS_USD ? Number(env.QFEX_MAX_TRADE_LOSS_USD) : POLICY.perPlatform.qfex.maxTradeLossUsd,
       categories: String(env.QFEX_CATEGORIES || Q.ALLOWED_CATEGORIES.join(',')).toUpperCase().split(',').map((x) => x.trim()).filter((x) => Q.ALLOWED_CATEGORIES.includes(x)) } : null,
     // public addresses for status without keys
     arcusAddress: String(env.ARCUS_ACCOUNT_ADDRESS || '').trim(), arcusIndex: Number(env.ARCUS_ACCOUNT_INDEX || 0),
@@ -48,6 +50,9 @@ export function loadConfig(env = process.env) {
   if (cfg.qfex) {
     Q.checkCreds(cfg.qfex);
     if (cfg.qfex.slippage != null && !(cfg.qfex.slippage >= 0 && cfg.qfex.slippage < 0.02)) throw new Error('QFEX_SL_SLIPPAGE must be a fraction between 0 and 0.02');
+    // hard ceilings: the weekly cap can never exceed the standing $50/platform policy; one trade can never exceed the week
+    if (!(cfg.qfex.weeklyLossCap > 0 && cfg.qfex.weeklyLossCap <= POLICY.weeklyLossCap)) throw new Error(`QFEX_WEEKLY_LOSS_CAP_USD must be > 0 and <= ${POLICY.weeklyLossCap}`);
+    if (!(cfg.qfex.maxTradeLossUsd > 0 && cfg.qfex.maxTradeLossUsd <= cfg.qfex.weeklyLossCap)) throw new Error('QFEX_MAX_TRADE_LOSS_USD must be > 0 and <= the weekly cap');
   }
   cfg.bases.qfex = Q.bases(testnet);
   return cfg;
@@ -98,13 +103,19 @@ export async function verifyKeys(cfg, net) {
 //  * the cross-account listing GET /user/subaccounts/balance answers 403 for a single-account key: POSITIVE evidence of
 //    single-account scope. "deposit_withdraw" only exists on "All accounts" keys, so a 200 there is refused.
 //  * a request for a random foreign account id must be refused (401/403/404).
-//  * the trade socket's balance snapshot carries {id, user_id}; id == user_id is the MAIN account (builder/wallet keys,
-//    which can withdraw to registered addresses, are main-account keys) -> refused unless QFEX_ALLOW_MAIN_ACCOUNT=1.
+//  * the trade socket must authenticate and its balance snapshot `id` must be QFEX_ACCOUNT_ID. NOTE: that snapshot's
+//    `user_id` is the ACCOUNT id, not the login user (it equals `id` on a subaccount too), so it says nothing about main vs sub.
+//  * main vs subaccount: GET /user/referrals/notional-volume (user-level, readable by a single-account key) has a
+//    `relationship:"self"` row whose `user_id` is the login user = the PRIMARY account id (docs: primary row has
+//    account_id == user_id) and whose `account_ids` lists the user's accounts. QFEX_ACCOUNT_ID == that user_id -> main
+//    account -> refused (builder/wallet keys, which can withdraw to registered addresses, are main-account keys).
+//    If that row is missing, main vs sub is reported as undeterminable and the ack below is relied on.
 // QFEX_KEY_SINGLE_ACCOUNT_ACK=1 (single account, execute + view only, withdraw unticked) is required on top.
 export async function verifyQfex(cfg, net) {
   const q = cfg.qfex;
   if (!q.ack) throw new Error('QFEX: set QFEX_KEY_SINGLE_ACCOUNT_ACK=1 only after confirming the API key is scoped to ONE specific account with ' +
     'only "Execute orders" + view permissions and "Deposit and withdraw" unticked (QFEX cannot report key permissions)');
+  if (!q.accountId) throw new Error('QFEX: set QFEX_ACCOUNT_ID to the UUID of the subaccount the key is scoped to');
   const own = await net.qfex.getRaw('/user/positions', null, { accountId: q.accountId });
   if (own.status === 401) throw new Error('QFEX: API key rejected (HTTP 401: wrong key pair, or QFEX_ACCOUNT_ID is not the key\'s account)');
   if (!own.ok) throw new Error(`QFEX: key cannot read positions of its account (HTTP ${own.status}); tick "View positions"`);
@@ -116,13 +127,19 @@ export async function verifyQfex(cfg, net) {
   if (foreign.ok) throw new Error('QFEX: the key accepted a foreign account id; refusing');
   if (![401, 403, 404].includes(foreign.status)) throw new Error(`QFEX: could not verify the key scope (foreign account answered HTTP ${foreign.status}); aborting on doubt`);
   const ws = await net.qfex.wsRead(); // also proves the trade-socket authentication
-  const b = ws.balance;
-  if (!b || !b.id || !b.user_id) throw new Error('QFEX: could not read the account identity from the trade socket; aborting on doubt');
-  if (q.accountId && b.id !== q.accountId) throw new Error('QFEX: the key trades a different account than QFEX_ACCOUNT_ID');
-  const isMain = b.id === b.user_id;
-  if (isMain && !q.allowMain) throw new Error('QFEX: the key is scoped to the MAIN account; trade from a dedicated subaccount ' +
-    '(create one, move funds to it in the QFEX UI, scope the key to it and set QFEX_ACCOUNT_ID). Override: QFEX_ALLOW_MAIN_ACCOUNT=1');
-  return { key: 'configured', account: isMain ? 'main account (override)' : 'subaccount', websocket: 'authenticated',
+  if (!ws.balance || !ws.balance.id) throw new Error('QFEX: could not read the account identity from the trade socket; aborting on doubt');
+  if (ws.balance.id !== q.accountId) throw new Error('QFEX: the key trades a different account than QFEX_ACCOUNT_ID');
+  let kind = 'undetermined (no main/sub signal; relying on QFEX_KEY_SINGLE_ACCOUNT_ACK)';
+  const ref = await net.qfex.getRaw('/user/referrals/notional-volume', null, { accountId: q.accountId });
+  const self = ref.ok && ref.body && Array.isArray(ref.body.users) ? ref.body.users.find((u) => u && u.relationship === 'self') : null;
+  if (self && self.user_id && Array.isArray(self.account_ids) && self.account_ids.includes(self.user_id) && self.account_ids.includes(q.accountId)) {
+    if (self.user_id === q.accountId) {
+      if (!q.allowMain) throw new Error('QFEX: QFEX_ACCOUNT_ID is your MAIN (primary) account; trade from a dedicated subaccount ' +
+        '(scope the key to it and set QFEX_ACCOUNT_ID). Override: QFEX_ALLOW_MAIN_ACCOUNT=1');
+      kind = 'main account (override)';
+    } else kind = 'subaccount (verified: not the primary account id)';
+  }
+  return { key: 'configured', account: kind, websocket: 'authenticated, account id matches',
     scope: 'single account (verified: cross-account listing 403, foreign account ' + foreign.status + ')', permissions: 'view ok; withdraw/funding never called; ack=1' };
 }
 
@@ -304,7 +321,8 @@ export async function evaluate(q, cfg, net, stCache = {}) {
     entryFeeRate: Math.max(0, c.maker ?? 0), mmf: c.mmf, maxLev: c.maxLev, sl: p.sl, tp: p.tp, ref: p.ref, expiry: p.exp, now: nowS,
     freeCollateral: st.free, maxLoss: Infinity, maxMove: MAX_DRIFT });
   reasons.push(...r.blocks, ...r.warns);
-  const pol = { ...POLICY, capital: { ...POLICY.capital, [POL_PF[p.pf]]: st.equity } };
+  const basePol = p.pf === 'qfex' ? policyFor('qfex', POLICY, { weeklyLossCap: cfg.qfex.weeklyLossCap, maxTradeLossUsd: cfg.qfex.maxTradeLossUsd }) : POLICY;
+  const pol = { ...basePol, capital: { ...POLICY.capital, [POL_PF[p.pf]]: st.equity } };
   const cp = checkPolicy({ ...p, pf: POL_PF[p.pf] }, r, { policy: pol, weeklyLossUsed: st.weeklyLoss, freeCollateral: st.free });
   reasons.push(...cp.blocks);
   if (!(st.equity > 0)) reasons.push('no equity on this platform');

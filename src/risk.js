@@ -56,9 +56,18 @@ export const POLICY = {
   requireStopLoss: true,    // every new position carries a stop-loss
   maxLossPct: 0.01,         // max loss at SL (fees incl.) per trade, as a fraction of platform capital (1 % of $300 = $3)
   weeklyLossCap: 50,        // $ per platform per week (Mon 00:00 UTC); once used up, new proposals are blocked
-  capital: { arcus: 300, hl: 300, txflow: 300, qfex: 300 }, // $ per platform (used for the % rule)
+  capital: { arcus: 300, hl: 300, txflow: 300, qfex: 100 }, // QFEX: user's starting size; the autotrader uses live equity // $ per platform (used for the % rule)
   marginAboveFreeBlocks: true,
+  // per-platform overrides (absolute $ instead of % of capital). QFEX: user's choice 2026-10-21; per-trade loss is also
+  // capped at maxLossEquityPct of live equity and, via the weekly rule below, at the remaining weekly budget.
+  perPlatform: { qfex: { weeklyLossCap: 30, maxTradeLossUsd: 3, maxLossEquityPct: 0.05 } },
 };
+// Effective policy for one platform: applies the perPlatform override (cfg: { weeklyLossCap, maxTradeLossUsd }) on top.
+export function policyFor(pf, base = POLICY, override = {}) {
+  const o = { ...((base.perPlatform || {})[pf] || {}), ...Object.fromEntries(Object.entries(override).filter(([, v]) => v != null)) };
+  if (!Object.keys(o).length) return base;
+  return { ...base, weeklyLossCap: o.weeklyLossCap ?? base.weeklyLossCap, maxTradeLossUsd: o.maxTradeLossUsd, maxLossEquityPct: o.maxLossEquityPct };
+}
 export const PLATFORMS = ['arcus', 'hl', 'txflow', 'qfex'];
 
 // Start of the current week: Monday 00:00 UTC (also the TxFlow points epoch boundary).
@@ -88,7 +97,10 @@ export function checkPolicy(p, r, { policy = POLICY, weeklyLossUsed = 0, freeCol
   const blocks = [], warns = [];
   const pf = p.pf, act = p.act || 'open';
   const cap = Number((policy.capital || {})[pf] ?? 0);
-  const maxLoss = cap > 0 ? cap * Number(policy.maxLossPct) : null;
+  // absolute per-trade cap (e.g. QFEX $3) bounded by maxLossEquityPct of the capital (live equity in the autotrader)
+  const abs = policy.maxTradeLossUsd != null ? Math.min(Number(policy.maxTradeLossUsd), cap > 0 && policy.maxLossEquityPct != null ? cap * Number(policy.maxLossEquityPct) : Infinity) : null;
+  const maxLoss = abs != null ? abs : cap > 0 ? cap * Number(policy.maxLossPct) : null;
+  const capTxt = abs != null ? `$${Number(policy.maxTradeLossUsd).toFixed(2)} max per trade, ≤ ${(Number(policy.maxLossEquityPct ?? 1) * 100).toFixed(0)}% of $${cap}` : `${(policy.maxLossPct * 100).toFixed(1)}% of $${cap}`;
   const used = Number(weeklyLossUsed) || 0;
   if (act === 'cancel') return { blocks, warns, maxLoss, used }; // cancelling only reduces risk
   if (act === 'open') {
@@ -96,7 +108,7 @@ export function checkPolicy(p, r, { policy = POLICY, weeklyLossUsed = 0, freeCol
     if (policy.maxLeverage && Number(p.lev) > Number(policy.maxLeverage)) blocks.push(`Policy: leverage ${p.lev}× > ${policy.maxLeverage}× max`);
     if (policy.requireStopLoss && (p.sl == null || p.sl === '')) blocks.push('Policy: stop-loss required');
     if (maxLoss != null && r && r.slLoss != null && r.slLoss > maxLoss + 1e-9)
-      blocks.push(`Policy: loss at SL $${r.slLoss.toFixed(2)} > $${maxLoss.toFixed(2)} (${(policy.maxLossPct * 100).toFixed(1)}% of $${cap})`);
+      blocks.push(`Policy: loss at SL $${r.slLoss.toFixed(2)} > $${maxLoss.toFixed(2)} (${capTxt})`);
     if (policy.weeklyLossCap != null) {
       if (used >= policy.weeklyLossCap) blocks.push(`Policy: weekly loss cap reached ($${used.toFixed(2)} / $${policy.weeklyLossCap}), trading resumes Monday 00:00 UTC`);
       else if (r && r.slLoss != null && used + r.slLoss > policy.weeklyLossCap + 1e-9)

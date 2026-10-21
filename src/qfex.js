@@ -80,7 +80,7 @@ export function authMessage(c, { nonce = newNonce(), unixTs = Math.floor(Date.no
 
 // ---------------------------------------------------------------- trade-only guards
 // /user/subaccounts/balance is only called as a scope probe: a single-account key gets 403 there (verified on mainnet).
-const REST_GET = [/^\/user\/positions$/, /^\/user\/trade$/, /^\/user\/subaccounts\/balance$/, /^\/user\/account-equity$/, /^\/user\/fees$/, /^\/refdata$/,
+const REST_GET = [/^\/user\/positions$/, /^\/user\/trade$/, /^\/user\/subaccounts\/balance$/, /^\/user\/account-equity$/, /^\/user\/referrals\/notional-volume$/, /^\/user\/fees$/, /^\/refdata$/,
   /^\/md\/contracts$/, /^\/md\/orderbook\/[A-Z0-9-]+$/];
 const REST_POST = [/^\/user\/leverage$/];
 export function assertQfexRest(base, method, path) {

@@ -21,7 +21,7 @@ export function fakeWsClass(state, log) {
       if (m.type === 'auth') return this.reply(state.authOk === false ? { err: { error_code: 'PermissionDenied', message: 'bad hmac' } } : { authenticated: true });
       if (m.type === 'get_user_leverage') return this.reply({ user_leverage_response: [{ id: 'x', symbol: p.symbol, initial_margin: 1, maintenance_margin: 0.5, leverage: String(state.levNow ?? 10) }, { id: 'y', symbol: 'AAPL-USD', leverage: '10' }] });
       if (m.type === 'subscribe') { for (const ch of p.channels) { this.reply({ subscribed: ch });
-        if (ch === 'balances' && !state.noBalance) this.reply({ balance_response: { id: state.wsAccount || ACCT, user_id: state.wsUser || USER, deposit: 300, realised_pnl: 0, order_margin: 0, position_margin: 0, unrealised_pnl: 0, net_funding: 0, available_balance: 300, fees: 0 } });
+        if (ch === 'balances' && !state.noBalance) this.reply({ balance_response: { id: state.wsAccount || ACCT, user_id: state.wsAccount || ACCT, deposit: 300, realised_pnl: 0, order_margin: 0, position_margin: 0, unrealised_pnl: 0, net_funding: 0, available_balance: 300, fees: 0 } });
         if (ch === 'stop_orders' && !state.noStopsSnapshot) for (const st of state.stops || []) this.reply({ stop_order_response: st }); } return; }
       if (m.type === 'get_user_orders') return this.reply({ all_orders_response: { orders: state.orders || [], twaps: [] } });
       if (m.type === 'cancel_on_disconnect') return;
@@ -46,6 +46,8 @@ export function fakeFetch(state, log) {
     const acct = h['x-qfex-requested-account-id'] || null;
     if (acct && acct !== (state.ownAccount || ACCT) && !state.foreignReadable) return json(401, 'invalid HMAC signature');
     if (u.pathname === '/user/subaccounts/balance') return state.allAccountsKey ? json(200, { accounts: [{ account_id: ACCT, equity: 300, available_balance: 300, is_master: false }] }) : json(403, 'insufficient API key permissions');
+    if (u.pathname === '/user/referrals/notional-volume') return state.noReferral ? json(200, { users: [] })
+      : json(200, { self_lifetime_notional_volume: 0, users: [{ user_id: USER, relationship: 'self', account_ids: [USER, ACCT], notional_volume: 0 }], direct_referral_count: 0 });
     if (u.pathname === '/user/account-equity') return json(200, { duration: '1d', interval_minutes: 60, data: (state.equitySeries || [300]).map((v, i) => ({ window_start: new Date(i * 3600e3).toISOString(), value: v })) });
     if (u.pathname === '/user/positions') return json(200, { positions: state.positions || [], balance: state.balance || { available_balance: '300', deposit: '300', realised_pnl: '0', unrealised_pnl: '0', net_funding: '0' } });
     if (u.pathname === '/user/trade') return json(200, { data: state.trades || [], count: (state.trades || []).length });

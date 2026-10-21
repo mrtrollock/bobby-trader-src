@@ -23,7 +23,7 @@ wss.on('connection', (sock, req) => {
     if (m.type === 'auth') { authed = m.params.hmac.signature === Q.signature(SEC, m.params.hmac.nonce, m.params.hmac.unix_ts); return reply(authed ? { authenticated: true } : { err: { error_code: 'PermissionDenied' } }); }
     if (!authed) return reply({ err: { error_code: 'PermissionDenied', incoming_message: m } });
     if (m.type === 'subscribe') return m.params.channels.forEach((c) => { reply({ subscribed: c });
-      if (c === 'balances') reply({ balance_response: { id: ACCT, user_id: USER, deposit: 300, realised_pnl: 0, order_margin: 0, position_margin: 0, unrealised_pnl: 0, net_funding: 0, available_balance: 300, fees: 0 } }); });
+      if (c === 'balances') reply({ balance_response: { id: ACCT, user_id: ACCT, deposit: 300, realised_pnl: 0, order_margin: 0, position_margin: 0, unrealised_pnl: 0, net_funding: 0, available_balance: 300, fees: 0 } }); });
     if (m.type === 'get_user_orders') return reply({ all_orders_response: { orders: state.orders, twaps: [] } });
     reply({ err: { error_code: 'PermissionDenied', message: 'e2e server refuses all trading messages', incoming_message: m } });
   });

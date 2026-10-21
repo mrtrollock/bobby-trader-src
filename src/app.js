@@ -1,7 +1,7 @@
 import * as A from './arcus.js';
 import * as H from './hl.js';
 import * as API from './api.js';
-import { computeRisk, FEES, MAX_LOSS, POLICY, checkPolicy, weekStartUtc, weekEndUtc, realizedLoss } from './risk.js';
+import { computeRisk, FEES, MAX_LOSS, POLICY, checkPolicy, weekStartUtc, weekEndUtc, realizedLoss, policyFor } from './risk.js';
 import * as F from './fees.js';
 import * as T from './txflow.js';
 import * as Q from './qfex.js';
@@ -180,9 +180,9 @@ async function withPolicy(p, c, r) {
   let used = null, src = 'fills';
   try { used = await weeklyLoss(p.pf); } catch { used = null; }
   if (used == null) { used = journalRisk(p.pf); src = 'journal'; }
-  const pol = checkPolicy(p, r, { policy: policy(), weeklyLossUsed: used, freeCollateral: c.free });
+  const pol = checkPolicy(p, r, { policy: policyFor(p.pf, policy()), weeklyLossUsed: used, freeCollateral: c.free });
   r.blocks.push(...pol.blocks);
-  if (src === 'journal' && p.act === 'open') r.warns.push(p.pf === 'qfex' ? 'QFEX weekly losses are private: the autotrader checks the $' + policy().weeklyLossCap + ' cap from fills before sending (local journal estimate shown)'
+  if (src === 'journal' && p.act === 'open') r.warns.push(p.pf === 'qfex' ? 'QFEX weekly losses are private: the autotrader checks the $' + policyFor('qfex', policy()).weeklyLossCap + ' cap from fills before sending (local journal estimate shown)'
     : 'Weekly losses could not be read: estimated from the local journal');
   r.policy = { ...pol, src };
   return r;
@@ -494,7 +494,7 @@ function viewConfirm(app) {
         c.pf === 'qfex' && ['Best bid / ask', (c.bid != null ? fmtPx(c.bid) : '—') + ' / ' + (c.ask != null ? fmtPx(c.ask) : '—')],
         c.pf !== 'qfex' && ['Max leverage', c.maxLev + '×'],
         r.policy && r.policy.maxLoss != null && p.act === 'open' && ['Loss cap per trade', '$' + fmt(r.policy.maxLoss)],
-        r.policy && ['Weekly losses (' + r.policy.src + ')', '$' + fmt(r.policy.used) + ' / $' + fmt(policy().weeklyLossCap, 0)],
+        r.policy && ['Weekly losses (' + r.policy.src + ')', '$' + fmt(r.policy.used) + ' / $' + fmt(policyFor(p.pf, policy()).weeklyLossCap, 0)],
         r.slLocked != null ? ['Locked gain at SL (incl. fees)', '+$' + '' + fmt(r.slLocked), 'green']
           : r.slLoss != null && ['Loss at SL (incl. fees)', '−$' + '' + fmt(r.slLoss), r.slLoss >= S.settings.maxLoss ? 'red' : 'green'],
         r.tpGain != null && ['Gain at TP (incl. fees)', (r.tpGain < 0 ? '−$' : '+$') + '' + fmt(Math.abs(r.tpGain)), r.tpGain < 0 ? 'red' : 'green'],

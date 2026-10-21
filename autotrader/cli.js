@@ -108,6 +108,8 @@ async function status(sinceMs, only) {
       out.platforms[pf] = { equity: st.equity, free: st.free, weeklyLoss: st.weeklyLoss,
         positions: st.positions.map((p) => ({ ...strip(p), sl: st.orders.filter((o) => o.market === p.market && o.kind === 'SL').map((o) => o.trig),
           tp: st.orders.filter((o) => o.market === p.market && o.kind === 'TP').map((o) => o.trig) })),
+        ...(pf === 'qfex' ? { limits: { weeklyLossCap: cfg.qfex.weeklyLossCap, weeklyRemaining: Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss),
+          maxTradeLoss: Math.min(cfg.qfex.maxTradeLossUsd, 0.05 * st.equity, Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss)) } } : {}),
         openOrders: st.orders.map(strip), fills: st.fills, ...(st.stopsKnown !== undefined ? { stopsKnown: st.stopsKnown } : {}) };
     } catch (e) { out.platforms[pf] = { error: redact(e.message) }; }
   }
