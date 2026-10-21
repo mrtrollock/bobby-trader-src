@@ -43,6 +43,7 @@ function readQueue() {
   return Array.isArray(j) ? j : j.proposals || [];
 }
 
+const ENTROPY_ALERTED = new Set();
 async function boot({ needKeys = true } = {}) {
   const cfg = C.loadConfig(process.env);
   SECRETS = C.secretsOf(cfg).concat([process.env.ARCUS_API_PRIVATE_KEY, process.env.ARCUS_API_KEY, process.env.HL_AGENT_PRIVATE_KEY].filter(Boolean).map((x) => String(x).trim()));
@@ -52,6 +53,8 @@ async function boot({ needKeys = true } = {}) {
     if (!cfg.arcus && !cfg.hl && !cfg.qfex) throw new Error('no keys in env (ARCUS_API_PRIVATE_KEY, HL_AGENT_PRIVATE_KEY and/or QFEX_API_PUBLIC_KEY + QFEX_API_SECRET_KEY)');
     const v = await C.verifyKeys(cfg, net);
     log('INFO', `keys verified on ${cfg.network}`, v);
+    if (v.hlDisabled) writeEntropyStatus({ state: 'disabled', reason: v.hlDisabled });
+    if (v.hlDisabled) { log('ERROR', v.hlDisabled + ' (QFEX and the loop keep running)'); if (!ENTROPY_ALERTED.has(v.hlDisabled)) { ENTROPY_ALERTED.add(v.hlDisabled); alert({ pf: 'entropy', kind: 'disabled', reason: v.hlDisabled }); } }
   }
   return { cfg, net };
 }
@@ -109,6 +112,19 @@ async function runGuard(cfg, net, state, { readOnly = false } = {}) {
 }
 // Bobby-owned Arcus markets live in state.json (state.guard.__arcusOwn); cfg.arcusOwn points at that object.
 const bindOwn = (cfg, state) => { state.guard ||= {}; state.guard.__arcusOwn ||= {}; cfg.arcusOwn = state.guard.__arcusOwn; };
+// autotrader/entropy_status.json (balances.py + briefing.py): Entropy state for the Bobby subaccount; no keys/addresses
+let lastEntropyState = null;
+function writeEntropyStatus(o) { try { writeFileSync(join(DIR, 'entropy_status.json'), JSON.stringify({ t: new Date().toISOString(), ...o })); } catch { /* best effort */ } }
+function entropyGate(st) {
+  const m = C.entropyMarginStatus(st);
+  if (m.state !== 'unknown') writeEntropyStatus(m);
+  if (m.state !== lastEntropyState && m.state !== 'unknown') {
+    log('INFO', m.state === 'waiting' ? `Entropy: ${m.reason}; idling (proposals stay queued), re-checking every tick`
+      : `Entropy: margin on EntropyIO present ($${m.free} free); Entropy active`);
+    lastEntropyState = m.state;
+  }
+  return m;
+}
 async function once(ctx, { degraded = false } = {}) {
   const { cfg, net } = ctx || await boot();
   const state = loadState(); bindOwn(cfg, state);
@@ -116,7 +132,10 @@ async function once(ctx, { degraded = false } = {}) {
   const guard = await runGuard(cfg, net, state);
   saveState(state);
   // while QFEX reads are failing (degraded): no new entries at all; the guard above still runs and never removes stops
-  const out = degraded ? [] : await processQueue(cfg, net, { queue: readQueue(), state, stopExists: () => existsSync(P.stop) });
+  // Entropy: idle (proposals stay queued) until the subaccount has io-dex margin; polled on every guard read
+  const em = cfg.hl ? entropyGate(C.lastGuardRead.entropy && C.lastGuardRead.entropy.st) : null;
+  const queue = readQueue().filter((q) => !(em && em.state !== 'active' && /^(entropy|hl|hyperliquid)$/i.test(String(q.pf ?? q.platform ?? ''))));
+  const out = degraded ? [] : await processQueue(cfg, net, { queue, state, stopExists: () => existsSync(P.stop) });
   saveState(state);
   // volume mode (QFEX_VOLUME_MODE=1 only): after the guard; new exposure only while the guard sees QFEX healthy
   let volume = null;
@@ -151,7 +170,7 @@ async function status(sinceMs, only) {
   const cfg = C.loadConfig(process.env); SECRETS = C.secretsOf(cfg); bindOwn(cfg, JSON.parse(JSON.stringify(loadState())));
   const net = C.realNet(cfg);
   const out = { network: cfg.network, t: Date.now(), since: sinceMs ?? null, dryRun: !cfg.live, enabled: cfg.enabled, stop: existsSync(P.stop), platforms: {} };
-  for (const [pf, has] of [['arcus', cfg.arcusAddress], ['entropy', cfg.hlAddress], ['qfex', cfg.qfex]]) {
+  for (const [pf, has] of [['arcus', cfg.arcusAddress], ['entropy', cfg.hlSub], ['qfex', cfg.qfex]]) {
     if (!has || (only && only !== pf)) continue;
     try {
       const st = await C.accountState(pf, cfg, net, { sinceMs: sinceMs ?? Date.now() - 86400e3 });

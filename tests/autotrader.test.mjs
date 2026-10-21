@@ -10,20 +10,21 @@ import { randHex } from './helpers.mjs';
 
 const FX = (f) => JSON.parse(readFileSync(new URL('./fixtures/' + f, import.meta.url)));
 const NOW = Date.UTC(2026, 9, 21, 12, 0, 0);
-const OWNER = '0x' + '11'.repeat(20), MASTER = '0x' + '22'.repeat(20);
+const OWNER = '0x' + '11'.repeat(20), MASTER = '0x' + '22'.repeat(20), SUB = '0x' + '55'.repeat(20);
 const ARCUS_KEY = randHex(32), HL_KEY = '0x' + randHex(32);
 const ENV = { AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ARCUS: '1', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: OWNER, ARCUS_ACCOUNT_INDEX: '0',
-  HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: MASTER };
+  HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: MASTER, HL_SUBACCOUNT_ADDRESS: SUB };
 // legacy fixtures: TSLA-USD and A/B/C-USD are Bobby-owned Arcus markets (the ownership tests below use their own cfg)
 const OWN = () => Object.fromEntries(['TSLA-USD', 'A-USD', 'B-USD', 'C-USD'].map((m) => [m, { t: NOW }]));
-const cfgOf = (extra = {}) => Object.assign(C.loadConfig({ ...ENV, ...extra }), { arcusOwn: OWN() });
+const verified = (c) => { if (c.hl) c.hl.subVerified = true; return c; };
+const cfgOf = (extra = {}) => verified(Object.assign(C.loadConfig({ ...ENV, ...extra }), { arcusOwn: OWN() }));
 
 // deep two-sided book around mid (5 levels/side, 1 bp apart, $100k each)
 const BOOK = (mid, sz = 100000 / mid, step = 0.0001) => ({ bids: [1, 2, 3, 4, 5].map((i) => [String(+(mid * (1 - i * step)).toFixed(4)), String(sz)]), asks: [1, 2, 3, 4, 5].map((i) => [String(+(mid * (1 + i * step)).toFixed(4)), String(sz)]) });
 function mockNet(cfg, o = {}) {
   const s = { equity: 300, free: 300, positions: [], orders: [], fills: [], hlEquity: 300, hlFree: 300, hlPositions: [], hlOrders: [], hlFills: [],
     keys: [{ apiKey: cfg.arcus ? cfg.arcus.apiKey : 'x', status: 'ACTIVE', validUntil: NOW + 30 * 86400e3, accountIndex: 0 }],
-    role: { role: 'agent', data: { user: MASTER } }, ...o };
+    role: { role: 'agent', data: { user: MASTER } }, subRole: { role: 'subAccount', data: { master: MASTER } }, subs: [{ name: 'Bobby', subAccountUser: SUB }], ...o };
   const sent = [];
   const net = {
     sent, s, now: () => NOW, arcusClockOffsetMs: async () => 0,
@@ -39,7 +40,8 @@ function mockNet(cfg, o = {}) {
       throw new Error('unmocked ' + path);
     },
     hlInfo: async (b) => {
-      if (b.type === 'userRole') return s.role;
+      if (b.type === 'userRole') return String(b.user).toLowerCase() === SUB ? s.subRole : s.role;
+      if (b.type === 'subAccounts') { assert.equal(b.user, MASTER); return s.subs; }
       if (b.type === 'clearinghouseState') return { marginSummary: { accountValue: String(s.hlEquity) }, withdrawable: String(s.hlFree), assetPositions: s.hlPositions };
       if (b.type === 'frontendOpenOrders') return s.hlOrders;
       if (b.type === 'userFillsByTime') return s.hlFills;
@@ -67,7 +69,7 @@ test('config: network must be explicit, dry run unless AUTOTRADER_LIVE=1, kill s
   assert.throws(() => C.loadConfig({ ...ENV, ARCUS_API_PRIVATE_KEY: 'nothex' }), (e) => !e.message.includes('nothex'));
 });
 
-test('startup aborts: Arcus key with withdraw permission / unknown / wrong subaccount; HL agent not approved or main key', async () => {
+test('startup: Arcus key problems abort; Entropy agent/subaccount problems disable Entropy only', async () => {
   const cfg = cfgOf();
   assert.ok(await C.verifyKeys(cfg, mockNet(cfg)));
   const bad = (k) => mockNet(cfg, { keys: [{ apiKey: cfg.arcus.apiKey, status: 'ACTIVE', accountIndex: 0, ...k }] });
@@ -75,10 +77,46 @@ test('startup aborts: Arcus key with withdraw permission / unknown / wrong subac
   await assert.rejects(C.verifyKeys(cfg, bad({ status: 'REVOKED' })), /REVOKED/);
   await assert.rejects(C.verifyKeys(cfg, bad({ accountIndex: 3 })), /subaccount 3/);
   await assert.rejects(C.verifyKeys(cfg, mockNet(cfg, { keys: [] })), /not registered/);
-  await assert.rejects(C.verifyKeys(cfg, mockNet(cfg, { role: { role: 'user' } })), /not approved/);
-  await assert.rejects(C.verifyKeys(cfg, mockNet(cfg, { role: { role: 'agent', data: { user: OWNER } } })), /not approved/);
-  const self = C.loadConfig({ ...ENV, HL_ACCOUNT_ADDRESS: H.addressOf(H.keyFromHex(HL_KEY)) });
-  await assert.rejects(C.verifyKeys(self, mockNet(self)), /MAIN account key/);
+  // Entropy problems never abort: they disable Entropy only (QFEX/Arcus and the loop keep running)
+  const hlOff = async (o, re, c = cfgOf()) => { const v = await C.verifyKeys(c, mockNet(c, o)); assert.match(v.hlDisabled, re); assert.equal(c.hl, null); assert.match(c.disabled.entropy, re); };
+  await hlOff({ role: { role: 'user' } }, /not approved/);
+  await hlOff({ role: { role: 'agent', data: { user: OWNER } } }, /not approved/);
+  await hlOff({ subs: [{ name: 'Other', subAccountUser: '0x' + '66'.repeat(20) }] }, /not in the master wallet's subAccounts/);
+  await hlOff({ subs: [] }, /not in the master wallet's subAccounts/);
+  await hlOff({ subRole: { role: 'subAccount', data: { master: OWNER } } }, /userRole is not subAccount/);
+  await hlOff({ subRole: { role: 'user' } }, /userRole is not subAccount/);
+  await hlOff({}, /MAIN account key/, C.loadConfig({ ...ENV, HL_ACCOUNT_ADDRESS: H.addressOf(H.keyFromHex(HL_KEY)) }));
+  const ok = C.loadConfig(ENV); const v = await C.verifyKeys(ok, mockNet(ok));
+  assert.equal(v.hlDisabled, undefined); assert.equal(ok.hl.subVerified, true); assert.match(v.hl.subaccount, /Bobby/);
+});
+
+test('Entropy subaccount config: no subaccount or subaccount == master -> Entropy off; the master is never traded', () => {
+  const none = C.loadConfig({ ...ENV, HL_SUBACCOUNT_ADDRESS: undefined }); assert.equal(none.hl, null); assert.match(none.disabled.entropy, /HL_SUBACCOUNT_ADDRESS is not set/);
+  const same = C.loadConfig({ ...ENV, HL_SUBACCOUNT_ADDRESS: MASTER }); assert.equal(same.hl, null); assert.match(same.disabled.entropy, /equals the master/);
+  assert.throws(() => C.loadConfig({ ...ENV, HL_SUBACCOUNT_ADDRESS: '0x123' }), /HL_SUBACCOUNT_ADDRESS is not a 0x address/);
+});
+
+test('hlSign: every Entropy request carries vaultAddress = the verified subaccount; otherwise it refuses to sign', () => {
+  const cfg = cfgOf(); const net = { now: () => NOW };
+  const d = C.hlSign(cfg, H.buildCancel(1, 1), net); assert.equal(JSON.parse(d.body).vaultAddress, SUB);
+  const unverified = C.loadConfig(ENV); assert.throws(() => C.hlSign(unverified, H.buildCancel(1, 1), net), /not verified/);
+  const c2 = cfgOf(); c2.hl.sub = MASTER; assert.throws(() => C.hlSign(c2, H.buildCancel(1, 1), net), /master wallet is never traded/);
+  const c3 = cfgOf(); c3.hl.sub = ''; assert.throws(() => C.hlSign(c3, H.buildCancel(1, 1), net), /without the Bobby subaccount/);
+  // hl.js: a vault is only accepted when it is exactly the explicitly allowed one
+  assert.throws(() => H.exchangeRequest(cfg.hl.priv, H.buildCancel(1, 1), 1, { vaultAddress: SUB }), /vault/);
+  assert.throws(() => H.exchangeRequest(cfg.hl.priv, H.buildCancel(1, 1), 1, { vaultAddress: MASTER, allowedVault: SUB }), /vault/);
+  assert.equal(JSON.parse(H.exchangeRequest(cfg.hl.priv, H.buildCancel(1, 1), 1, { vaultAddress: SUB.toUpperCase().replace('0X', '0x'), allowedVault: SUB }).body).vaultAddress, SUB);
+});
+
+test('Entropy state is read from the subaccount only (never the master), margin gate waits for io-dex margin', async () => {
+  const cfg = cfgOf(); const users = new Set(); const net = mockNet(cfg, { hlEquity: 0, hlFree: 0 });
+  const inner = net.hlInfo; net.hlInfo = async (b) => { if (b.user && b.type !== 'userRole' && b.type !== 'subAccounts') users.add(String(b.user).toLowerCase()); return inner(b); };
+  const st = await C.accountState('entropy', cfg, net);
+  assert.deepEqual([...users], [SUB]);
+  const w = C.entropyMarginStatus(st); assert.equal(w.state, 'waiting'); assert.match(w.reason, /waiting for margin on EntropyIO/);
+  assert.equal(C.entropyMarginStatus({ equity: 300, free: 300, positions: [] }).state, 'active');
+  assert.equal(C.entropyMarginStatus({ equity: 5, free: 1, positions: [{ market: 'io:ANTH' }] }).state, 'active');
+  assert.equal(C.entropyMarginStatus(null).state, 'unknown');
 });
 
 test('policy: compliant Arcus + Entropy proposals pass with risk <= 1% of live equity', async () => {
@@ -144,7 +182,7 @@ test('dry run (default): signed post-only requests are built and logged, never s
   assert.deepEqual(ar.orders.slice(1).map((o) => o.tpslType).sort(), ['STOP_LOSS', 'TAKE_PROFIT']);
   assert.equal(r[0].requests[0].body.leverage, 1); assert.equal(r[0].requests[0].body.isolated, true);
   assert.equal(hl.action.orders[0].t.limit.tif, 'Alo'); assert.equal(hl.action.grouping, 'normalTpsl'); assert.equal(hl.action.orders.length, 3);
-  assert.equal(r[1].requests[0].body.action.leverage, 1); assert.equal(hl.vaultAddress, null);
+  assert.equal(r[1].requests[0].body.action.leverage, 1); assert.equal(hl.vaultAddress, SUB); // always the Bobby subaccount, never the master
   assert.ok(logs.some((l) => /^REJECT bad: .*leverage 3×/.test(l)));
   assert.ok(jr.find((e) => e.id === 'bad').reasons.length > 0);
   const blob = JSON.stringify([logs, jr, r]);
@@ -285,7 +323,7 @@ test('Entropy on a unified Hyperliquid account: equity/free come from spot USDC 
 
 // ---------------------------------------------------------------- Arcus account shared with the user's other tools
 const FOREIGN_POS = (m) => ({ marketDisplayName: m, side: 'LONG', size: '1', averageEntryPrice: '700', markPrice: '700', unrealizedPnl: '-1' });
-const cfgNoOwn = (extra) => Object.assign(C.loadConfig({ ...ENV, ...extra }), { arcusOwn: {} });
+const cfgNoOwn = (extra) => verified(Object.assign(C.loadConfig({ ...ENV, ...extra }), { arcusOwn: {} }));
 
 test('Arcus clientIds: every Bobby order carries a valid "bby-" clientId (<= 36 chars, [A-Za-z0-9_-]); entry marks the market as Bobby-owned', async () => {
   for (const k of ['e', 's', 't', 'c']) { const c = C.arcusCid('some proposal id with spaces / and ü', k); assert.ok(C.isBobbyCid(c) && c.length <= 36 && /^[A-Za-z0-9_-]+$/.test(c), c); }
@@ -361,4 +399,22 @@ test('Arcus ownership is released only when Bobby has no position and no order t
   const st = { positions: [{ market: 'C-USD' }], orders: [{ market: 'D-USD', clientId: C.arcusCid('d', 's') }, { market: 'A-USD', clientId: 'tread-1' }] };
   C.releaseArcusOwnership(own, st, NOW);
   assert.deepEqual(Object.keys(own).sort(), ['B-USD', 'C-USD', 'D-USD']); assert.equal(own['C-USD'].open, true);
+});
+
+test('Entropy dex abstraction: the io dex draws on the SUBACCOUNT main-dex balance (counted as margin), still only the subaccount', async () => {
+  const cfg = cfgOf(); const users = new Set();
+  const net = mockNet(cfg); const inner = net.hlInfo;
+  net.hlInfo = async (b) => { if (b.user) users.add(String(b.user).toLowerCase());
+    if (b.type === 'userAbstraction') return 'dexAbstraction';
+    if (b.type === 'spotClearinghouseState') return { balances: [{ coin: 'USDC', total: '0.007', hold: '0' }] };
+    if (b.type === 'clearinghouseState') return b.dex ? { marginSummary: { accountValue: '0' }, withdrawable: '0', assetPositions: [] } : { marginSummary: { accountValue: '300.19' }, withdrawable: '300.19', assetPositions: [] };
+    return inner(b); };
+  const st = await C.accountState('entropy', cfg, net);
+  assert.ok(Math.abs(st.equity - 300.19) < 1e-9 && Math.abs(st.free - 300.19) < 1e-9, JSON.stringify(st));
+  assert.equal(C.entropyMarginStatus(st).state, 'active'); assert.deepEqual([...users], [SUB]);
+});
+
+test('loop source: Entropy proposals stay queued while the margin gate is not active', () => {
+  const src = readFileSync(new URL('../autotrader/cli.js', import.meta.url), 'utf8');
+  assert.match(src, /em && em\.state !== 'active' && \/\^\(entropy\|hl\|hyperliquid\)\$\/i/);
 });

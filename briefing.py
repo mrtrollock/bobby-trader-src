@@ -427,6 +427,21 @@ def scrub(text, secrets):
             text = text.replace(s, "<address>").replace(s.lower(), "<address>")
     return text
 
+def entropy_note(path, now_ts, fresh_s=30 * 60):
+    """autotrader/entropy_status.json (written by the loop, Bobby subaccount): 'waiting for margin on EntropyIO' or the
+    reason Entropy is disabled; None when active, missing or stale. No addresses or keys in it."""
+    try:
+        h = json.loads(Path(path).read_text())
+        t = datetime.fromisoformat(str(h.get("t")).replace("Z", "+00:00")).timestamp()
+    except (OSError, ValueError, TypeError):
+        return None
+    if now_ts - t > fresh_s or h.get("state") not in ("waiting", "disabled"):
+        return None
+    if h["state"] == "waiting":
+        return "Bobby subaccount: waiting for margin on EntropyIO (move USDC to the EntropyIO dex or enable the shared balance across dexes); Entropy starts by itself once it arrives"
+    return "Bobby subaccount: " + str(h.get("reason") or "Entropy disabled")[:200]
+
+
 def qfex_outage_note(path, now_ts, fresh_s=20 * 60):
     """autotrader/qfex_health.json (written by the loop): a note while QFEX reads have failed for > 10 min, else None.
     Stale files (loop stopped, > fresh_s old) are ignored. Contains no keys or account ids."""
@@ -508,6 +523,13 @@ def main(argv=None):
         print(f"snapshot stored ({len(snap['platforms'])} platform(s))")
         return 0
     note = None if a.mock else qfex_outage_note(HERE / "autotrader" / "qfex_health.json", now_ts)
+    enote = None if a.mock else entropy_note(HERE / "autotrader" / "entropy_status.json", now_ts)
+    if enote:
+        en = next((p for p in out if p["id"] == "entropy"), None)
+        if en is not None and en.get("error"):
+            en["error"] = enote + " " + en["error"]
+        elif en is not None:
+            en.setdefault("notes", []).insert(0, enote)
     if note:
         q = next((p for p in out if p["id"] == "qfex"), None)
         if q is None:

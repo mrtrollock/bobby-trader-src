@@ -90,9 +90,16 @@ export function signL1Action(priv, action, vaultAddress, nonce, expiresAfter, is
   return { r: '0x' + BigInt('0x' + r).toString(16), s: '0x' + BigInt('0x' + s).toString(16), v: 27 + rec };
 }
 // Body exactly as exchange.py _post_action builds it
-export function exchangeRequest(priv, action, nonce, { isMainnet = true, vaultAddress = null, expiresAfter = null } = {}) {
+// vaultAddress: only the ONE subaccount the caller explicitly allows (allowedVault, the autotrader's HL_SUBACCOUNT_ADDRESS,
+// verified at startup to be a subaccount of the agent's master); any other vault/subaccount is refused. The web app
+// never passes allowedVault, so for it trading via a vault stays forbidden.
+export function exchangeRequest(priv, action, nonce, { isMainnet = true, vaultAddress = null, allowedVault = null, expiresAfter = null } = {}) {
   assertTradeOnly('action', action);
-  if (vaultAddress != null) throw new Error('Trading via a vault is forbidden by policy');
+  if (vaultAddress != null) {
+    const ok = /^0x[0-9a-fA-F]{40}$/.test(String(vaultAddress)) && allowedVault != null && String(vaultAddress).toLowerCase() === String(allowedVault).toLowerCase();
+    if (!ok) throw new Error('Trading via a vault is forbidden by policy (only the configured Bobby subaccount is allowed)');
+    vaultAddress = String(vaultAddress).toLowerCase();
+  }
   const signature = signL1Action(priv, action, vaultAddress, nonce, expiresAfter, isMainnet);
   return { method: 'POST', path: '/exchange', body: JSON.stringify({ action, nonce, signature, vaultAddress, expiresAfter }),
     headers: { 'Content-Type': 'application/json' } };

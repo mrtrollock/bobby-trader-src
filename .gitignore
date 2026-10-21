@@ -24,6 +24,7 @@ balances_ledger.json
 balances_start.json
 autotrader/ALERT
 autotrader/qfex_health.json
+autotrader/entropy_status.json
 # points weeks ledger + manual entries (private)
 points_ledger.json
 points_manual.json

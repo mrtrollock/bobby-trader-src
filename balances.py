@@ -23,6 +23,7 @@ import argparse, json, os, sys, time
 from pathlib import Path
 
 import briefing as B
+from briefing import entropy_note
 import points as PT
 import limits as LM
 import vaultpy
@@ -99,6 +100,9 @@ def read_live(testnet, start):
         if spot_used:
             eq = sp["total"] + upnl
         out = {"equity": round(eq, 6), **({"collateral": "spot USDC"} if spot_used else {})}
+        note = entropy_note(HERE / "autotrader" / "entropy_status.json", time.time())
+        if note:
+            out["note"] = note
         s0 = (start.get("entropy") or {}).get("t")
         if s0:
             ups = B._post(ep["hl"], {"type": "userNonFundingLedgerUpdates", "user": hl_addr, "startTime": int(s0 * 1000)})
@@ -143,7 +147,7 @@ def update(ledger, readings, starts, now_ts):
     rows, snap = [], {"t": now_ts, "p": {}}
     for pf in ORDER:
         r = readings.get(pf) or {"status": "not connected yet"}
-        row = {"id": pf, "name": NAMES[pf]}
+        row = {"id": pf, "name": NAMES[pf], **({"note": r["note"]} if r.get("note") else {})}
         if r.get("equity") is None:
             row.update(status=r.get("status") or "no data", error=r.get("error"))
             rows.append(row); continue

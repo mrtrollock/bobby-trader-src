@@ -59,10 +59,11 @@ def read_status(pf, scrub):
             return {"note": "address not set (ARCUS_ACCOUNT_ADDRESS)"}
         extra = {}
     else:
-        addr = e.get("HL_ACCOUNT_ADDRESS") or e.get("BOBBY_HL_ADDRESS")
+        # the Bobby subaccount only (never the master wallet's fills/equity)
+        addr = e.get("HL_SUBACCOUNT_ADDRESS") or e.get("BOBBY_HL_ADDRESS")
         if not addr:
-            return {"note": "address not set (BOBBY_HL_ADDRESS)"}
-        extra = {"HL_ACCOUNT_ADDRESS": addr}
+            return {"note": "address not set (HL_SUBACCOUNT_ADDRESS)"}
+        extra = {"HL_SUBACCOUNT_ADDRESS": addr}
     try:
         st = (_node(["status", "--pf", pf], keyless_env(extra)).get("platforms") or {}).get(pf) or {}
     except Exception as ex:  # noqa: BLE001

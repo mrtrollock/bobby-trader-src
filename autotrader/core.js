@@ -31,7 +31,9 @@ export function loadConfig(env = process.env) {
     maxPositions: Number(env.AUTOTRADER_MAX_POSITIONS || MAX_POSITIONS),
     arcus: env.ARCUS_API_PRIVATE_KEY ? { key: env.ARCUS_API_PRIVATE_KEY.trim(), address: String(env.ARCUS_ACCOUNT_ADDRESS || '').trim(),
       accountIndex: Number(env.ARCUS_ACCOUNT_INDEX || 0) } : null,
-    hl: env.HL_AGENT_PRIVATE_KEY ? { key: env.HL_AGENT_PRIVATE_KEY.trim(), address: String(env.HL_ACCOUNT_ADDRESS || '').trim() } : null,
+    // Entropy: HL_ACCOUNT_ADDRESS = the master wallet that approved the agent key (only used for the agent check);
+    // HL_SUBACCOUNT_ADDRESS = the ONLY account that is ever read for trading or traded (every order carries vaultAddress = it)
+    hl: env.HL_AGENT_PRIVATE_KEY ? { key: env.HL_AGENT_PRIVATE_KEY.trim(), address: String(env.HL_ACCOUNT_ADDRESS || '').trim(), sub: String(env.HL_SUBACCOUNT_ADDRESS || '').trim() } : null,
     // QFEX: HMAC API key pair. Must be scoped to ONE account with only execute + view permissions (see README).
     qfex: env.QFEX_API_PUBLIC_KEY || env.QFEX_API_SECRET_KEY ? { pub: String(env.QFEX_API_PUBLIC_KEY || '').trim(), secret: String(env.QFEX_API_SECRET_KEY || '').trim(),
       accountId: String(env.QFEX_ACCOUNT_ID || '').trim() || null, ack: env.QFEX_KEY_SINGLE_ACCOUNT_ACK === '1', allowMain: env.QFEX_ALLOW_MAIN_ACCOUNT === '1',
@@ -41,15 +43,18 @@ export function loadConfig(env = process.env) {
       categories: String(env.QFEX_CATEGORIES || Q.ALLOWED_CATEGORIES.join(',')).toUpperCase().split(',').map((x) => x.trim()).filter((x) => Q.ALLOWED_CATEGORIES.includes(x)) } : null,
     // public addresses for status without keys
     arcusAddress: String(env.ARCUS_ACCOUNT_ADDRESS || '').trim(), arcusIndex: Number(env.ARCUS_ACCOUNT_INDEX || 0),
-    hlAddress: String(env.HL_ACCOUNT_ADDRESS || '').trim(),
+    hlAddress: String(env.HL_ACCOUNT_ADDRESS || '').trim(), hlSub: String(env.HL_SUBACCOUNT_ADDRESS || '').trim(),
   };
-  for (const [k, v] of [['ARCUS_ACCOUNT_ADDRESS', cfg.arcusAddress], ['HL_ACCOUNT_ADDRESS', cfg.hlAddress]])
+  for (const [k, v] of [['ARCUS_ACCOUNT_ADDRESS', cfg.arcusAddress], ['HL_ACCOUNT_ADDRESS', cfg.hlAddress], ['HL_SUBACCOUNT_ADDRESS', cfg.hlSub]])
     if (v && !/^0x[0-9a-fA-F]{40}$/.test(v)) throw new Error(k + ' is not a 0x address');
   // Arcus key without its account address: Arcus stays OFF (fail closed, no orders, no reads); the other platforms run.
   cfg.disabled = {};
   if (cfg.arcus && !cfg.arcus.address) { cfg.arcus = null; cfg.disabled.arcus = 'ARCUS_ACCOUNT_ADDRESS is not set: Arcus is disabled (no orders, no reads)'; }
   // same for Entropy/Hyperliquid: an agent key without HL_ACCOUNT_ADDRESS keeps Entropy OFF instead of aborting the loop
   if (cfg.hl && !cfg.hl.address) { cfg.hl = null; cfg.disabled.entropy = 'HL_ACCOUNT_ADDRESS is not set: Entropy is disabled (no orders)'; }
+  // never the master wallet itself: without a separate subaccount Entropy stays OFF (the master is never traded)
+  if (cfg.hl && !cfg.hl.sub) { cfg.hl = null; cfg.disabled.entropy = 'HL_SUBACCOUNT_ADDRESS is not set: Entropy is disabled (the master wallet is never traded)'; }
+  if (cfg.hl && cfg.hl.sub.toLowerCase() === cfg.hl.address.toLowerCase()) { cfg.hl = null; cfg.disabled.entropy = 'HL_SUBACCOUNT_ADDRESS equals the master wallet: Entropy is disabled (the master wallet is never traded)'; }
   // parse now so a malformed key fails early (the error message never contains the key)
   if (cfg.arcus) { cfg.arcus.priv = A.keyFromHex(cfg.arcus.key); cfg.arcus.apiKey = A.apiKeyOf(cfg.arcus.priv); }
   // master switch: Arcus trades only with AUTOTRADER_ARCUS=1 (key parsed + address present but switch off -> no orders, read-only status still works)
@@ -183,6 +188,29 @@ export function stallCheck(memo, lastDone, now, { limitMs = 5 * 60e3, repeatMs =
   return { stalled: true, idleMs: idle };
 }
 
+// Entropy/Hyperliquid key + subaccount check (public info API, read-only):
+//  * the agent key is not the master key and is an approved agent of HL_ACCOUNT_ADDRESS (the master wallet);
+//  * HL_SUBACCOUNT_ADDRESS is listed in the master's subAccounts, its userRole is subAccount of that master, and it is
+//    not the master wallet. Only then may hlSign put it in vaultAddress (cfg.hl.subVerified).
+export async function verifyHl(cfg, net) {
+  const hl = cfg.hl; hl.subVerified = false;
+  const lc = (x) => String(x || '').toLowerCase();
+  if (lc(hl.agent) === lc(hl.address)) throw new Error('HL_AGENT_PRIVATE_KEY is the MAIN account key; use an agent (API) wallet');
+  if (lc(hl.sub) === lc(hl.address) || lc(hl.sub) === lc(hl.agent)) throw new Error('HL_SUBACCOUNT_ADDRESS must be a subaccount, not the master wallet or the agent');
+  const role = await net.hlInfo({ type: 'userRole', user: hl.agent });
+  const master = role && role.data && (role.data.user || role.data.master);
+  if (!role || role.role !== 'agent' || lc(master) !== lc(hl.address))
+    throw new Error('agent wallet is not approved for HL_ACCOUNT_ADDRESS (userRole=' + JSON.stringify(role && role.role) + ')');
+  const subs = (await net.hlInfo({ type: 'subAccounts', user: hl.address })) || [];
+  const mine = subs.find((x) => lc(x && x.subAccountUser) === lc(hl.sub));
+  if (!mine) throw new Error('HL_SUBACCOUNT_ADDRESS is not in the master wallet\'s subAccounts list');
+  const sr = await net.hlInfo({ type: 'userRole', user: hl.sub });
+  if (!sr || sr.role !== 'subAccount' || lc(sr.data && sr.data.master) !== lc(hl.address))
+    throw new Error('HL_SUBACCOUNT_ADDRESS userRole is not subAccount of HL_ACCOUNT_ADDRESS (' + JSON.stringify(sr && sr.role) + ')');
+  hl.subVerified = true;
+  return { agent: hl.agent.slice(0, 8) + '…', role: 'agent', subaccount: (mine.name || 'subaccount') + ' (verified: listed under the master, not the master)' };
+}
+
 // ---------------------------------------------------------------- startup key checks (abort on any doubt)
 export async function verifyKeys(cfg, net) {
   const out = {};
@@ -199,12 +227,9 @@ export async function verifyKeys(cfg, net) {
     out.arcus = { apiKey: cfg.arcus.apiKey.slice(0, 10) + '…', status: mine.status, permissions: 'trade-only' };
   }
   if (cfg.hl) {
-    if (cfg.hl.agent.toLowerCase() === cfg.hl.address.toLowerCase()) throw new Error('Hyperliquid: HL_AGENT_PRIVATE_KEY is the MAIN account key; use an agent (API) wallet');
-    const role = await net.hlInfo({ type: 'userRole', user: cfg.hl.agent });
-    const master = role && role.data && (role.data.user || role.data.master);
-    if (!role || role.role !== 'agent' || String(master || '').toLowerCase() !== cfg.hl.address.toLowerCase())
-      throw new Error('Hyperliquid: agent wallet is not approved for HL_ACCOUNT_ADDRESS (userRole=' + JSON.stringify(role && role.role) + ')');
-    out.hl = { agent: cfg.hl.agent.slice(0, 8) + '…', role: 'agent' };
+    // Entropy checks never stop the loop: any failure (or doubt) disables Entropy only, with the reason in out.hlDisabled
+    try { out.hl = await verifyHl(cfg, net); }
+    catch (e) { out.hlDisabled = 'Entropy disabled: ' + e.message; cfg.disabled = cfg.disabled || {}; cfg.disabled.entropy = out.hlDisabled; cfg.hl = null; }
   }
   if (cfg.qfex) out.qfex = await verifyQfex(cfg, net);
   return out;
@@ -424,7 +449,9 @@ export async function accountState(pf, cfg, net, { sinceMs } = {}) {
     for (const o of st.orders) o.bobby = isBobbyCid(o.clientId);
     return st;
   }
-  const user = cfg.hl ? cfg.hl.address : cfg.hlAddress;
+  // the Bobby subaccount only (never the master wallet's equity, positions or fills)
+  const user = cfg.hl ? cfg.hl.sub : cfg.hlSub;
+  if (!user) throw new Error('Entropy: HL_SUBACCOUNT_ADDRESS is not set (the master wallet is never read for trading)');
   let equity = 0, free = 0; const positions = [], orders = [];
   for (const dex of cfg.dexes) {
     const st = await net.hlInfo({ type: 'clearinghouseState', user, dex });
@@ -442,12 +469,17 @@ export async function accountState(pf, cfg, net, { sinceMs } = {}) {
   }
   // Unified / portfolio-margin accounts keep the collateral as SPOT USDC (the dex clearinghouse then reports ~0):
   // equity = spot USDC + unrealized PnL of the dex positions, free = USDC not on hold. Other spot tokens never count.
+  const dexEquity = equity, dexFree = free;
   const sp = await hlSpotUsdc(net, user);
   if (sp && (sp.unified || equity <= 0)) {
     equity = sp.total + positions.reduce((a, x) => a + (Number(x.upnl) || 0), 0); free = Math.max(0, sp.total - sp.hold); }
+  // HIP-3 dex abstraction: the io dex draws its collateral from the same account's main-dex perp balance
+  if (sp && sp.mode === 'dexAbstraction' && !cfg.dexes.includes('')) {
+    const m0 = await net.hlInfo({ type: 'clearinghouseState', user });
+    equity = dexEquity + Number((m0.marginSummary || {}).accountValue || 0); free = dexFree + Number(m0.withdrawable || 0); }
   const week = await hlFillsSince(net, user, weekStartUtc(net.now()), cfg.dexes);
   const fills = sinceMs != null ? await hlFillsSince(net, user, sinceMs, cfg.dexes) : undefined;
-  return { pf, equity, free, positions, orders, weeklyLoss: realizedLoss(week, weekStartUtc(net.now())), dailyLoss: realizedLoss(week, dayStartUtc(net.now())), fills };
+  return { pf, equity, free, positions, orders, weeklyLoss: realizedLoss(week, weekStartUtc(net.now())), dailyLoss: realizedLoss(week, dayStartUtc(net.now())), fills, marginMode: (sp && sp.mode) || null };
 }
 
 async function qfexRef(net, sym) {
@@ -574,6 +606,17 @@ export async function liquidityGate(p, c, r, cp, cfg, net) {
 }
 
 // ---------------------------------------------------------------- request builders (signed, not sent)
+// Every Entropy/Hyperliquid exchange request is signed here and ALWAYS carries vaultAddress = the Bobby subaccount:
+// without it the agent key would act for its master (the main wallet), so a missing/invalid subaccount refuses to sign.
+export function hlSign(cfg, action, net) {
+  const sub = cfg.hl && cfg.hl.sub;
+  if (!sub || !/^0x[0-9a-fA-F]{40}$/.test(sub) || !cfg.hl.address || sub.toLowerCase() === cfg.hl.address.toLowerCase())
+    throw new Error('refusing to sign an Entropy order without the Bobby subaccount as vaultAddress (the master wallet is never traded)');
+  if (cfg.hl.subVerified !== true) throw new Error('refusing to sign an Entropy order: the Bobby subaccount was not verified at startup');
+  const d = H.exchangeRequest(cfg.hl.priv, action, nextNonce(net), { isMainnet: !cfg.testnet, vaultAddress: sub, allowedVault: sub });
+  if (String(JSON.parse(d.body).vaultAddress || '').toLowerCase() !== sub.toLowerCase()) throw new Error('internal: Entropy request without the subaccount vaultAddress');
+  return d;
+}
 async function arcusCtx(cfg, net) {
   const off = await net.arcusClockOffsetMs().catch(() => 0);
   return A.makeCtx({ priv: cfg.arcus.priv, address: cfg.arcus.address, accountIndex: cfg.arcus.accountIndex,
@@ -600,7 +643,7 @@ export async function buildOpen(ev, cfg, net) {
   const [lev, order] = H.buildOpen({ asset: c.mk.asset, szDecimals: c.mk.szDecimals, isBuy: p.sd === 'long', sz: p.sz, leverage: 1, isCross: false,
     type: 'limit', limitPx: p.px, markPx: c.mark, tp: p.tp, sl: p.sl, postOnly: true });
   if (order.orders[0].t.limit.tif !== 'Alo') throw new Error('internal: entry is not Alo');
-  const sign = (a) => H.exchangeRequest(cfg.hl.priv, a, nextNonce(net), { isMainnet: !cfg.testnet });
+  const sign = (a) => hlSign(cfg, a, net);
   return [{ label: 'updateLeverage 1x isolated', d: sign(lev) }, { label: 'entry Alo + TP/SL (normalTpsl)', d: sign(order) }];
 }
 
@@ -664,7 +707,7 @@ export async function buildCancel(pf, market, orderId, cfg, net) {
     return [{ label: 'cancel ' + o.id, d: A.cancelOrder(await arcusCtx(cfg, net), m, o.id) }];
   }
   const c = await marketCtx('entropy', { m: o.market, sz: 0 }, cfg, net);
-  return [{ label: 'cancel ' + o.id, d: H.exchangeRequest(cfg.hl.priv, H.buildCancel(c.mk.asset, o.id), nextNonce(net), { isMainnet: !cfg.testnet }) }];
+  return [{ label: 'cancel ' + o.id, d: hlSign(cfg, H.buildCancel(c.mk.asset, o.id), net) }];
 }
 export async function buildClose(pf, market, cfg, net) {
   if (pf === 'qfex') market = Q.normSymbol(market);
@@ -686,7 +729,7 @@ export async function buildClose(pf, market, cfg, net) {
   const c = await marketCtx('entropy', { m: pos.market, sz: 0 }, cfg, net);
   const a = H.buildClose({ asset: c.mk.asset, szDecimals: c.mk.szDecimals, szi: pos.side === 'long' ? pos.size : -pos.size, markPx: c.mark });
   if (!a.orders.every((o) => o.r === true)) throw new Error('internal: close is not reduce-only');
-  return [{ label: 'close (reduce-only IOC)', d: H.exchangeRequest(cfg.hl.priv, a, nextNonce(net), { isMainnet: !cfg.testnet }) }];
+  return [{ label: 'close (reduce-only IOC)', d: hlSign(cfg, a, net) }];
 }
 
 
@@ -766,7 +809,7 @@ export async function buildProtect(pf, pos, { sl, tp }, cfg, net) {
   const c = await marketCtx('entropy', { m: pos.market, sz: 0 }, cfg, net);
   const a = H.buildPositionTpsl({ asset: c.mk.asset, szDecimals: c.mk.szDecimals, positionIsLong: isLong, sl, tp });
   if (!a.orders.every((o) => o.r === true)) throw new Error('internal: TP/SL is not reduce-only');
-  return [{ label: `attach position TP/SL (sl ${sl ?? '-'} tp ${tp ?? '-'})`, d: H.exchangeRequest(cfg.hl.priv, a, nextNonce(net), { isMainnet: !cfg.testnet }) }];
+  return [{ label: `attach position TP/SL (sl ${sl ?? '-'} tp ${tp ?? '-'})`, d: hlSign(cfg, a, net) }];
 }
 // Bobby-owned Arcus markets (state.guard.__arcusOwn, set when an entry is placed). Released once Bobby has neither a
 // position nor an order there (after a 5-min settle window, so a just-sent entry is not dropped before it shows up).
@@ -784,6 +827,15 @@ export const GUARD_PFS = (cfg) => [cfg.arcus && 'arcus', cfg.hl && 'entropy', cf
 // last successful guard read per platform (in memory only): the volume tick of the SAME loop iteration reuses it when the
 // guard changed nothing, halving the QFEX requests per tick (3 REST + 3 WebSocket connects per read)
 export const lastGuardRead = {};
+// Entropy margin gate: until the Bobby subaccount has usable margin for the io dex (USDC moved to EntropyIO, or the
+// shared balance across dexes enabled), Entropy idles: proposals stay queued, nothing is sent, the state is published.
+export const HL_MIN_MARGIN_USD = 10;
+export function entropyMarginStatus(st, min = HL_MIN_MARGIN_USD) {
+  if (!st) return { state: 'unknown', margin: null };
+  const margin = Math.max(Number(st.equity) || 0, 0), free = Math.max(Number(st.free) || 0, 0);
+  return free >= min || (st.positions || []).length ? { state: 'active', margin: +margin.toFixed(2), free: +free.toFixed(2) }
+    : { state: 'waiting', margin: +margin.toFixed(2), free: +free.toFixed(2), reason: `waiting for margin on EntropyIO ($${free.toFixed(2)} free < $${min})` };
+}
 export async function guardTick(cfg, net, memo, io, { readOnly = false } = {}) {
   const report = [];
   for (const pf of GUARD_PFS(cfg)) {

@@ -141,4 +141,14 @@ _hp.write_text(json.dumps({"t": _iso(NOW - 3600), "down": True, "downMin": 14, "
 assert B.qfex_outage_note(_hp, NOW) is None
 _hp.write_text(json.dumps({"t": _iso(NOW - 60), "down": False, "recoveredAt": _iso(NOW - 60)}))
 assert B.qfex_outage_note(_hp, NOW) is None
+_ep = tmp / "entropy_status.json"
+assert B.entropy_note(_ep, NOW) is None
+_ep.write_text(json.dumps({"t": _iso(NOW - 60), "state": "waiting", "margin": 0.01, "free": 0.0}))
+assert "waiting for margin on EntropyIO" in B.entropy_note(_ep, NOW)
+_ep.write_text(json.dumps({"t": _iso(NOW - 60), "state": "active", "margin": 300, "free": 300}))
+assert B.entropy_note(_ep, NOW) is None
+_ep.write_text(json.dumps({"t": _iso(NOW - 60), "state": "disabled", "reason": "Entropy disabled: x"}))
+assert "Entropy disabled: x" in B.entropy_note(_ep, NOW)
+_ep.write_text(json.dumps({"t": _iso(NOW - 7200), "state": "waiting"}))
+assert B.entropy_note(_ep, NOW) is None
 print(json.dumps({"ok": True}))

@@ -274,3 +274,20 @@ together with mds.qfex.com 503s). While the loop runs, such a failure no longer 
 - Reverted 2026-10-21 ~15:35Z after ~45 min: TP 0.04 %/hold 600 s lost -11.8 bp of volume (5 of 7 closes losing, mostly
   max-hold exits) vs -2.5 bp with TP 0.1 %/hold 1800 s, at lower volume per hour. Live again: `QFEX_VOL_TP_PCT=0.001`,
   `QFEX_VOL_MAX_HOLD_S=1800` (the fee floor and the immediate re-quote stay; the floor is inactive at 0.1 %).
+
+## Entropy via the Bobby subaccount (2026-10-21)
+
+- `HL_ACCOUNT_ADDRESS` = the master wallet that approved the agent key (only used for the agent check);
+  `HL_SUBACCOUNT_ADDRESS` = the Bobby subaccount, the ONLY account that is read for trading or traded.
+- Startup (public info API): the agent is an approved agent of the master; the subaccount is in the master's
+  `subAccounts` list, its `userRole` is `subAccount` of that master, and it is not the master. Any failure or doubt
+  disables **Entropy only** (ERROR + `disabled` alert, `autotrader/entropy_status.json`); QFEX and the loop keep running.
+- Every Entropy request is signed by `hlSign()` with `vaultAddress` = the verified subaccount; without it (unset,
+  equal to the master, not verified) nothing is signed. `src/hl.js` accepts a vault only when it equals the explicitly
+  allowed one (the web app never allows any).
+- Positions, orders, margin, PnL and the $50/week, $20/day caps (1 % of the $300 capital per trade = $3) come from the
+  subaccount on the `io` dex (with HIP-3 dex abstraction: plus the subaccount's main-dex balance it draws on).
+- Margin gate: while the subaccount has less than $10 free for the io dex, Entropy idles: proposals stay queued,
+  nothing is sent, one INFO line, and Balances/briefing show "waiting for margin on EntropyIO". It is re-checked on
+  every guard read and Entropy becomes active by itself once margin appears. Entropy entries still come only from the
+  proposal queue (low-OI picks + liquidity gate, post-only, 1x isolated, SL + TP attached).

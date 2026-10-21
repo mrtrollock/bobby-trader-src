@@ -7,20 +7,21 @@ import { randHex } from './helpers.mjs';
 
 const FX = (f) => JSON.parse(readFileSync(new URL('./fixtures/' + f, import.meta.url)));
 const NOW = Date.UTC(2026, 9, 21, 12, 0, 0);
-const OWNER = '0x' + '11'.repeat(20), MASTER = '0x' + '22'.repeat(20);
+const OWNER = '0x' + '11'.repeat(20), MASTER = '0x' + '22'.repeat(20), SUB = '0x' + '55'.repeat(20);
 const ARCUS_KEY = randHex(32), HL_KEY = '0x' + randHex(32);
 const ENV = { AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ARCUS: '1', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: OWNER, ARCUS_ACCOUNT_INDEX: '0',
-  HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: MASTER };
+  HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: MASTER, HL_SUBACCOUNT_ADDRESS: SUB };
 // legacy fixtures: TSLA-USD and A/B/C-USD are Bobby-owned Arcus markets (the ownership tests below use their own cfg)
 const OWN = () => Object.fromEntries(['TSLA-USD', 'A-USD', 'B-USD', 'C-USD'].map((m) => [m, { t: NOW }]));
-const cfgOf = (extra = {}) => Object.assign(C.loadConfig({ ...ENV, ...extra }), { arcusOwn: OWN() });
+const verified = (c) => { if (c.hl) c.hl.subVerified = true; return c; };
+const cfgOf = (extra = {}) => verified(Object.assign(C.loadConfig({ ...ENV, ...extra }), { arcusOwn: OWN() }));
 
 // deep two-sided book around mid (5 levels/side, 1 bp apart, $100k each)
 const BOOK = (mid, sz = 100000 / mid, step = 0.0001) => ({ bids: [1, 2, 3, 4, 5].map((i) => [String(+(mid * (1 - i * step)).toFixed(4)), String(sz)]), asks: [1, 2, 3, 4, 5].map((i) => [String(+(mid * (1 + i * step)).toFixed(4)), String(sz)]) });
 function mockNet(cfg, o = {}) {
   const s = { equity: 300, free: 300, positions: [], orders: [], fills: [], hlEquity: 300, hlFree: 300, hlPositions: [], hlOrders: [], hlFills: [],
     keys: [{ apiKey: cfg.arcus ? cfg.arcus.apiKey : 'x', status: 'ACTIVE', validUntil: NOW + 30 * 86400e3, accountIndex: 0 }],
-    role: { role: 'agent', data: { user: MASTER } }, ...o };
+    role: { role: 'agent', data: { user: MASTER } }, subRole: { role: 'subAccount', data: { master: MASTER } }, subs: [{ name: 'Bobby', subAccountUser: SUB }], ...o };
   const sent = [];
   const net = {
     sent, s, now: () => NOW, arcusClockOffsetMs: async () => 0,
@@ -36,7 +37,8 @@ function mockNet(cfg, o = {}) {
       throw new Error('unmocked ' + path);
     },
     hlInfo: async (b) => {
-      if (b.type === 'userRole') return s.role;
+      if (b.type === 'userRole') return String(b.user).toLowerCase() === SUB ? s.subRole : s.role;
+      if (b.type === 'subAccounts') { assert.equal(b.user, MASTER); return s.subs; }
       if (b.type === 'clearinghouseState') return { marginSummary: { accountValue: String(s.hlEquity) }, withdrawable: String(s.hlFree), assetPositions: s.hlPositions };
       if (b.type === 'frontendOpenOrders') return s.hlOrders;
       if (b.type === 'userFillsByTime') return s.hlFills;
