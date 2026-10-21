@@ -26,3 +26,4 @@ autotrader/ALERT
 # points weeks ledger + manual entries (private)
 points_ledger.json
 points_manual.json
+autotrader/STOP_VOLUME

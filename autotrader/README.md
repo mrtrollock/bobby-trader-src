@@ -142,6 +142,9 @@ Checked before **every** entry (any failure means no entry):
 - the guard sees QFEX healthy (no unknown / unprotected position), market in its **regular** session now and in 15 min,
   spread <= `QFEX_VOL_MAX_SPREAD_PCT`.
 
+Pause: `touch autotrader/STOP_VOLUME` stops NEW volume entries (resting entries are cancelled, open positions still get
+their maker exit and keep their stops); `autotrader/STOP` stops every send.
+
 Markets: `QFEX_VOL_MARKETS` (or `auto` = every INDEX/COMMODITY market), ordered by the **live maker fee** from
 `GET /user/fees` (refreshed hourly), then `QFEX_VOL_PREFER` (default `US100,US500`), then random.
 

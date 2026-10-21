@@ -249,7 +249,7 @@ export async function volumeTick(cfg, net, vstate, io) {
   const now = net.now();
   const limits = { perTrade: Math.min(cfg.qfex.maxTradeLossUsd, (POLICY.perPlatform.qfex.maxLossEquityPct ?? 1) * st.equity), weeklyCap: cfg.qfex.weeklyLossCap };
   const send = io.live && !io.kill;
-  const canEnter = io.guardOk !== false && !io.kill;
+  const canEnter = io.guardOk !== false && !io.kill && !io.pauseEntries; // pauseEntries: autotrader/STOP_VOLUME (exits still managed)
   const { actions, notes } = decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng: io.rng || Math.random, canEnter, limits });
   const report = { enabled: true, live: send, actions: [], notes, halted: vstate.halted || null, stats: vstate.stats, volume: st.volume, weeklyLoss: st.weeklyLoss, dailyLoss: st.dailyLoss };
   for (const a of actions) {

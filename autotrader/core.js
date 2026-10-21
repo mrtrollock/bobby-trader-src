@@ -43,7 +43,9 @@ export function loadConfig(env = process.env) {
   };
   for (const [k, v] of [['ARCUS_ACCOUNT_ADDRESS', cfg.arcusAddress], ['HL_ACCOUNT_ADDRESS', cfg.hlAddress]])
     if (v && !/^0x[0-9a-fA-F]{40}$/.test(v)) throw new Error(k + ' is not a 0x address');
-  if (cfg.arcus && !cfg.arcus.address) throw new Error('ARCUS_ACCOUNT_ADDRESS is required with ARCUS_API_PRIVATE_KEY');
+  // Arcus key without its account address: Arcus stays OFF (fail closed, no orders, no reads); the other platforms run.
+  cfg.disabled = {};
+  if (cfg.arcus && !cfg.arcus.address) { cfg.arcus = null; cfg.disabled.arcus = 'ARCUS_ACCOUNT_ADDRESS is not set: Arcus is disabled (no orders, no reads)'; }
   if (cfg.hl && !cfg.hl.address) throw new Error('HL_ACCOUNT_ADDRESS is required with HL_AGENT_PRIVATE_KEY');
   // parse now so a malformed key fails early (the error message never contains the key)
   if (cfg.arcus) { cfg.arcus.priv = A.keyFromHex(cfg.arcus.key); cfg.arcus.apiKey = A.apiKeyOf(cfg.arcus.priv); }

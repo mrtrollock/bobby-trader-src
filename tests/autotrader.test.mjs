@@ -224,3 +224,11 @@ test('guard Arcus: attach rejected -> reduce-only close; protected positions are
   for (let i = 0; i < 3; i++) assert.equal((await C.guardTick({ ...cfg, hl: null }, ok, {}, io))[0].kind, 'ok');
   assert.equal(ok.sent.length, 0);
 });
+
+test('Arcus key without ARCUS_ACCOUNT_ADDRESS: Arcus disabled (fail closed), config still loads, Arcus proposals rejected', async () => {
+  const cfg = C.loadConfig({ AUTOTRADER_NETWORK: 'mainnet', ARCUS_API_PRIVATE_KEY: randHex(32), ARCUS_ACCOUNT_INDEX: '0' });
+  assert.equal(cfg.arcus, null); assert.match(cfg.disabled.arcus, /ARCUS_ACCOUNT_ADDRESS/);
+  assert.deepEqual(C.GUARD_PFS(cfg), []);
+  const ev = await C.evaluate({ id: 'a1', pf: 'arcus', m: 'BTC', sd: 'long', px: 1, sz: 1, sl: 0.9, tp: 1.1, ref: 1, exp: NOW / 1000 + 600 }, cfg, { now: () => NOW });
+  assert.equal(ev.ok, false); assert.ok(ev.reasons.some((r) => /no key configured/.test(r)));
+});

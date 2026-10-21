@@ -14,7 +14,7 @@ import * as C from './core.js';
 import * as V from './volume.js';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
-const P = { queue: process.env.AUTOTRADER_QUEUE || join(DIR, 'queue.json'), stop: join(DIR, 'STOP'), logs: join(DIR, 'logs'), state: join(DIR, 'state.json'), alert: join(DIR, 'ALERT') };
+const P = { queue: process.env.AUTOTRADER_QUEUE || join(DIR, 'queue.json'), stop: join(DIR, 'STOP'), stopVolume: join(DIR, 'STOP_VOLUME'), logs: join(DIR, 'logs'), state: join(DIR, 'state.json'), alert: join(DIR, 'ALERT') };
 
 let SECRETS = [];
 const redact = (s) => { let t = String(s); for (const k of SECRETS) if (k) t = t.split(k).join('<redacted>').split(k.replace(/^0x/, '')).join('<redacted>'); return t; };
@@ -41,7 +41,8 @@ function readQueue() {
 
 async function boot({ needKeys = true } = {}) {
   const cfg = C.loadConfig(process.env);
-  SECRETS = C.secretsOf(cfg);
+  SECRETS = C.secretsOf(cfg).concat([process.env.ARCUS_API_PRIVATE_KEY, process.env.ARCUS_API_KEY].filter(Boolean).map((x) => String(x).trim()));
+  for (const [pf, why] of Object.entries(cfg.disabled || {})) log('WARN', `${pf}: ${why}`);
   const net = C.realNet(cfg);
   if (needKeys) {
     if (!cfg.arcus && !cfg.hl && !cfg.qfex) throw new Error('no keys in env (ARCUS_API_PRIVATE_KEY, HL_AGENT_PRIVATE_KEY and/or QFEX_API_PUBLIC_KEY + QFEX_API_SECRET_KEY)');
@@ -112,7 +113,7 @@ async function once(ctx) {
   if (cfg.qfexVol && cfg.qfexVol.enabled) {
     state.volume ||= {};
     const guardOk = !guard.some((g) => g.pf === 'qfex' && ['unknown', 'close', 'attach'].includes(g.kind));
-    try { volume = await V.volumeTick(cfg, net, state.volume, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal, alert, guardOk, accountState: C.accountState }); }
+    try { volume = await V.volumeTick(cfg, net, state.volume, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal, alert, guardOk, pauseEntries: existsSync(P.stopVolume), accountState: C.accountState }); }
     catch (e) { log('ERROR', 'volume tick failed: ' + e.message); volume = { enabled: true, error: e.message }; }
     saveState(state);
   }
