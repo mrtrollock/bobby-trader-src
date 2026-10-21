@@ -467,6 +467,27 @@ function briefingCard(p) {
   if (p.detail) card.append(h('p', { class: 'detail' }, /^one detail/i.test(p.detail) ? p.detail : 'One detail: ' + p.detail));
   return card;
 }
+// Low-OI picks (briefing.enc.json "lowOi", written by briefing.py via `autotrader/cli.js picks`): per platform the
+// lowest open-interest markets that pass the liquidity gate (spread, depth, worst-case stop loss <= the per-trade cap).
+const LOWOI_NAMES = { arcus: '🏹 Arcus', entropy: '🤖 Entropy', txflow: '🌊 TxFlow' };
+function lowOiCard(lo) {
+  if (!lo) return null;
+  const card = h('section', { class: 'card', id: 'lowoi' }, h('h2', {}, '🔎 Low-OI picks'),
+    h('div', { class: 'muted small' }, (lo.t ? berlinTime(lo.t / 1000) + ' (Berlin time) · ' : '') + 'lowest open interest first, only markets whose spread and depth keep a stopped-out trade within the ~$3 cap'));
+  if (lo.error) { card.append(h('div', { class: 'alert warn' }, 'Could not read market data: ' + lo.error)); return card; }
+  for (const pf of ['arcus', 'entropy', 'txflow']) {
+    const x = (lo.platforms || {})[pf]; if (!x) continue;
+    card.append(h('h3', {}, LOWOI_NAMES[pf] + (x.manual ? ' (manual)' : '')));
+    if (x.error) { card.append(h('div', { class: 'alert warn' }, 'Unavailable: ' + x.error)); continue; }
+    if (!(x.picks || []).length) { card.append(h('p', { class: 'muted small' }, 'No market passes the liquidity rules right now.')); continue; }
+    card.append(h('div', { class: 'scroll' }, h('table', { class: 'bal lowoi' },
+      h('thead', {}, h('tr', {}, h('th', {}, 'Market'), h('th', {}, 'Open interest'), h('th', {}, 'Spread'), h('th', {}, 'Depth ±0.5%'), h('th', {}, 'Worst stop loss'))),
+      h('tbody', {}, ...x.picks.map((m) => h('tr', {}, h('td', {}, m.market), h('td', {}, usd0(m.oiUsd)),
+        h('td', {}, m.spread != null ? (m.spread * 100).toFixed(3) + '%' : '—'), h('td', {}, usd0(m.depthUsd)), h('td', {}, usd0(m.worstLossUsd))))))));
+    card.append(h('div', { class: 'muted small' }, `${x.eligible} of ${x.scanned} markets pass`));
+  }
+  return card;
+}
 function viewBriefing(app) {
   const box = h('section', { class: 'card' }, h('div', { class: 'spin' }), ' Loading briefing…');
   app.append(box);
@@ -479,10 +500,10 @@ function viewBriefing(app) {
     if (!plats.length) {
       head.append(h('p', { class: 'muted' }, 'No briefing yet. Run briefing.py, then commit and push public/briefing.enc.json.'));
       head.append(h('button', { class: 'btn ghost', onclick: () => { S.refreshBriefing = true; render(); } }, 'Refresh'));
-      box.replaceWith(head); return;
+      box.replaceWith(...[head, lowOiCard(j && j.lowOi)].filter(Boolean)); return;
     }
-    const frag = [head, ...plats.map(briefingCard), h('button', { class: 'btn ghost', onclick: () => { S.refreshBriefing = true; render(); } }, 'Refresh')];
-    box.replaceWith(...frag);
+    const frag = [head, ...plats.map(briefingCard), lowOiCard(j.lowOi), h('button', { class: 'btn ghost', onclick: () => { S.refreshBriefing = true; render(); } }, 'Refresh')];
+    box.replaceWith(...frag.filter(Boolean));
   })();
 }
 
