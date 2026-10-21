@@ -256,7 +256,9 @@ async function rest(b, method, path, { params, body, creds, accountId } = {}) {
   const q = params ? Object.entries(params).filter(([, v]) => v != null) : [];
   const url = b.rest + path + (q.length ? '?' + new URLSearchParams(q).toString() : '');
   const headers = { 'Content-Type': 'application/json', ...(creds ? authHeaders(creds, { accountId: accountId === undefined ? creds.accountId : accountId }) : {}) };
-  const r = await fetch(url, { method, headers, body });
+  // bounded: an outage once left a request hanging and the loop silent for ~50 min (the fetch had no timeout)
+  const ms = Number((typeof process !== 'undefined' && process.env && process.env.QFEX_HTTP_TIMEOUT_MS) || 15000);
+  const r = await fetch(url, { method, headers, body, signal: AbortSignal.timeout(ms) });
   const text = await r.text(); let j; try { j = text ? JSON.parse(text) : {}; } catch { j = { raw: text.slice(0, 300) }; }
   return { ok: r.ok, status: r.status, body: j };
 }

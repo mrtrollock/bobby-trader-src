@@ -143,6 +143,35 @@ export function realNet(cfg) {
   };
 }
 
+// ---------------------------------------------------------------- transient read failures (outage / edge blips)
+// QFEX answers intermittent 401/403 with an EMPTY body (and 5xx / dropped connections) during outages: seen live
+// 2026-10-21 next to mds.qfex.com 503s while `verify` passed a minute later. Such errors must not abort the loop.
+// Definitive key findings (all-accounts scope, foreign account accepted, missing ack, malformed key...) carry no
+// such status and still abort at once.
+export function isTransientError(e) {
+  const m = String((e && e.message) || e || '');
+  if (/HTTP (401|403|408|425|429|5\d\d)\b/.test(m)) return true;
+  return /fetch failed|timed? ?out|timeout|aborted|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network|WebSocket (connect timeout|closed|error)|UND_ERR/i.test(m);
+}
+// Consecutive-failure tracker for the loop: exponential backoff (base, 2x, ... capped below the 5-min stall watchdog);
+// abort only once reads have failed continuously for longer than maxDownMs.
+export function readHealth({ baseMs = 15e3, capMs = 240e3, maxDownMs = 10 * 60e3 } = {}) {
+  const h = { since: null, n: 0, get degraded() { return h.since != null; },
+    fail(t) { if (h.since == null) h.since = t; h.n += 1; const downMs = t - h.since;
+      return { downMs, n: h.n, waitMs: Math.min(capMs, baseMs * 2 ** (h.n - 1)), abort: downMs > maxDownMs }; },
+    ok(t) { const r = h.since == null ? null : { downMs: t - h.since, n: h.n }; h.since = null; h.n = 0; return r; } };
+  return h;
+}
+// Stall watchdog: no tick finished for > limitMs -> one message, repeated every repeatMs while it lasts.
+export function stallCheck(memo, lastDone, now, { limitMs = 5 * 60e3, repeatMs = 15 * 60e3 } = {}) {
+  const idle = now - lastDone;
+  if (idle <= limitMs) { const was = memo.stalledSince; memo.stalledSince = null; memo.alertedAt = 0; return was ? { recovered: true, idleMs: idle } : null; }
+  memo.stalledSince ||= lastDone;
+  if (memo.alertedAt && now - memo.alertedAt < repeatMs) return null;
+  memo.alertedAt = now;
+  return { stalled: true, idleMs: idle };
+}
+
 // ---------------------------------------------------------------- startup key checks (abort on any doubt)
 export async function verifyKeys(cfg, net) {
   const out = {};

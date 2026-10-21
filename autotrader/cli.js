@@ -107,26 +107,30 @@ async function runGuard(cfg, net, state, { readOnly = false } = {}) {
 }
 // Bobby-owned Arcus markets live in state.json (state.guard.__arcusOwn); cfg.arcusOwn points at that object.
 const bindOwn = (cfg, state) => { state.guard ||= {}; state.guard.__arcusOwn ||= {}; cfg.arcusOwn = state.guard.__arcusOwn; };
-async function once(ctx) {
+async function once(ctx, { degraded = false } = {}) {
   const { cfg, net } = ctx || await boot();
   const state = loadState(); bindOwn(cfg, state);
   // guard BEFORE new entries (repairs come first) and again after them (a fill during this tick is seen next tick)
   const guard = await runGuard(cfg, net, state);
   saveState(state);
-  const out = await processQueue(cfg, net, { queue: readQueue(), state, stopExists: () => existsSync(P.stop) });
+  // while QFEX reads are failing (degraded): no new entries at all; the guard above still runs and never removes stops
+  const out = degraded ? [] : await processQueue(cfg, net, { queue: readQueue(), state, stopExists: () => existsSync(P.stop) });
   saveState(state);
   // volume mode (QFEX_VOLUME_MODE=1 only): after the guard; new exposure only while the guard sees QFEX healthy
   let volume = null;
   if (cfg.qfexVol && cfg.qfexVol.enabled) {
     state.volume ||= {};
     const guardOk = !guard.some((g) => g.pf === 'qfex' && ['unknown', 'close', 'attach'].includes(g.kind));
-    try { volume = await V.volumeTick(cfg, net, state.volume, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal, alert, guardOk, pauseEntries: existsSync(P.stopVolume), accountState: C.accountState }); }
+    try { volume = await V.volumeTick(cfg, net, state.volume, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal, alert, guardOk, pauseEntries: degraded || existsSync(P.stopVolume), accountState: C.accountState }); }
     catch (e) { log('ERROR', 'volume tick failed: ' + e.message); volume = { enabled: true, error: e.message }; }
     saveState(state);
   }
   // hot = re-check soon: an entry is resting (it may fill at any moment) or a position is inside its grace period
   out.hot = guard.some((g) => g.kind === 'grace' || g.resting > 0) || out.some((r) => r.status === 'placed');
-  return Object.assign(out, { guard, volume, tickMs: volume ? cfg.qfexVol.tickS * 1000 : null });
+  // a failed QFEX read this tick (guard could not read, or the volume tick hit a transient error) -> backoff + paused entries
+  const gErr = guard.find((g) => g.pf === 'qfex' && g.kind === 'unknown');
+  const readError = gErr ? new Error(gErr.error || 'QFEX guard read failed') : volume && volume.error && C.isTransientError(volume.error) ? new Error(volume.error) : null;
+  return Object.assign(out, { guard, volume, readError, tickMs: volume ? cfg.qfexVol.tickS * 1000 : null });
 }
 
 function volumeStatus(cfg) {
@@ -172,23 +176,48 @@ async function reduceCmd(kind, pf, market, oid) {
   journal({ decision: 'sent', cmd: kind, pf, market, results: res.map(({ label, status, ok, error }) => ({ label, status, ok, error })) });
 }
 
+const KEY_ERR = /key|agent|permission|approved|registered|expired|QFEX: (authentication|this API key|could not verify|set QFEX_KEY)/i;
 async function loop() {
   const every = Math.max(15, Number(process.env.AUTOTRADER_INTERVAL_S || 60)) * 1000;
+  // the startup verify still aborts on ANY doubt (incl. a 403); only failures while running are retried
   let ctx = await boot(), verifiedAt = Date.now(), stopping = false, hot = false, volTick = null;
   log('INFO', `loop started (${ctx.cfg.network}, ${ctx.cfg.live ? 'LIVE' : 'DRY RUN'}, every ${every / 1000}s, QFEX volume mode ${ctx.cfg.qfexVol && ctx.cfg.qfexVol.enabled ? 'ON (' + ctx.cfg.qfexVol.leverage + 'x)' : 'off'})`);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; log('INFO', 'stopping on ' + sig); });
+  const health = C.readHealth();
+  let lastDone = Date.now(); const wdMemo = {};
+  const wd = setInterval(() => {
+    const w = C.stallCheck(wdMemo, lastDone, Date.now());
+    if (w && w.stalled) { const msg = `STALL: no loop tick has completed for ${Math.round(w.idleMs / 60e3)} min (a request may be hanging)`; log('ERROR', msg); alert({ pf: 'loop', kind: 'stall', reason: msg }); }
+    else if (w && w.recovered) log('INFO', `loop ticking again after ${Math.round(w.idleMs / 1000)}s`);
+  }, 30e3);
+  if (wd.unref) wd.unref();
   while (!stopping) {
+    let failure = null;
     try {
-      if (Date.now() - verifiedAt > 30 * 60e3) { ctx = await boot(); verifiedAt = Date.now(); }
-      const r = await once(ctx); hot = !!(r && r.hot); volTick = r && r.tickMs;
+      if (Date.now() - verifiedAt > 30 * 60e3) {
+        try { ctx = await boot(); verifiedAt = Date.now(); }
+        catch (e) { if (!C.isTransientError(e)) throw e; failure = e; log('WARN', 'periodic key re-check failed (transient, keeping the verified config): ' + redact(e.message)); }
+      }
+      if (!failure) { const r = await once(ctx, { degraded: health.degraded }); hot = !!(r && r.hot); volTick = r && r.tickMs; failure = (r && r.readError) || null; }
     } catch (e) {
-      log('ERROR', 'iteration failed: ' + e.message);
-      if (/key|agent|permission|approved|registered|expired|QFEX: (authentication|this API key|could not verify|set QFEX_KEY)/i.test(e.message)) { log('ERROR', 'key check failed, aborting loop'); process.exit(2); }
+      log('ERROR', 'iteration failed: ' + redact(e.message));
+      if (C.isTransientError(e)) failure = e;
+      else if (KEY_ERR.test(e.message)) { log('ERROR', 'key check failed, aborting loop'); alert({ pf: 'loop', kind: 'abort', reason: redact(e.message) }); process.exit(2); }
     }
-    // while an entry rests / a fill is staging its stops: re-check every 20 s; volume mode ticks every QFEX_VOL_TICK_S
-    const wait = Math.min(hot ? Math.min(every, 20000) : every, volTick || Infinity);
+    lastDone = Date.now();
+    let wait = Math.min(hot ? Math.min(every, 20000) : every, volTick || Infinity);
+    if (failure) {
+      const h = health.fail(Date.now());
+      if (h.abort) {
+        const msg = `QFEX reads failed continuously for ${Math.round(h.downMs / 60e3)} min (${redact(failure.message)}): treating it as a key problem, aborting loop (exchange stops stay in place)`;
+        log('ERROR', msg); alert({ pf: 'qfex', kind: 'abort', reason: msg }); process.exit(2);
+      }
+      wait = h.waitMs;
+      log('WARN', `QFEX read failure #${h.n} (${Math.round(h.downMs / 1000)}s): ${redact(failure.message)}; new entries paused, exchange stops untouched, retry in ${wait / 1000}s`);
+    } else if (health.degraded) { const r = health.ok(Date.now()); log('INFO', `QFEX reads recovered after ${Math.round(r.downMs / 1000)}s (${r.n} failed ticks); entries resume`); }
     for (let t = 0; t < wait && !stopping; t += 1000) await new Promise((r) => setTimeout(r, 1000));
   }
+  clearInterval(wd);
 }
 
 async function main(argv) {

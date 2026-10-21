@@ -243,3 +243,17 @@ can read another of your accounts is refused), subaccount only, and a code path 
 - Every Arcus/Entropy entry passes a fail-closed liquidity gate: live book two-sided, spread <= max, OI and 24h volume above the minimum,
   and loss at SL + stressed stop slippage (this trade's size walked on the live book x stress multiplier) <= the per-trade cap.
   Post-only, 1x and the mandatory SL are unchanged. The current book is only a proxy for the book when a stop fires.
+
+## Transient QFEX failures and the stall watchdog
+
+QFEX sometimes answers 401/403 with an empty body, 5xx, or drops the connection during an outage (seen 2026-10-21,
+together with mds.qfex.com 503s). While the loop runs, such a failure no longer aborts it:
+
+- the tick is retried with exponential backoff (15 s, 30 s, 60 s, 120 s, then every 240 s);
+- NEW entries (volume mode and the proposal queue) are paused while reads fail; exits and the guard keep running and
+  exchange stop-loss/take-profit orders are never removed;
+- only if QFEX reads fail continuously for more than 10 minutes is it treated as a key problem: ERROR + alert, loop exits
+  (stops stay on the exchange). The startup `verify` still aborts on any doubt, and definitive key findings
+  (all-accounts scope, foreign account accepted, ...) abort immediately.
+- every QFEX REST request times out after 15 s (`QFEX_HTTP_TIMEOUT_MS`), and a watchdog logs an ERROR + alert when no tick
+  has completed for 5 minutes (repeated every 15 minutes while it lasts).
