@@ -1,11 +1,11 @@
 #!/usr/bin/env python3
 """Turn a trade dict into a Mini App proposal URL:  <base>#p=v1.<base64url(json)>.<sha256[:16]>
 
-Fields (v1): id, pf ("arcus"|"hl"), m (Arcus "TSLA-USD" | HL "BTC" or "io:ANTH"), act ("open" default | "tpsl"),
+Fields (v1): id, pf ("arcus"|"hl"|"txflow"), m (Arcus "TSLA-USD" | HL "BTC" or "io:ANTH" | TxFlow "BTC-USDC"), act ("open" default | "tpsl" | "cancel"),
 sd ("long"|"short"), sz, lev (int), et ("market"|"limit"), px (limit price), ref (mark at proposal time),
 sl, tp, exp (unix seconds), n (note).  The hash only detects corruption; it is not a security boundary.
 
-    python3 make_proposal.py https://<user>.github.io/<repo>/ '{"pf":"hl","m":"io:ANTH","sd":"short",...}'
+    python3 make_proposal.py https://<user>.github.io/<repo>/ '{"pf":"hl","m":"io:ANTH","sd":"short","et":"limit","lev":1,...}'
 """
 import base64, hashlib, json, sys, time, uuid
 

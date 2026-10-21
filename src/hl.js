@@ -5,6 +5,7 @@ import { keccak_256 } from '@noble/hashes/sha3.js';
 import { bytesToHex, hexToBytes, concatBytes } from '@noble/hashes/utils.js';
 import { encode as mpEncode } from '@msgpack/msgpack';
 import * as D from './dec.js';
+import { assertTradeOnly } from './risk.js';
 
 export const MAINNET = 'https://api.hyperliquid.xyz';
 export const TESTNET = 'https://api.hyperliquid-testnet.xyz';
@@ -90,6 +91,8 @@ export function signL1Action(priv, action, vaultAddress, nonce, expiresAfter, is
 }
 // Body exactly as exchange.py _post_action builds it
 export function exchangeRequest(priv, action, nonce, { isMainnet = true, vaultAddress = null, expiresAfter = null } = {}) {
+  assertTradeOnly('action', action);
+  if (vaultAddress != null) throw new Error('Trading via vault interdit par la politique');
   const signature = signL1Action(priv, action, vaultAddress, nonce, expiresAfter, isMainnet);
   return { method: 'POST', path: '/exchange', body: JSON.stringify({ action, nonce, signature, vaultAddress, expiresAfter }),
     headers: { 'Content-Type': 'application/json' } };
@@ -111,11 +114,11 @@ export function assetId(coin, universe, perpDexs) {
 // ---------------------------------------------------------------- trade builders (pure)
 // meta: {asset, szDecimals}; returns list of actions to sign & send in order
 export function buildOpen({ asset, szDecimals, isBuy, sz, leverage, isCross = false, type, limitPx, markPx, tp, sl,
-  slippage = 0.02, tpslSlippage = 0.08 }) {
+  slippage = 0.02, tpslSlippage = 0.08, postOnly = false }) {
   const size = roundSz(sz, szDecimals);
   const entryPx = type === 'market' ? slippagePx(markPx, isBuy, slippage, szDecimals) : roundPx(Number(limitPx), szDecimals);
   const wires = [orderWire(asset, { isBuy, limitPx: entryPx, sz: size, reduceOnly: false,
-    orderType: { limit: { tif: type === 'market' ? 'Ioc' : 'Gtc' } } })];
+    orderType: { limit: { tif: type === 'market' ? 'Ioc' : (postOnly ? 'Alo' : 'Gtc') } } })];
   for (const [kind, trig] of [['tp', tp], ['sl', sl]]) {
     if (trig == null || trig === '') continue;
     const t = roundPx(Number(trig), szDecimals);

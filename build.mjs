@@ -1,6 +1,7 @@
 // One-shot build: bundles src/app.js (+ noble/msgpack) and inlines JS/CSS into dist/index.html with a hash-based CSP.
+// Plain browser / PWA build (no Telegram). Output dist/ is a static site (GitHub Pages ready).
 import { build } from 'esbuild';
-import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync, cpSync, existsSync } from 'node:fs';
 import { createHash } from 'node:crypto';
 
 const out = await build({ entryPoints: ['src/app.js'], bundle: true, format: 'iife', target: ['es2020'], minify: true, write: false, legalComments: 'none' });
@@ -9,10 +10,12 @@ if (/<\/script/i.test(js)) js = js.replace(/<\/script/gi, '<\\/script');
 const css = readFileSync('src/style.css', 'utf8');
 const pre = 'window.__LAUNCH_URL=location.href;';
 const sha = (s) => "'sha256-" + createHash('sha256').update(s, 'utf8').digest('base64') + "'";
-const CONNECT = ['https://api.arcus.xyz', 'https://api.hyperliquid.xyz', 'https://api.testnet.arcus.xyz', 'https://api.hyperliquid-testnet.xyz'];
+// 'self' = proposals.json next to the page. Every other host is a read/trade API; nothing else can be contacted.
+const CONNECT = ["'self'", 'https://api.arcus.xyz', 'https://api.hyperliquid.xyz', 'https://rpc.txflow.com',
+  'https://api.testnet.arcus.xyz', 'https://api.hyperliquid-testnet.xyz', 'https://rpc.txflow-testnet.xyz'];
 const csp = [
   "default-src 'none'",
-  `script-src ${sha(pre)} ${sha(js)} https://telegram.org`,
+  `script-src ${sha(pre)} ${sha(js)}`,
   `style-src ${sha(css)}`,
   `connect-src ${CONNECT.join(' ')}`,
   "img-src 'self' data:", "font-src 'none'", "object-src 'none'", "base-uri 'none'", "form-action 'none'", "frame-src 'none'", "worker-src 'none'", "manifest-src 'self'",
@@ -23,14 +26,22 @@ const html = `<!doctype html>
 <meta name="referrer" content="no-referrer">
 <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,viewport-fit=cover">
 <meta name="theme-color" content="#0f1115">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon-192.png">
+<link rel="apple-touch-icon" href="icon-180.png">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Bobby">
 <title>Bobby Trade</title>
 <style>${css}</style>
 <script>${pre}</script>
-<script src="https://telegram.org/js/telegram-web-app.js?59"></script>
 </head><body><div id="app"></div>
 <script>${js}</script>
 </body></html>
 `;
 mkdirSync('dist', { recursive: true });
 writeFileSync('dist/index.html', html);
+// static assets (manifest, icons, proposals.json, .nojekyll) are copied as-is next to index.html
+if (existsSync('public')) cpSync('public', 'dist', { recursive: true });
 console.log('dist/index.html', html.length, 'bytes');

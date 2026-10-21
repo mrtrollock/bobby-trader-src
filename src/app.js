@@ -1,15 +1,22 @@
 import * as A from './arcus.js';
 import * as H from './hl.js';
 import * as API from './api.js';
-import { computeRisk, FEES, MAX_LOSS } from './risk.js';
+import { computeRisk, FEES, MAX_LOSS, POLICY, checkPolicy, weekStartUtc, weekEndUtc, realizedLoss } from './risk.js';
+import * as F from './fees.js';
+import * as T from './txflow.js';
 import { extractToken, decodeProposal } from './proposal.js';
 import * as KS from './keystore.js';
 import { runTpslReplace, legLabel } from './replace.js';
 
-const LAUNCH_URL = window.__LAUNCH_URL || location.href; // captured before telegram-web-app.js loads
-const tg = window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData ? window.Telegram.WebApp : null;
+const LAUNCH_URL = window.__LAUNCH_URL || location.href;
 const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.02, feeArcus: FEES.arcus, feeIo: FEES.hl_io,
-  feeMain: FEES.hl_main, arcusAddress: '', arcusSub: 0, hlMaster: '', hlDexes: 'io' };
+  feeMain: FEES.hl_main, arcusAddress: '', arcusSub: 0, hlMaster: '', hlDexes: 'io', txflowAddress: '',
+  // conservative farming policy (hard blocks), see src/risk.js POLICY
+  polMakerOnly: POLICY.makerOnly, polMaxLev: POLICY.maxLeverage, polRequireSl: POLICY.requireStopLoss, polMaxLossPct: POLICY.maxLossPct,
+  polWeeklyCap: POLICY.weeklyLossCap, capArcus: POLICY.capital.arcus, capHl: POLICY.capital.hl, capTxflow: POLICY.capital.txflow };
+const policy = () => { const st = S.settings; return { ...POLICY, makerOnly: !!st.polMakerOnly, maxLeverage: Number(st.polMaxLev), requireStopLoss: !!st.polRequireSl,
+  maxLossPct: Number(st.polMaxLossPct), weeklyLossCap: Number(st.polWeeklyCap), capital: { arcus: Number(st.capArcus), hl: Number(st.capHl), txflow: Number(st.capTxflow) } }; };
+const PF_NAME = { arcus: '🏹 Arcus', hl: '🤖 Entropy / Hyperliquid', txflow: '🌊 TxFlow' };
 const S = { settings: { ...DEFAULTS }, secrets: null, lockTimer: null, log: [], view: 'home', proposal: null };
 const LOCK_MS = 5 * 60 * 1000;
 
@@ -30,12 +37,12 @@ function h(tag, attrs = {}, ...kids) {
 const $app = () => document.getElementById('app');
 const fmt = (x, d = 2) => (x == null || !Number.isFinite(Number(x)) ? '—' : Number(x).toLocaleString('fr-FR', { minimumFractionDigits: d, maximumFractionDigits: d }));
 const fmtPx = (x) => (x == null ? '—' : Number(x).toLocaleString('fr-FR', { maximumSignificantDigits: 7 }));
-const haptic = (t) => { try { tg && tg.HapticFeedback.notificationOccurred(t); } catch { /* */ } };
+const haptic = (t) => { try { navigator.vibrate && navigator.vibrate(t === 'success' ? 40 : [60, 40, 60]); } catch { /* */ } };
 function toast(msg, kind = 'info') {
   const t = h('div', { class: 'toast ' + kind }, msg); document.body.append(t); setTimeout(() => t.remove(), 3500);
 }
 function confirmDialog(msg) {
-  return new Promise((res) => { if (tg && tg.showConfirm) tg.showConfirm(msg, (ok) => res(!!ok)); else res(window.confirm(msg)); });
+  return Promise.resolve(window.confirm(msg));
 }
 
 // ---------------------------------------------------------------- persistence (non-secret)
@@ -48,7 +55,31 @@ async function addLog(entry) {
   S.log.unshift(entry); S.log = S.log.slice(0, 200);
   try { const b = await KS.deviceBackend(); await b.set('tgtrade_log', JSON.stringify(S.log)); } catch (e) { toast('Journal non sauvegardé: ' + e.message, 'err'); }
 }
-const base = () => API.bases(S.settings.testnet);
+const base = () => ({ ...API.bases(S.settings.testnet), txflow: S.settings.testnet ? T.TESTNET : T.MAINNET });
+
+// ---------------------------------------------------------------- weekly realized loss per platform (Mon 00:00 UTC)
+const lossCache = {};
+async function weeklyLoss(pf) {
+  const st = S.settings, from = weekStartUtc(), key = pf + from + st.testnet;
+  if (lossCache[key] && Date.now() - lossCache[key].t < 60e3) return lossCache[key].v;
+  let v;
+  if (pf === 'arcus') {
+    if (!st.arcusAddress) return null;
+    const r = await API.arcusGet(base().arcus, '/v1/fills', { address: st.arcusAddress, accountIndex: st.arcusSub, from: from * 1000, limit: 1000 });
+    v = realizedLoss((r.fills || []).map((f) => ({ time: Number(f.createdAt) / 1000, closedPnl: f.closedPnl, fee: f.fee })), from, Infinity, { feeIncluded: true });
+  } else if (pf === 'hl') {
+    if (!st.hlMaster) return null;
+    const rows = await API.hlInfo(base().hl, { type: 'userFillsByTime', user: st.hlMaster, startTime: from });
+    v = realizedLoss(rows, from);
+  } else {
+    if (!st.txflowAddress) return null;
+    v = realizedLoss(await T.fills(base().txflow, st.txflowAddress, from, Date.now() + 60e3), from);
+  }
+  lossCache[key] = { t: Date.now(), v }; return v;
+}
+// Fallback when fills cannot be read: SL risk of trades sent (not dry) this week, from the local journal.
+const journalRisk = (pf) => S.log.filter((e) => e.pf === pf && e.act === 'open' && !e.dry && e.ok && Date.parse(e.t) >= weekStartUtc())
+  .reduce((a, e) => a + (Number(e.slLoss) || 0), 0);
 
 // ---------------------------------------------------------------- keys / PIN
 function lockNow() { S.secrets = null; clearTimeout(S.lockTimer); }
@@ -94,11 +125,14 @@ async function loadContext(p) {
       try { plan = A.planTpslReplace(await API.arcusOpenOrders(base().arcus, st.arcusAddress, st.arcusSub), m.marketId, { takeProfit: p.tp, stopLoss: p.sl }); }
       catch (e) { planErr = e.message; }
     }
-    return { pf: 'arcus', m, mark: Number(m.markPrice), maxLev: A.maxLeverage(m), fee: A.takerFee(m) || st.feeArcus,
+    let stats = null; try { if (st.arcusAddress) stats = await API.arcusGet(base().arcus, '/v1/account/stats', { address: st.arcusAddress, include: 'feeTier' }); } catch { /* */ }
+    const fr = F.arcusRates(m, stats, null);
+    return { pf: 'arcus', m, mark: Number(m.markPrice), maxLev: A.maxLeverage(m), fee: fr.taker || st.feeArcus, makerFee: fr.maker, feeSrc: fr.source,
       mmf: Number(m.maintenanceMarginFraction), size: Number(p.act === 'open' ? A.qtyFloor(m, p.sz) : 0), sizeStr: p.act === 'open' ? A.qtyFloor(m, p.sz) : '0',
       minNotional: Number(m.minOrderNotional || 0), minSize: Number(m.minOrderSize || 0), free, pos, status: m.status, plan, planErr,
       order: p.act === 'cancel' ? (await API.arcusOpenOrders(base().arcus, st.arcusAddress, st.arcusSub)).find((o) => String(o.orderId) === String(p.oid)) || null : undefined };
   }
+  if (p.pf === 'txflow') return loadTxflow(p);
   const mk = await API.hlMarket(base().hl, p.m);
   let free = null, pos = null;
   if (st.hlMaster) {
@@ -108,8 +142,35 @@ async function loadContext(p) {
   }
   let order;
   if (p.act === 'cancel') order = (await API.hlOpenOrders(base().hl, st.hlMaster, mk.dex)).find((o) => String(o.oid) === String(p.oid)) || null;
-  return { pf: 'hl', mk, order, mark: mk.markPx, maxLev: mk.maxLeverage, fee: mk.dex ? st.feeIo : st.feeMain, mmf: 1 / (2 * mk.maxLeverage),
+  let fr = mk.dex ? { maker: st.feeIo, taker: st.feeIo, source: 'réglage (HIP-3)' } : { maker: F.FALLBACK.hl_main.maker, taker: st.feeMain, source: 'défaut' };
+  if (!mk.dex && st.hlMaster) { try { fr = F.userFeesRates(await API.hlInfo(base().hl, { type: 'userFees', user: st.hlMaster }), fr); } catch { /* */ } }
+  return { pf: 'hl', mk, order, mark: mk.markPx, maxLev: mk.maxLeverage, fee: fr.taker, makerFee: fr.maker, feeSrc: fr.source, mmf: 1 / (2 * mk.maxLeverage),
     size: p.act === 'open' ? H.roundSz(p.sz, mk.szDecimals) : 0, free, pos };
+}
+
+async function loadTxflow(p) {
+  const st = S.settings, B = base().txflow;
+  const mk = await T.market(B, p.m);
+  const ctx = await T.assetCtx(B, mk.index);
+  let fr = { ...F.FALLBACK.txflow, source: 'défaut' }, free = null, chs = null, oo = [];
+  if (st.txflowAddress) {
+    try { fr = F.userFeesRates(await T.userFees(B, st.txflowAddress, mk.index), fr); } catch { /* */ }
+    try { chs = await T.state(B, st.txflowAddress); free = Number(chs.withdrawable); } catch { /* */ }
+    try { oo = await T.openOrders(B, st.txflowAddress); } catch { /* */ }
+  }
+  const size = Number(p.sz);
+  return { pf: 'txflow', mk, mark: Number(ctx.markPx || (ctx.nodeCtx && ctx.nodeCtx.markPx)), maxLev: Number(mk.maxLeverage), fee: fr.taker, makerFee: fr.maker,
+    feeSrc: fr.source, mmf: 1 / (2 * Number(mk.maxLeverage || 1)), size, free, chs, oo, halted: !!mk.haltTrading };
+}
+async function withPolicy(p, c, r) {
+  let used = null, src = 'fills';
+  try { used = await weeklyLoss(p.pf); } catch { used = null; }
+  if (used == null) { used = journalRisk(p.pf); src = 'journal'; }
+  const pol = checkPolicy(p, r, { policy: policy(), weeklyLossUsed: used, freeCollateral: c.free });
+  r.blocks.push(...pol.blocks);
+  if (src === 'journal' && p.act === 'open') r.warns.push('Pertes de la semaine non lisibles : estimation depuis le journal local');
+  r.policy = { ...pol, src };
+  return r;
 }
 
 function riskFor(p, c) {
@@ -125,10 +186,13 @@ function riskFor(p, c) {
       sl: tgt.sl != null ? Number(tgt.sl) : null, tp: tgt.tp != null ? Number(tgt.tp) : null, expiry: p.exp, maxLoss: S.settings.maxLoss });
     r.blocks = r.blocks.filter((b) => !b.includes('Levier'));
     if (c.pf === 'arcus' && !c.plan) r.blocks.push('Lecture des ordres ouverts impossible (' + (c.planErr || '?') + ') : remplacement TP/SL non sûr');
+    r.keepsStop = c.pf === 'arcus' ? !!(c.plan && c.plan.place.sl != null) : (p.sl != null ? true : null);
+    if (c.pf !== 'arcus' && p.sl == null) r.warns.push('Pas de SL dans cette proposition : vérifie qu’un stop existe déjà');
     return { ...r, isLong, size, entryLabel: 'Entrée position' };
   }
   const isLong = p.sd === 'long';
   const r = computeRisk({ isLong, size: c.size, leverage: Number(p.lev), mark: c.mark, type: p.et, limitPx: p.px, feeRate: c.fee,
+    entryFeeRate: p.et === 'limit' && S.settings.polMakerOnly && c.makerFee != null ? Math.max(0, c.makerFee) : undefined,
     mmf: c.mmf, maxLev: c.maxLev, sl: p.sl != null ? Number(p.sl) : null, tp: p.tp != null ? Number(p.tp) : null,
     ref: p.ref != null ? Number(p.ref) : (p.et === 'market' ? null : null), expiry: p.exp, freeCollateral: c.free, maxLoss: S.settings.maxLoss });
   if (p.et === 'market' && p.ref == null) r.warns.push('Pas de prix de référence dans la proposition (contrôle 1 % impossible)');
@@ -136,7 +200,13 @@ function riskFor(p, c) {
     if (c.status && c.status !== 'ONLINE') r.blocks.push('Marché Arcus ' + c.status);
     if (c.minSize && c.size < c.minSize) r.blocks.push(`Taille < minimum (${c.minSize})`);
     if (c.minNotional && r.notional < c.minNotional) r.blocks.push(`Notionnel < minimum (${c.minNotional} $)`);
+  } else if (c.pf === 'txflow') {
+    if (c.halted) r.blocks.push('Marché TxFlow suspendu');
   } else if (c.mk.isDelisted) r.blocks.push('Marché délisté');
+  if (p.et === 'limit' && S.settings.polMakerOnly && c.mark) {
+    const crosses = isLong ? Number(p.px) >= c.mark : Number(p.px) <= c.mark;
+    if (crosses) r.blocks.push('Politique maker : le prix limite croiserait le carnet (serait taker) — post-only rejeté');
+  }
   if (c.pos && Number(c.pf === 'arcus' ? c.pos.size : c.pos.szi) !== 0) r.warns.push('Une position existe déjà sur ce marché : TP/SL dimensionnés sur ce nouvel ordre uniquement');
   return { ...r, isLong, size: c.size, entryLabel: p.et === 'limit' ? 'Prix limite' : 'Entrée (mark)' };
 }
@@ -152,9 +222,10 @@ function buildRequests(p, c, sec, offsetMs) {
     const side = p.sd === 'long' ? 'BUY' : 'SELL';
     return [
       { label: `Levier ${p.lev}× isolé`, d: A.setLeverage(ctx, m, p.lev, true) },
-      { label: 'Ordre + TP/SL (entryTpsl)', d: A.entryTpsl(ctx, m, side, c.sizeStr, { type: p.et, limitPrice: p.px, takeProfit: p.tp, stopLoss: p.sl, slippage: st.slippage }) },
+      { label: 'Ordre + TP/SL (entryTpsl)', d: A.entryTpsl(ctx, m, side, c.sizeStr, { type: p.et, limitPrice: p.px, takeProfit: p.tp, stopLoss: p.sl, slippage: st.slippage, postOnly: !!st.polMakerOnly }) },
     ];
   }
+  if (p.pf === 'txflow') throw new Error('TxFlow : mode manuel, rien n’est signé ici');
   if (!sec.hl || !sec.hl.key) throw new Error('Clé Hyperliquid manquante');
   const priv = H.keyFromHex(sec.hl.key), mk = c.mk, isMainnet = !st.testnet;
   let nonce = Date.now();
@@ -162,7 +233,7 @@ function buildRequests(p, c, sec, offsetMs) {
   if (p.act === 'cancel') return [{ label: 'Annulation', d: sign(H.buildCancel(mk.asset, p.oid)) }];
   if (p.act === 'tpsl') return [{ label: 'TP/SL position', d: sign(H.buildPositionTpsl({ asset: mk.asset, szDecimals: mk.szDecimals, positionIsLong: Number(c.pos.szi) > 0, tp: p.tp, sl: p.sl })) }];
   const [lev, order] = H.buildOpen({ asset: mk.asset, szDecimals: mk.szDecimals, isBuy: p.sd === 'long', sz: p.sz, leverage: Number(p.lev),
-    isCross: false, type: p.et, limitPx: p.px, markPx: mk.midPx || mk.markPx, tp: p.tp, sl: p.sl, slippage: st.slippage });
+    isCross: false, type: p.et, limitPx: p.px, markPx: mk.midPx || mk.markPx, tp: p.tp, sl: p.sl, slippage: st.slippage, postOnly: !!st.polMakerOnly });
   return [{ label: `Levier ${p.lev}× isolé`, d: sign(lev) }, { label: 'Ordre + TP/SL (normalTpsl)', d: sign(order) }];
 }
 
@@ -216,12 +287,91 @@ function header() {
     h('div', { class: 'badges' }, st.dryRun ? h('span', { class: 'badge warn' }, 'DRY RUN') : h('span', { class: 'badge live' }, 'LIVE'),
       st.testnet ? h('span', { class: 'badge' }, 'TESTNET') : null, h('span', { class: 'badge' }, S.secrets ? '🔓' : '🔒')));
 }
-function go(v, extra) { S.view = v; Object.assign(S, extra || {}); render(); window.scrollTo(0, 0); }
+function go(v, extra) { if (v !== 'home' && S.view === 'home') { try { history.pushState({ v }, ''); } catch { /* */ } } S.view = v; Object.assign(S, extra || {}); render(); window.scrollTo(0, 0); }
 function render() {
   const app = $app(); app.replaceChildren(header());
-  const views = { home: viewHome, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
+  const views = { home: viewHome, inbox: viewInbox, dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
   (views[S.view] || viewHome)(app);
-  if (tg) { if (S.view !== 'home') tg.BackButton.show(); else tg.BackButton.hide(); }
+  app.append(nav());
+}
+
+function nav() {
+  const b = (v, ico, label) => h('button', { class: 'navbtn' + (S.view === v ? ' on' : ''), onclick: () => go(v, { result: null }) }, h('span', {}, ico), label);
+  return h('nav', { class: 'bottom' }, b('inbox', '📥', 'Propositions'), b('dash', '📈', 'Tableau'), b('positions', '📊', 'Positions'), b('settings', '⚙️', 'Réglages'));
+}
+window.addEventListener('popstate', () => { if (S.view !== 'home') go('home', { result: null }); });
+
+// ---------------------------------------------------------------- proposals inbox (proposals.json next to the page)
+const STATUS = { done: ['✅', 'exécuté'], expired: ['⌛', 'expiré'], pending: ['•', 'à traiter'] };
+async function fetchInbox() {
+  const r = await fetch('./proposals.json?t=' + Date.now(), { cache: 'no-store' });
+  if (!r.ok) throw new Error('proposals.json introuvable (HTTP ' + r.status + ')');
+  return r.json();
+}
+function viewInbox(app) {
+  const box = h('section', { class: 'card' }, h('div', { class: 'spin' }), ' Chargement des propositions…');
+  app.append(box);
+  (async () => {
+    try {
+      const j = await fetchInbox(), now = Date.now() / 1000;
+      const parts = [h('div', { class: 'muted small' }, 'Mis à jour : ' + (j.updated ? new Date(j.updated * 1000).toLocaleString('fr-FR') : '—'))];
+      const groups = (j.batches || []).filter((b) => !b.closed || S.showClosed);
+      if (!groups.length) parts.push(h('p', { class: 'muted' }, 'Aucune proposition ouverte.'));
+      for (const b of groups) {
+        parts.push(h('h2', {}, (b.title || b.group) + (b.closed ? ' · terminé' : '')));
+        for (const p of b.proposals || []) {
+          const st = p.status === 'pending' && p.exp && now > p.exp ? 'expired' : p.status || 'pending';
+          const [ico, lbl] = STATUS[st] || STATUS.pending;
+          parts.push(h('div', { class: 'pos' }, h('div', {}, h('b', {}, ico + ' ' + p.line), p.n ? h('div', { class: 'muted small' }, p.n) : null,
+            h('div', { class: 'muted small' }, lbl + (p.exp ? ' · expire ' + new Date(p.exp * 1000).toLocaleString('fr-FR', { dateStyle: 'short', timeStyle: 'short' }) : ''))),
+            st === 'pending' ? h('button', { class: 'btn primary', onclick: () => openProposal(p.token) }, 'Ouvrir') : null));
+        }
+      }
+      const tog = h('label', { class: 'toggle small' }, h('input', { type: 'checkbox', checked: !!S.showClosed, onchange: (e) => { S.showClosed = e.target.checked; render(); } }), ' Afficher les lots terminés');
+      box.replaceChildren(h('h2', {}, '📥 Propositions'), ...parts, tog, h('button', { class: 'btn ghost', onclick: () => render() }, 'Rafraîchir'));
+    } catch (e) { box.replaceChildren(h('div', { class: 'alert block' }, e.message)); }
+  })();
+}
+
+// ---------------------------------------------------------------- dashboard
+function viewDash(app) {
+  const st = S.settings, pol = policy(), from = weekStartUtc(), to = weekEndUtc();
+  const box = h('section', { class: 'card' }, h('div', { class: 'spin' }), ' Chargement…');
+  app.append(box);
+  (async () => {
+    const parts = [h('h2', {}, '📈 Tableau de bord'), h('div', { class: 'muted small' },
+      `Semaine (UTC) : ${new Date(from).toISOString().slice(0, 10)} → ${new Date(to).toISOString().slice(0, 10)} · fin dans ${fmt((to - Date.now()) / 36e5, 0)} h`)];
+    const bar = (used, cap) => { const pct = cap > 0 ? Math.min(100, (100 * used) / cap) : 0;
+      const fill = h('div', { class: 'fill' + (pct >= 100 ? ' red' : pct >= 60 ? ' warn' : '') }); fill.style.width = pct.toFixed(0) + '%'; // CSSOM: allowed by the CSP
+      return h('div', { class: 'bar' }, fill); };
+    const row = async (pf, label, balFn) => {
+      const card = h('div', { class: 'dash' }, h('h3', {}, label));
+      try { const bal = await balFn(); card.append(kv([['Valeur du compte', bal != null ? fmt(bal) + ' $' : '—'], ['Capital de référence', fmt(pol.capital[pf], 0) + ' $']])); }
+      catch (e) { card.append(h('div', { class: 'alert warn' }, 'Solde : ' + e.message)); }
+      let used = null; try { used = await weeklyLoss(pf); } catch (e) { card.append(h('div', { class: 'muted small' }, 'Pertes : ' + e.message)); }
+      if (used == null) used = journalRisk(pf);
+      card.append(kv([['Perte réalisée cette semaine', `${fmt(used)} / ${fmt(pol.weeklyLossCap, 0)} $`, used >= pol.weeklyLossCap ? 'red' : ''],
+        ['Perte max par trade (SL)', fmt(pol.capital[pf] * pol.maxLossPct) + ' $']]), bar(used, pol.weeklyLossCap));
+      return card;
+    };
+    if (st.arcusAddress) parts.push(await row('arcus', PF_NAME.arcus, async () => Number((await API.arcusAccount(base().arcus, st.arcusAddress, st.arcusSub)).equity)));
+    if (st.hlMaster) parts.push(await row('hl', PF_NAME.hl, async () => {
+      let tot = 0; for (const dex of ['', ...String(st.hlDexes || '').split(',').map((x) => x.trim()).filter(Boolean)]) tot += Number((await API.hlState(base().hl, st.hlMaster, dex)).marginSummary.accountValue || 0);
+      return tot; }));
+    if (st.txflowAddress) {
+      const card = await row('txflow', PF_NAME.txflow, async () => Number((await T.state(base().txflow, st.txflowAddress)).marginSummary.accountValue || 0));
+      try {
+        const a = T.weeklyActivity(await T.fills(base().txflow, st.txflowAddress, from, to), from, to);
+        const dayN = Math.min(7, Math.floor((Date.now() - from) / 864e5) + 1);
+        card.append(h('h3', {}, 'Activité de l’epoch points (lun→lun UTC)'), kv([['Fills', String(a.fills)], ['Volume', fmt(a.volume) + ' $'], ['Frais payés', fmt(a.fees, 4) + ' $'],
+          ['Jours actifs', `${a.activeDays} / ${dayN}`], ['Part maker', a.makerShare == null ? '—' : fmt(a.makerShare * 100, 0) + ' %']]),
+        h('p', { class: 'muted small' }, 'Les points TxFlow exigent un minimum (non publié) de trading réel par epoch. Crédit le mardi.'));
+      } catch (e) { card.append(h('div', { class: 'alert warn' }, 'Activité TxFlow : ' + e.message)); }
+      parts.push(card);
+    }
+    if (parts.length === 2) parts.push(h('p', {}, 'Renseigne tes adresses publiques dans Réglages.'));
+    box.replaceChildren(...parts);
+  })();
 }
 
 function viewHome(app) {
@@ -230,6 +380,8 @@ function viewHome(app) {
     h('section', { class: 'card' }, h('h2', {}, 'Proposition'), ta,
       h('button', { class: 'btn primary big', onclick: () => openProposal(ta.value) }, 'Ouvrir la proposition')),
     h('div', { class: 'grid' },
+      h('button', { class: 'btn tile', onclick: () => go('inbox') }, '📥', h('span', {}, 'Propositions')),
+      h('button', { class: 'btn tile', onclick: () => go('dash') }, '📈', h('span', {}, 'Tableau de bord')),
       h('button', { class: 'btn tile', onclick: () => go('positions') }, '📊', h('span', {}, 'Positions & ordres')),
       h('button', { class: 'btn tile', onclick: () => go('log') }, '🧾', h('span', {}, 'Journal')),
       h('button', { class: 'btn tile', onclick: () => go('settings') }, '⚙️', h('span', {}, 'Réglages')),
@@ -250,7 +402,7 @@ function viewConfirm(app) {
   const p = S.proposal;
   if (!p) return go('home');
   if (S.result) { app.append(h('section', { class: 'card' }, h('h1', {}, `${p.act} ${p.m}`))); return renderResult(app); }
-  const pfName = p.pf === 'arcus' ? '🏹 Arcus' : (p.m.includes(':') ? '🤖 Hyperliquid ' + p.m.split(':')[0] : '🤖 Hyperliquid');
+  const pfName = p.pf === 'arcus' ? '🏹 Arcus' : p.pf === 'txflow' ? '🌊 TxFlow (mode manuel)' : (p.m.includes(':') ? '🤖 Hyperliquid ' + p.m.split(':')[0] : '🤖 Hyperliquid');
   const title = p.act === 'cancel' ? `❌ Annuler un ordre ${p.m}` : p.act === 'tpsl' ? `TP/SL sur ${p.m}` : `${p.sd === 'long' ? '🟢 LONG' : '🔴 SHORT'} ${p.m}`;
   const card = h('section', { class: 'card' }, h('div', { class: 'muted small' }, pfName + ' · id ' + p.id), h('h1', {}, title));
   if (p.n) card.append(h('p', { class: 'note' }, p.n));
@@ -265,7 +417,7 @@ function viewConfirm(app) {
   app.append(live);
   (async () => {
     try {
-      const c = await loadContext(p); const r = riskFor(p, c); S.ctx = c; S.risk = r;
+      const c = await loadContext(p); const r = await withPolicy(p, c, riskFor(p, c)); S.ctx = c; S.risk = r;
       live.replaceChildren(h('h2', {}, 'Contrôle en direct'), kv([
         p.act === 'cancel' && c.order && ['Ordre trouvé', c.pf === 'hl' ? `${c.order.orderType} ${c.order.side === 'B' ? 'achat' : 'vente'} ${c.order.sz}${Number(c.order.triggerPx) ? ' · déclencheur ' + c.order.triggerPx : ' @ ' + c.order.limitPx}` : `${c.order.type || ''} ${c.order.side || ''} ${c.order.triggerPrice || c.order.price || ''}`],
         c.plan && ['SL actuel', c.plan.current.sl.length ? c.plan.current.sl.map(fmtPx).join(' + ') : 'aucun', c.plan.current.sl.length ? '' : 'red'],
@@ -276,7 +428,9 @@ function viewConfirm(app) {
         p.act === 'open' && ['Taille arrondie', String(c.size)], r.entry != null && [r.entryLabel, fmtPx(r.entry)],
         r.notional != null && ['Notionnel', fmt(r.notional) + ' $'], p.act === 'open' && ['Marge', fmt(r.margin) + ' $'],
         c.free != null && p.act === 'open' && ['Collatéral libre', fmt(c.free) + ' $'],
-        ['Frais taker', fmt(c.fee * 100, 4) + ' %/côté'], ['Levier max', c.maxLev + '×'],
+        ['Frais maker / taker', (c.makerFee != null ? fmt(c.makerFee * 100, 4) : '—') + ' / ' + fmt(c.fee * 100, 4) + ' % (' + (c.feeSrc || '?') + ')'], ['Levier max', c.maxLev + '×'],
+        r.policy && r.policy.maxLoss != null && p.act === 'open' && ['Plafond perte / trade', fmt(r.policy.maxLoss) + ' $'],
+        r.policy && ['Pertes semaine (' + r.policy.src + ')', fmt(r.policy.used) + ' / ' + fmt(policy().weeklyLossCap, 0) + ' $'],
         r.slLocked != null ? ['Gain verrouillé au SL (frais incl.)', '+' + fmt(r.slLocked) + ' $', 'green']
           : r.slLoss != null && ['Perte au SL (frais incl.)', '−' + fmt(r.slLoss) + ' $', r.slLoss >= S.settings.maxLoss ? 'red' : 'green'],
         r.tpGain != null && ['Gain au TP (frais incl.)', (r.tpGain < 0 ? '−' : '+') + fmt(Math.abs(r.tpGain)) + ' $', r.tpGain < 0 ? 'red' : 'green'],
@@ -285,6 +439,7 @@ function viewConfirm(app) {
       for (const b of r.blocks) box.append(h('div', { class: 'alert block' }, '⛔ ' + b));
       for (const w of r.warns) box.append(h('div', { class: 'alert warn' }, '⚠️ ' + w));
       live.append(box);
+      if (p.pf === 'txflow') { live.append(txflowManual(p, c, r)); return; }
       const approve = h('button', { class: 'btn approve', disabled: r.blocks.length > 0 || r.warns.length > 0 ? true : null, onclick: () => approveFlow(approve) },
         S.settings.dryRun ? 'Approuver (dry run, rien n’est envoyé)' : 'Approuver et envoyer');
       if (r.blocks.length) approve.textContent = 'Bloqué';
@@ -298,6 +453,38 @@ function viewConfirm(app) {
   })();
 }
 
+// TxFlow manual mode: nothing is signed here. The user places the order in the TxFlow app (its own agent key),
+// then this card checks public account data for the resting order / position.
+function txflowManual(p, c, r) {
+  const wrap = h('div');
+  const ok = r.blocks.length === 0;
+  wrap.append(h('div', { class: ok ? 'alert ok' : 'alert block' }, ok ? '✅ Conforme à la politique : à placer à la main dans TxFlow' : '⛔ Ne pas placer ce trade'));
+  if (ok) {
+    wrap.append(h('h3', {}, 'À saisir dans TxFlow'), kv([['Marché', c.mk.name], ['Sens', p.sd === 'long' ? 'Achat / Long' : 'Vente / Short'],
+      ['Type', 'Limite · Post-only (Alo)'], ['Prix limite', String(p.px)], ['Taille', String(p.sz)], ['Levier', p.lev + '× isolé'],
+      ['Stop-loss', p.sl != null ? String(p.sl) : '—'], ['Take-profit', p.tp != null ? String(p.tp) : '—'],
+      p.exp && ['Valable jusqu’au', new Date(p.exp * 1000).toLocaleString('fr-FR')]]),
+    h('a', { class: 'btn primary big', href: T.appLink(), target: '_blank', rel: 'noopener noreferrer' }, 'Ouvrir app.txflow.com'));
+  }
+  const out = h('div', { class: 'small' });
+  const check = async () => {
+    if (!S.settings.txflowAddress) { out.textContent = 'Renseigne ton adresse TxFlow (publique) dans Réglages.'; return; }
+    out.textContent = 'Vérification…';
+    try {
+      const B = base().txflow;
+      const [st, oo] = await Promise.all([T.state(B, S.settings.txflowAddress), T.openOrders(B, S.settings.txflowAddress)]);
+      const x = T.executedNow(p, st, oo, c.mk);
+      out.replaceChildren(x.executed ? h('div', { class: 'alert ok' }, x.position ? `✅ Position ouverte (${x.position.szi})` : `✅ Ordre en carnet @ ${x.resting.limitPx}`) : h('div', { class: 'alert warn' }, 'Pas encore placé'),
+        x.position && x.hasStopLoss === false ? h('div', { class: 'alert block' }, '🚨 Position sans stop-loss détecté : ajoute-le dans TxFlow') : null);
+      if (x.executed) await addLog({ t: new Date().toISOString(), id: p.id, pf: 'txflow', m: p.m, act: p.act, sd: p.sd, sz: String(p.sz), lev: p.lev, et: p.et,
+        px: p.px, sl: p.sl, tp: p.tp, mark: c.mark, slLoss: r.slLoss, dry: false, manual: true, testnet: S.settings.testnet, ok: true, res: [] });
+    } catch (e) { out.textContent = 'Erreur : ' + e.message; }
+  };
+  wrap.append(h('button', { class: 'btn ghost', onclick: check }, 'Vérifier l’exécution (lecture publique)'), out,
+    h('button', { class: 'btn ghost', onclick: () => go('inbox') }, 'Retour aux propositions'));
+  return wrap;
+}
+
 async function approveFlow(btn) {
   const p = S.proposal, st = S.settings;
   btn.disabled = true;
@@ -308,7 +495,7 @@ async function approveFlow(btn) {
     // re-check live mark right before signing
     const c = await loadContext(p);
     if (p.act !== 'cancel' && Math.abs(c.mark - S.ctx.mark) / S.ctx.mark > 0.01) throw new Error('Le prix a bougé de plus de 1 % pendant la confirmation. Recharge.');
-    const r = riskFor(p, c);
+    const r = await withPolicy(p, c, riskFor(p, c));
     if (r.blocks.length) throw new Error(r.blocks.join(' / '));
     let results, extra = {};
     if (p.pf === 'arcus' && p.act === 'tpsl') {
@@ -437,8 +624,8 @@ function viewLog(app) {
     h('div', { class: 'row' },
       h('button', { class: 'btn primary', onclick: async () => { try { await navigator.clipboard.writeText(txt); toast('Copié ✅'); } catch { toast('Copie impossible', 'err'); } } }, 'Copier'),
       h('button', { class: 'btn primary', onclick: () => {
-        const u = 'https://t.me/share/url?url=' + encodeURIComponent('Journal Bobby Trade') + '&text=' + encodeURIComponent(txt.slice(0, 3500));
-        if (tg) tg.openTelegramLink(u); else window.open(u, '_blank');
+        if (navigator.share) navigator.share({ title: 'Journal Bobby Trade', text: txt.slice(0, 3500) }).catch(() => {});
+        else toast('Partage non disponible : utilise Copier', 'err');
       } }, 'Partager'))));
 }
 
@@ -450,6 +637,7 @@ function viewSettings(app) {
     aAddr: h('input', { value: st.arcusAddress, autocomplete: 'off' }), aSub: h('input', { type: 'number', value: st.arcusSub, inputmode: 'numeric' }),
     hKey: h('input', { type: 'password', autocomplete: 'off', placeholder: 'Clé privée API wallet HL (0x + 64 hex)' }),
     hAddr: h('input', { value: st.hlMaster, autocomplete: 'off', placeholder: 'Adresse principale 0x…' }),
+    tAddr: h('input', { value: st.txflowAddress, autocomplete: 'off', placeholder: 'Adresse publique TxFlow 0x… (lecture seule)' }),
     pin: h('input', { type: 'password', inputmode: 'numeric', autocomplete: 'new-password', placeholder: 'PIN (6 chiffres min.)' }),
     pin2: h('input', { type: 'password', inputmode: 'numeric', autocomplete: 'new-password', placeholder: 'Confirme le PIN' }),
   };
@@ -463,6 +651,7 @@ function viewSettings(app) {
       if (f.aKey.value) { A.keyFromHex(f.aKey.value); sec.arcus.key = f.aKey.value.trim(); }
       if (f.hKey.value) { H.keyFromHex(f.hKey.value); sec.hl.key = f.hKey.value.trim(); }
       sec.arcus.address = f.aAddr.value.trim(); sec.arcus.sub = Number(f.aSub.value || 0); sec.hl.master = f.hAddr.value.trim();
+      const tAddr = f.tAddr.value.trim(); if (tAddr && !/^0x[0-9a-fA-F]{40}$/.test(tAddr)) throw new Error('Adresse TxFlow invalide'); st.txflowAddress = tAddr;
       if (sec.hl.master && !/^0x[0-9a-fA-F]{40}$/.test(sec.hl.master)) throw new Error('Adresse HL invalide');
       if (sec.arcus.address && !/^0x[0-9a-fA-F]{40}$/.test(sec.arcus.address)) throw new Error('Adresse Arcus invalide');
       const busy = showBusy('Chiffrement…');
@@ -511,7 +700,16 @@ function viewSettings(app) {
   app.append(
     h('section', { class: 'card' }, h('h2', {}, 'Mode'), tog('dryRun', 'Dry run (signe sans envoyer)'), tog('testnet', 'Testnet (Arcus + Hyperliquid)'),
       num('maxLoss', 'Perte max par SL ($)', '1'), num('slippage', 'Slippage market (0,02 = 2 %)', '0.005'),
-      num('feeIo', 'Frais HL io / côté', '0.00001'), num('feeMain', 'Frais HL main / côté', '0.00001')),
+      num('feeIo', 'Frais HL io / côté (repli)', '0.00001'), num('feeMain', 'Frais HL main / côté (repli)', '0.00001')),
+    h('section', { class: 'card' }, h('h2', {}, 'Politique de risque (blocages durs)'),
+      tog('polMakerOnly', 'Entrées maker uniquement (limite post-only)'), tog('polRequireSl', 'Stop-loss obligatoire'),
+      num('polMaxLev', 'Levier max (×)', '1'), num('polMaxLossPct', 'Perte max au SL par trade (0,01 = 1 % du capital)', '0.001'),
+      num('polWeeklyCap', 'Plafond de perte hebdo par plateforme ($)', '1'),
+      num('capArcus', 'Capital Arcus ($)', '1'), num('capHl', 'Capital Entropy / Hyperliquid ($)', '1'), num('capTxflow', 'Capital TxFlow ($)', '1'),
+      h('p', { class: 'muted small' }, 'Semaine = lundi 00:00 UTC. Aucun dépôt, retrait, transfert ni vault n’est jamais construit par cette app.')),
+    h('section', { class: 'card' }, h('h2', {}, '🌊 TxFlow (mode manuel)'), h('label', { class: 'field' }, 'Adresse du compte (publique)', f.tAddr),
+      h('button', { class: 'btn ghost', onclick: async () => { const v = f.tAddr.value.trim(); if (v && !/^0x[0-9a-fA-F]{40}$/.test(v)) return toast('Adresse TxFlow invalide', 'err'); st.txflowAddress = v; await saveSettings(); toast('Adresse TxFlow enregistrée'); } }, 'Enregistrer l’adresse'),
+      h('p', { class: 'muted small' }, 'Aucune clé TxFlow ici. Les ordres se placent dans app.txflow.com ; cette app ne lit que des données publiques. Signature par agent « bobby » : désactivée tant que la whitelist mainnet n’est pas obtenue.')),
     h('section', { class: 'card' }, h('h2', {}, 'Clés'), info,
       h('h3', {}, '🏹 Arcus'), f.aKey, h('label', { class: 'field' }, 'Adresse propriétaire', f.aAddr), h('label', { class: 'field' }, 'Sous-compte', f.aSub),
       h('h3', {}, '🤖 Hyperliquid / Entropy'), f.hKey, h('label', { class: 'field' }, 'Adresse principale (master)', f.hAddr),
@@ -524,15 +722,10 @@ function viewSettings(app) {
 
 // ---------------------------------------------------------------- boot
 async function boot() {
-  if (tg) {
-    tg.ready(); tg.expand();
-    try { tg.setHeaderColor('bg_color'); } catch { /* */ }
-    tg.BackButton.onClick(() => go('home', { result: null }));
-  }
   await loadSettings();
   render();
-  const tok = extractToken(LAUNCH_URL) || (tg && tg.initDataUnsafe && tg.initDataUnsafe.start_param ? extractToken('p=' + tg.initDataUnsafe.start_param) : null);
-  if (tok) openProposal(tok);
+  const tok = extractToken(LAUNCH_URL);
+  if (tok) { try { history.replaceState(null, '', location.pathname); } catch { /* */ } openProposal(tok); }
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) { /* keep timer */ } });
 boot();

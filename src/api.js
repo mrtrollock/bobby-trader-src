@@ -1,6 +1,7 @@
 // Network layer (fetch). Only the 4 hosts allowed by the CSP are ever contacted.
 import * as A from './arcus.js';
 import * as H from './hl.js';
+import { assertTradeOnly } from './risk.js';
 
 export const bases = (testnet) => ({ arcus: testnet ? A.TESTNET : A.MAINNET, hl: testnet ? H.TESTNET : H.MAINNET });
 
@@ -10,6 +11,7 @@ async function j(r) {
   return { ok: r.ok, status: r.status, body };
 }
 export async function sendArcus(base, d) {
+  assertTradeOnly('arcus', d);
   const qs = d.query ? '?' + new URLSearchParams(d.query).toString() : '';
   return j(await fetch(base + d.path + qs, { method: d.method, headers: d.headers, body: d.body ?? undefined }));
 }

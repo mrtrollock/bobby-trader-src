@@ -17,7 +17,7 @@ export function computeRisk(p) {
   const entry = p.type === 'limit' ? Number(p.limitPx) : Number(mark);
   const notional = size * entry;
   const margin = notional / leverage;
-  const entryFee = notional * feeRate;
+  const entryFee = notional * (p.entryFeeRate ?? feeRate);
   const s = isLong ? 1 : -1;
   const isTpsl = mode === 'tpsl';
   const slPnl = sl ? s * (sl - entry) * size - entryFee - size * sl * feeRate : null;
@@ -45,4 +45,76 @@ export function computeRisk(p) {
   if (moved != null && moved > maxMove) warns.push(`Le prix a bougé de ${(moved * 100).toFixed(2)} % depuis la proposition`);
   if (freeCollateral != null && margin > freeCollateral * 1.001) warns.push(`Marge ${margin.toFixed(2)} $ > collatéral libre ${freeCollateral.toFixed(2)} $`);
   return { entry, notional, margin, entryFee, slLoss, slLocked, slPnl, tpGain, liq, moved, blocks, warns, needsSecondConfirm: warns.length > 0 };
+}
+
+// ---------------------------------------------------------------- conservative farming policy (points + capital preservation)
+// Every rule here is a HARD block (the approve button stays disabled), not a red warning.
+// Configurable from Settings; these are the defaults.
+export const POLICY = {
+  makerOnly: true,          // entries must be post-only limit orders (Arcus ALO / Hyperliquid & TxFlow Alo)
+  maxLeverage: 1,           // 1x isolated: notional <= margin
+  requireStopLoss: true,    // every new position carries a stop-loss
+  maxLossPct: 0.01,         // max loss at SL (fees incl.) per trade, as a fraction of platform capital (1 % of $300 = $3)
+  weeklyLossCap: 50,        // $ per platform per week (Mon 00:00 UTC); once used up, new proposals are blocked
+  capital: { arcus: 300, hl: 300, txflow: 300 }, // $ per platform (used for the % rule)
+  marginAboveFreeBlocks: true,
+};
+export const PLATFORMS = ['arcus', 'hl', 'txflow'];
+
+// Start of the current week: Monday 00:00 UTC (also the TxFlow points epoch boundary).
+export function weekStartUtc(nowMs = Date.now()) {
+  const d = new Date(nowMs);
+  const day = (d.getUTCDay() + 6) % 7; // Monday = 0
+  return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate() - day);
+}
+export const weekEndUtc = (nowMs = Date.now()) => weekStartUtc(nowMs) + 7 * 86400e3;
+
+// Realized loss this week from fills: sum of closedPnl minus fees; a net gain counts as 0 used.
+// fills: [{ time (ms), closedPnl, fee }]; rows outside [from, to) are ignored.
+// feeIncluded: Arcus closedPnl is already net of the fill fee (docs); Hyperliquid's is not. TxFlow is not documented,
+// so it is treated like Hyperliquid (fee subtracted), which can only overstate the loss (conservative).
+export function realizedLoss(fills, from, to = Infinity, { feeIncluded = false } = {}) {
+  let pnl = 0;
+  for (const f of fills || []) {
+    const t = Number(f.time);
+    if (!(t >= from && t < to)) continue;
+    pnl += Number(f.closedPnl || 0) - (feeIncluded ? 0 : Number(f.fee || 0));
+  }
+  return pnl < 0 ? -pnl : 0;
+}
+
+// p: proposal, r: computeRisk() result, opts: { policy, pf, weeklyLossUsed, isEntry }
+export function checkPolicy(p, r, { policy = POLICY, weeklyLossUsed = 0, freeCollateral = null } = {}) {
+  const blocks = [], warns = [];
+  const pf = p.pf, act = p.act || 'open';
+  const cap = Number((policy.capital || {})[pf] ?? 0);
+  const maxLoss = cap > 0 ? cap * Number(policy.maxLossPct) : null;
+  const used = Number(weeklyLossUsed) || 0;
+  if (act === 'cancel') return { blocks, warns, maxLoss, used }; // cancelling only reduces risk
+  if (act === 'open') {
+    if (policy.makerOnly && p.et !== 'limit') blocks.push('Politique : entrée maker uniquement (ordre limite post-only), pas de market');
+    if (policy.maxLeverage && Number(p.lev) > Number(policy.maxLeverage)) blocks.push(`Politique : levier ${p.lev}× > ${policy.maxLeverage}× max`);
+    if (policy.requireStopLoss && (p.sl == null || p.sl === '')) blocks.push('Politique : stop-loss obligatoire');
+    if (maxLoss != null && r && r.slLoss != null && r.slLoss > maxLoss + 1e-9)
+      blocks.push(`Politique : perte au SL ${r.slLoss.toFixed(2)} $ > ${maxLoss.toFixed(2)} $ (${(policy.maxLossPct * 100).toFixed(1)} % de ${cap} $)`);
+    if (policy.weeklyLossCap != null) {
+      if (used >= policy.weeklyLossCap) blocks.push(`Politique : plafond de perte hebdo atteint (${used.toFixed(2)} / ${policy.weeklyLossCap} $) — reprise lundi 00:00 UTC`);
+      else if (r && r.slLoss != null && used + r.slLoss > policy.weeklyLossCap + 1e-9)
+        blocks.push(`Politique : ce trade peut dépasser le plafond hebdo (${used.toFixed(2)} + ${r.slLoss.toFixed(2)} > ${policy.weeklyLossCap} $)`);
+    }
+    const free = freeCollateral ?? null;
+    if (policy.marginAboveFreeBlocks && free != null && r && r.margin > free * 1.001) blocks.push('Politique : marge supérieure au collatéral libre');
+  }
+  if (act === 'tpsl' && policy.requireStopLoss && (p.sl == null || p.sl === '') && r && r.keepsStop === false)
+    blocks.push('Politique : la position resterait sans stop-loss');
+  return { blocks, warns, maxLoss, used };
+}
+
+// Actions that move funds or touch vaults are never built or sent by this app (no deposit/withdraw churn, no vault transfers).
+export const FORBIDDEN_ACTIONS = new Set(['withdraw', 'withdraw3', 'usdSend', 'spotSend', 'tokenSend', 'usdClassTransfer', 'vaultTransfer',
+  'subAccountTransfer', 'sendAsset', 'approveBuilderFee', 'createVault', 'cDeposit', 'cWithdraw', 'perpDexClassTransfer']);
+export const FORBIDDEN_ARCUS_PATHS = [/\/v1\/withdraw/i, /\/v1\/transfer/i, /\/v1\/deposit/i, /vault/i];
+export function assertTradeOnly(kind, x) {
+  if (kind === 'action') { if (x && FORBIDDEN_ACTIONS.has(x.type)) throw new Error('Action interdite par la politique : ' + x.type); return; }
+  if (kind === 'arcus') { if (FORBIDDEN_ARCUS_PATHS.some((re) => re.test(String(x && x.path)))) throw new Error('Requête Arcus interdite : ' + x.path); }
 }

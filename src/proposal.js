@@ -43,7 +43,7 @@ export function validateProposal(p) {
   const err = (m) => { throw new Error('Proposition invalide: ' + m); };
   if (p.v !== 1) err('version');
   if (!p.id || typeof p.id !== 'string') err('id');
-  if (!['arcus', 'hl'].includes(p.pf)) err('plateforme');
+  if (!['arcus', 'hl', 'txflow'].includes(p.pf)) err('plateforme');
   if (!p.m || typeof p.m !== 'string') err('marché');
   const act = p.act || 'open';
   if (!['open', 'tpsl', 'cancel'].includes(act)) err('action');
@@ -57,6 +57,7 @@ export function validateProposal(p) {
     if (p.et === 'limit' && !(Number(p.px) > 0)) err('prix limite');
   }
   if (act === 'tpsl' && p.sl == null && p.tp == null) err('TP ou SL requis');
+  if (p.pf === 'txflow' && act === 'tpsl') err('TP/SL TxFlow : à régler dans l’app TxFlow');
   if (p.exp != null && !(Number(p.exp) > 1e9)) err('expiration');
   return { ...p, act };
 }

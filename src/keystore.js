@@ -1,6 +1,5 @@
 // Keystore: secrets are always encrypted with a PIN (PBKDF2-SHA256, 600k iterations -> AES-256-GCM, WebCrypto),
-// then stored in Telegram SecureStorage (Bot API >= 9.0, iOS/Android keychain/keystore) or IndexedDB as fallback.
-// Telegram CloudStorage is never used.
+// then stored in this origin's IndexedDB. Nothing is synced anywhere.
 const ITER = 600000;
 const KS_KEY = 'tgtrade_ks_v1';
 const te = new TextEncoder(), td = new TextDecoder();
@@ -42,37 +41,9 @@ export const IDB = {
   async set(k, v) { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').put(v, k); t.oncomplete = () => res(true); t.onerror = () => rej(t.error); }); },
   async del(k) { const db = await idb(); return new Promise((res, rej) => { const t = db.transaction('kv', 'readwrite'); t.objectStore('kv').delete(k); t.oncomplete = () => res(true); t.onerror = () => rej(t.error); }); },
 };
-function tgBackend(api, name) {
-  const p = (fn) => new Promise((res, rej) => { try { fn((err, v) => (err ? rej(new Error(String(err))) : res(v))); } catch (e) { rej(e); } });
-  return {
-    name,
-    get: (k) => p((cb) => api.getItem(k, (e, v) => cb(e, v || null))),
-    set: (k, v) => p((cb) => api.setItem(k, v, cb)),
-    del: (k) => p((cb) => api.removeItem(k, cb)),
-  };
-}
-const tg = () => (typeof window !== 'undefined' && window.Telegram && window.Telegram.WebApp && window.Telegram.WebApp.initData ? window.Telegram.WebApp : null);
-
-let _secure = null;
-export async function secureBackend() {
-  if (_secure) return _secure;
-  const w = tg();
-  if (w && w.isVersionAtLeast && w.isVersionAtLeast('9.0') && w.SecureStorage) {
-    const b = tgBackend(w.SecureStorage, 'Telegram SecureStorage');
-    try { await b.get(KS_KEY); return (_secure = b); } catch { /* UNSUPPORTED on this client -> fallback */ }
-  }
-  return (_secure = IDB);
-}
-let _dev = null;
-export async function deviceBackend() { // trade log (non-secret)
-  if (_dev) return _dev;
-  const w = tg();
-  if (w && w.isVersionAtLeast && w.isVersionAtLeast('9.0') && w.DeviceStorage) {
-    const b = tgBackend(w.DeviceStorage, 'Telegram DeviceStorage');
-    try { await b.get('tgtrade_probe'); return (_dev = b); } catch { /* fallback */ }
-  }
-  return (_dev = IDB);
-}
+// Plain browser build: secrets and the trade log live in this origin's IndexedDB only (never a server, never cloud sync).
+export async function secureBackend() { return IDB; }
+export async function deviceBackend() { return IDB; } // trade log + settings (non-secret)
 
 export async function hasKeystore() { return !!(await (await secureBackend()).get(KS_KEY)); }
 export async function saveKeystore(obj, pin) { const b = await secureBackend(); await b.set(KS_KEY, await encryptSecrets(obj, pin)); return b.name; }

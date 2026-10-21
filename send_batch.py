@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bobby Trader — batched Telegram proposals (one message per platform, one Mini App button per trade).
+"""Bobby Trader — proposals inbox publisher for the web app (no Telegram).
 
     python3 send_batch.py send proposals.json [--dry]   # proposals.json = JSON list of trade dicts (make_proposal.py fields)
     python3 send_batch.py check [--dry] [--watch SECONDS] [--every 60]
@@ -7,67 +7,59 @@
     python3 send_batch.py status
     python3 send_batch.py test [--dry]                  # harmless demo batch (cancels of fake order ids: the app blocks them)
 
-Each trade may also carry "line" (custom text line) and "btn" (custom button label); both are stripped from the link.
-Grouping: pf "arcus" -> 🏹 ARCUS message; pf "hl" with market "io:XXX" -> 🤖 ENTROPY message; other hl -> 🤖 HYPERLIQUID.
+Batches are written to an inbox file served next to the web app: public/proposals.json (copied into dist/ by
+build.mjs; dist/proposals.json is refreshed too when dist/ exists). The page groups trades per platform
+(🏹 Arcus / 🤖 Entropy / 🤖 Hyperliquid / 🌊 TxFlow) with an "Ouvrir" button per trade.
+Publishing on GitHub Pages = commit + push that file (done by you, never by this script).
 
-Execution detection (no server needed): the Mini App is opened from an inline button, so Telegram's WebApp.sendData
-is not available (keyboard-button only) and answerWebAppQuery would need a server. Instead `check` compares each
-proposal with the LIVE account state read from the public Arcus / Hyperliquid read endpoints, relative to a baseline
-snapshot taken when the batch was sent:
+Each trade may carry "line" (custom text); "btn" is accepted for compatibility and ignored.
+Policy pre-check (same defaults as src/risk.js POLICY): new positions must be post-only LIMIT entries, leverage <= 1,
+with a stop-loss. Non-compliant trades are refused here, and the app hard-blocks them anyway.
+
+Execution detection (no server needed): `check` compares each proposal with the LIVE account state read from the
+public Arcus / Hyperliquid / TxFlow read endpoints, relative to a baseline snapshot taken at publish time:
   open market  -> position moved in the proposal's direction by >= 50 % of sz
   open limit   -> a new (non-baseline) resting order on that market/side at px (±0.5 %), or the position moved as above
   tpsl         -> live TP/SL trigger orders on that market at the proposed sl / tp
   cancel       -> the order id (present at send time) is gone
-When every trade of a message is executed, the message is edited (editMessageText): green ✅ header, ✅ on each line,
-buttons removed. Lines are ticked one by one as trades are detected. Expired, unexecuted trades get ⌛.
-Config (env): TELEGRAM_BOT_TOKEN (never printed), TELEGRAM_CHAT_ID, BOBBY_ACCOUNT_ADDRESS (public address read for
-execution detection), BOBBY_APP_URL (where the Mini App is hosted), optional ARCUS_ACCOUNT_INDEX.
-State: batches.json next to this script (chmod 600): message_id, proposal ids, baselines, done flags.
+Executed trades get status "done", expired ones "expired"; a batch whose trades are all done/expired is closed.
+Config (env, all public, no secret needed): BOBBY_ACCOUNT_ADDRESS (Arcus owner = Hyperliquid master address),
+BOBBY_TXFLOW_ADDRESS (defaults to BOBBY_ACCOUNT_ADDRESS), BOBBY_INBOX (inbox path), optional ARCUS_ACCOUNT_INDEX.
+Baselines stay local in batches.json (git-ignored, chmod 600); the public inbox only carries links, lines, expiry, status.
 """
-import argparse, html, json, os, sys, time, urllib.request
+import argparse, json, os, sys, time, urllib.parse, urllib.request
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
 from make_proposal import make_url  # noqa: E402
 
-BASE_URL = os.environ.get("BOBBY_APP_URL", "https://example.github.io/bobby-trader/")
-STATE = Path(__file__).with_name("batches.json")
+BASE_URL = "./"   # links are relative: the inbox is served next to index.html
+HERE = Path(__file__).parent
+STATE = HERE / "batches.json"
+DEFAULT_INBOX = HERE / "public" / "proposals.json"
+INBOX = Path(os.environ.get("BOBBY_INBOX") or DEFAULT_INBOX)
 ADDRESS = os.environ.get("BOBBY_ACCOUNT_ADDRESS", "")   # Arcus owner address = Hyperliquid master (public, read-only use)
+TX_ADDRESS = os.environ.get("BOBBY_TXFLOW_ADDRESS", "") or ADDRESS
 ARCUS_SUB = int(os.environ.get("ARCUS_ACCOUNT_INDEX", "0"))
 ARCUS = "https://api.arcus.xyz"
 HL = "https://api.hyperliquid.xyz/info"
-NUM = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣", "6️⃣", "7️⃣", "8️⃣", "9️⃣", "🔟"]
+TXFLOW = "https://rpc.txflow.com/info"
+TX_HEADERS = {"x-api-version": "2026-08-16"}
 STRIP = ("line", "btn")
+POLICY = {"max_leverage": 1, "maker_only": True, "require_sl": True}
 
 
-# ------------------------------------------------------------------ http helpers
+# ------------------------------------------------------------------ http helpers (public reads only)
 def _get(url, params=None):
     if params:
         url += "?" + urllib.parse.urlencode(params)
     with urllib.request.urlopen(urllib.request.Request(url, headers={"User-Agent": "bobby-batch"}), timeout=20) as r:
         return json.load(r)
 
-def _post(url, body):
-    req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json"})
+def _post(url, body, headers=None):
+    req = urllib.request.Request(url, json.dumps(body).encode(), {"Content-Type": "application/json", "User-Agent": "bobby-batch", **(headers or {})})
     with urllib.request.urlopen(req, timeout=20) as r:
         return json.load(r)
-
-def tg(method, payload):
-    token = os.environ.get("TELEGRAM_BOT_TOKEN")
-    if not token:
-        sys.exit("TELEGRAM_BOT_TOKEN is not set")
-    try:
-        res = _post(f"https://api.telegram.org/bot{token}/{method}", payload)
-    except urllib.error.HTTPError as e:   # never echo the URL (it contains the token)
-        res = json.loads(e.read().decode() or "{}")
-    if not res.get("ok"):
-        desc = str(res.get("description", "unknown error"))
-        if "message is not modified" in desc:
-            return None
-        raise RuntimeError(f"Telegram {method} failed: {desc}")
-    return res["result"]
-
-import urllib.parse  # noqa: E402  (after tg() so the module reads top-down)
 
 
 # ------------------------------------------------------------------ live state
@@ -99,6 +91,33 @@ def hl_state(dex):
                        "px": float(o.get("limitPx") or 0), "trig": float(o["triggerPx"]) if o.get("isTrigger") else None, "kind": kind})
     return {"sizes": sizes, "orders": orders}
 
+def tx_info(body):
+    r = _post(TXFLOW, body, TX_HEADERS)
+    if r.get("success") is False:
+        raise RuntimeError(f"TxFlow {body.get('type')}: {r.get('message')}")
+    return r.get("data")
+
+def tx_key(m):
+    m = str(m).upper()
+    return m if "-" in m else m + "-USDC"
+
+def txflow_state():
+    """Public TxFlow reads (POST /info, docs.txflow.com/api/info): positions + open orders, keyed by instrument name."""
+    uni = (tx_info({"type": "perpMeta", "includeDelisted": False}) or {}).get("universe", [])
+    names = {str(u["index"]): str(u["name"]).upper() for u in uni}
+    name = lambda x: names.get(str(x.get("asset", x.get("coin"))), str(x.get("coin", "")).upper())
+    st = tx_info({"type": "clearinghouseState", "user": TX_ADDRESS, "accountType": "perp"}) or {}
+    oo = tx_info({"type": "frontendOpenOrders", "user": TX_ADDRESS, "limit": 200, "offset": 0}) or []
+    sizes = {name(p["position"]): float(p["position"].get("szi") or 0) for p in st.get("assetPositions", [])}
+    orders = []
+    for o in oo:
+        ot = str(o.get("orderType", "")).lower()
+        kind = "STOP_LOSS" if "stop" in ot else "TAKE_PROFIT" if "take" in ot else "LIMIT"
+        trig = float(o["triggerPx"]) if o.get("isTrigger") and o.get("triggerPx") else None
+        orders.append({"id": str(o["oid"]), "m": name(o), "side": "buy" if o.get("side") == "B" else "sell",
+                       "px": float(o.get("limitPx") or 0), "trig": trig, "kind": kind})
+    return {"sizes": sizes, "orders": orders}
+
 def arcus_key(m):
     m = m.upper()
     return m if m.endswith("-USD") else m + "-USD"
@@ -107,16 +126,18 @@ def state_for(trades):
     """Fetch only the venues these trades need. Returns {venue: state}."""
     need, out = set(), {}
     for t in trades:
-        need.add("arcus" if t["pf"] == "arcus" else "hl:" + (t["m"].split(":")[0] if ":" in t["m"] else ""))
+        need.add(venue(t))
     for v in need:
-        out[v] = arcus_state() if v == "arcus" else hl_state(v[3:])
+        out[v] = arcus_state() if v == "arcus" else txflow_state() if v == "txflow" else hl_state(v[3:])
     return out
 
 def venue(t):
-    return "arcus" if t["pf"] == "arcus" else "hl:" + (t["m"].split(":")[0] if ":" in t["m"] else "")
+    if t["pf"] in ("arcus", "txflow"):
+        return t["pf"]
+    return "hl:" + (t["m"].split(":")[0] if ":" in t["m"] else "")
 
 def mkey(t):
-    return arcus_key(t["m"]) if t["pf"] == "arcus" else t["m"]
+    return arcus_key(t["m"]) if t["pf"] == "arcus" else tx_key(t["m"]) if t["pf"] == "txflow" else t["m"]
 
 def baseline(t, st):
     s = st[venue(t)]
@@ -146,13 +167,14 @@ def executed(t, base, st):
     return False
 
 
-# ------------------------------------------------------------------ message rendering
+# ------------------------------------------------------------------ inbox rendering
 def group_of(t):
-    if t["pf"] == "arcus":
-        return "arcus"
+    if t["pf"] in ("arcus", "txflow"):
+        return t["pf"]
     return "entropy" if t["m"].startswith("io:") else "hl"
 
-TITLE = {"arcus": "🏹 ARCUS", "entropy": "🤖 ENTROPY", "hl": "🤖 HYPERLIQUID"}
+TITLE = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "hl": "🤖 Hyperliquid", "txflow": "🌊 TxFlow (manuel)"}
+ORDER = ("arcus", "entropy", "hl", "txflow")
 
 def short(m):
     return m.split(":")[-1].replace("-USD", "")
@@ -176,42 +198,45 @@ def default_line(t):
         bits.append(f"TP {fmt(t['tp'])}")
     return " · ".join(bits)
 
-def default_btn(t):
-    act = t.get("act", "open")
-    if act == "cancel":
-        return f"Annuler {short(t['m'])}"
-    if act == "tpsl":
-        return f"TP/SL {short(t['m'])}"
-    return f"{'LONG' if t['sd'] == 'long' else 'SHORT'} {short(t['m'])}"
+def policy_errors(t):
+    """Same defaults as src/risk.js POLICY; only new positions are checked (cancel / tpsl only reduce risk)."""
+    if t.get("act", "open") != "open":
+        return []
+    errs = []
+    if POLICY["maker_only"] and t.get("et") != "limit":
+        errs.append("entry must be a post-only limit order (et=limit)")
+    if float(t.get("lev") or 0) > POLICY["max_leverage"]:
+        errs.append(f"leverage {t.get('lev')} > {POLICY['max_leverage']}")
+    if POLICY["require_sl"] and t.get("sl") is None:
+        errs.append("stop-loss (sl) is required")
+    return errs
 
-def render(b, now=None):
+def status_of(p, now):
+    if p["done"]:
+        return "done"
+    return "expired" if p["trade"].get("exp") and now > p["trade"]["exp"] else "pending"
+
+def inbox_view(s, now=None):
     now = now or time.time()
-    done = [p["done"] for p in b["proposals"]]
-    lines = []
-    for i, p in enumerate(b["proposals"]):
-        t = p["trade"]
-        mark = "✅" if p["done"] else ("⌛" if t.get("exp") and now > t["exp"] else NUM[i] if i < len(NUM) else f"{i + 1}.")
-        note = f"\n    <i>{html.escape(t['n'])}</i>" if t.get("n") else ""
-        lines.append(f"{mark} {html.escape(p['line'])}{note}")
-    head = f"<b>{TITLE[b['group']]}</b> · {len(done)} trade{'s' if len(done) > 1 else ''}"
-    if all(done):
-        head = f"✅ <b>{TITLE[b['group']]}</b> · tout est exécuté"
-    elif any(done):
-        head += f" · {sum(done)}/{len(done)} exécuté{'s' if sum(done) > 1 else ''}"
-    text = head + "\n\n" + "\n".join(lines)
-    if not all(done) and not b.get("closed"):
-        text += "\n\n<i>Appuie sur un bouton pour vérifier et approuver dans l’app.</i>"
-    rows, row = [], []
-    for i, p in enumerate(b["proposals"]):
-        t = p["trade"]
-        if p["done"] or (t.get("exp") and now > t["exp"]):
-            continue
-        row.append({"text": f"{NUM[i] if i < len(NUM) else i + 1} {p['btn']}", "web_app": {"url": p["url"]}})
-        if len(row) == 2:
-            rows.append(row); row = []
-    if row:
-        rows.append(row)
-    return text, {"inline_keyboard": rows}
+    out = {"v": 1, "updated": int(now), "batches": []}
+    for b in s["batches"]:
+        out["batches"].append({"id": b["id"], "group": b["group"], "title": TITLE[b["group"]], "created": b["created"],
+            "closed": b.get("closed", False),
+            "proposals": [{"id": p["id"], "pf": p["trade"]["pf"], "line": p["line"], "n": p["trade"].get("n"), "token": p["token"],
+                           "exp": p["trade"].get("exp"), "status": status_of(p, now), "done_at": p["done_at"]} for p in b["proposals"]]})
+    return out
+
+def write_inbox(s, now=None):
+    data = json.dumps(inbox_view(s, now), indent=1, ensure_ascii=False) + "\n"
+    targets = [INBOX]
+    if INBOX == DEFAULT_INBOX and (HERE / "dist").is_dir():
+        targets.append(HERE / "dist" / "proposals.json")
+    for t in targets:
+        t.parent.mkdir(parents=True, exist_ok=True)
+        tmp = t.with_suffix(".tmp")
+        tmp.write_text(data)
+        tmp.replace(t)
+    return targets
 
 
 # ------------------------------------------------------------------ state
@@ -222,21 +247,18 @@ def save(s):
     STATE.write_text(json.dumps(s, indent=1, ensure_ascii=False))
     os.chmod(STATE, 0o600)
 
-def chat_id():
-    cid = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
-    if not cid:
-        sys.exit("TELEGRAM_CHAT_ID is not set")
-    return cid
-
 
 # ------------------------------------------------------------------ commands
 def cmd_send(trades, dry=False, base_url=BASE_URL):
+    bad = {str(t.get("id", i)): policy_errors(t) for i, t in enumerate(trades) if policy_errors(t)}
+    if bad:
+        raise SystemExit("refused by policy: " + json.dumps(bad, ensure_ascii=False))
     groups = {}
     for t in trades:
         groups.setdefault(group_of(t), []).append(t)
     st = state_for(trades)
     s, sent = load(), []
-    for g in ("arcus", "entropy", "hl"):
+    for g in ORDER:
         if g not in groups:
             continue
         props = []
@@ -245,30 +267,17 @@ def cmd_send(trades, dry=False, base_url=BASE_URL):
             url = make_url(base_url, clean)
             tok = url.split("#p=")[1]
             decoded = json.loads(__import__("base64").urlsafe_b64decode(tok.split(".")[1] + "==="))
-            props.append({"id": decoded["id"], "trade": decoded, "url": url, "line": t.get("line") or default_line(decoded),
-                          "btn": t.get("btn") or default_btn(decoded), "baseline": baseline(decoded, st), "done": False, "done_at": None})
-        b = {"group": g, "chat_id": chat_id() if not dry else "DRY", "message_id": None, "created": int(time.time()),
-             "closed": False, "proposals": props}
-        text, kb = render(b)
+            props.append({"id": decoded["id"], "trade": decoded, "token": tok, "url": url, "line": t.get("line") or default_line(decoded),
+                          "baseline": baseline(decoded, st), "done": False, "done_at": None})
+        b = {"id": f"{g}-{int(time.time() * 1000)}", "group": g, "created": int(time.time()), "closed": False, "proposals": props}
         if dry:
-            print(f"--- [DRY] message {TITLE[g]}\n{text}\nbuttons: {[[x['text'] for x in r] for r in kb['inline_keyboard']]}\n")
-        else:
-            msg = tg("sendMessage", {"chat_id": b["chat_id"], "text": text, "parse_mode": "HTML", "reply_markup": kb,
-                                     "disable_web_page_preview": True})
-            b["message_id"] = msg["message_id"]
-            s["batches"].append(b)
-        sent.append({"group": g, "message_id": b["message_id"], "ids": [p["id"] for p in props]})
+            print(f"--- [DRY] {TITLE[g]}\n" + "\n".join(f"  {p['line']}  -> {p['url']}" for p in props) + "\n")
+        s["batches"].append(b)
+        sent.append({"group": g, "batch": b["id"], "ids": [p["id"] for p in props]})
     if not dry:
         save(s)
+        write_inbox(s)
     return sent
-
-def _edit(b, dry, now=None):
-    text, kb = render(b, now)
-    if dry:
-        print(f"--- [DRY] edit {b['message_id']}\n{text}\n")
-        return
-    tg("editMessageText", {"chat_id": b["chat_id"], "message_id": b["message_id"], "text": text, "parse_mode": "HTML",
-                           "reply_markup": kb, "disable_web_page_preview": True})
 
 def cmd_check(dry=False, now=None, fetch=state_for):
     now = now or time.time()
@@ -283,15 +292,13 @@ def cmd_check(dry=False, now=None, fetch=state_for):
         for p in b["proposals"]:
             if not p["done"] and executed(p["trade"], p["baseline"], st):
                 p["done"], p["done_at"], changed = True, int(now), True
-        expired = all(p["done"] or (p["trade"].get("exp") and now > p["trade"]["exp"]) for p in b["proposals"])
-        if expired:
+        if all(p["done"] or (p["trade"].get("exp") and now > p["trade"]["exp"]) for p in b["proposals"]):
             b["closed"], changed = True, True
-        if changed:
-            _edit(b, dry, now)
-        report.append({"message_id": b["message_id"], "group": b["group"], "done": sum(p["done"] for p in b["proposals"]),
-                       "total": len(b["proposals"]), "closed": b["closed"]})
+        report.append({"batch": b["id"], "group": b["group"], "done": sum(p["done"] for p in b["proposals"]),
+                       "total": len(b["proposals"]), "closed": b["closed"], "changed": changed})
     if not dry:
         save(s)
+        write_inbox(s, now)
     return report
 
 def cmd_done(pid, dry=False):
@@ -302,9 +309,9 @@ def cmd_done(pid, dry=False):
                 p["done"], p["done_at"] = True, int(time.time())
                 if all(x["done"] for x in b["proposals"]):
                     b["closed"] = True
-                _edit(b, dry)
                 if not dry:
                     save(s)
+                    write_inbox(s)
                 return b
     sys.exit(f"unknown proposal id {pid}")
 
@@ -341,7 +348,7 @@ def main():
         cmd_done(o.id, o.dry); print("ok")
     elif o.cmd == "status":
         for b in load()["batches"]:
-            print(b["group"], b["message_id"], "closed" if b.get("closed") else "open",
+            print(b["group"], b["id"], "closed" if b.get("closed") else "open",
                   [(p["id"], "✅" if p["done"] else "…") for p in b["proposals"]])
 
 if __name__ == "__main__":

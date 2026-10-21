@@ -1,12 +1,13 @@
 {
   "name": "bobby-trader",
   "version": "1.0.0",
-  "description": "Telegram Mini App that turns AI trade proposals into PIN-approved, phone-signed orders on Arcus and Hyperliquid (Entropy)",
+  "description": "Web app (PWA) that turns AI trade proposals into PIN-approved, device-signed orders on Arcus and Hyperliquid (Entropy), with a TxFlow manual mode",
   "main": "index.js",
   "scripts": {
     "test": "node --test tests/",
     "build": "node build.mjs",
-    "e2e": "node build.mjs && node tests/e2e_dryrun.mjs"
+    "e2e": "node build.mjs && node tests/e2e_dryrun.mjs",
+    "serve": "node build.mjs && python3 -m http.server 8080 --bind 127.0.0.1 -d dist"
   },
   "keywords": [],
   "author": "",

@@ -25,7 +25,7 @@ test('make_proposal.py URL decodes in JS (incl. Telegram appended params) and co
   assert.throws(() => decodeProposal(`v1.${parts[1].slice(0, -4)}.${parts[2]}`), /corrompue/);
 });
 test('validation rejects bad proposals', () => {
-  assert.throws(() => decodeProposal(encodeProposal({ ...trade, pf: 'txflow' })));
+  assert.throws(() => decodeProposal(encodeProposal({ ...trade, pf: 'binance' })));
   assert.throws(() => decodeProposal(encodeProposal({ ...trade, et: 'limit', px: undefined })));
   assert.throws(() => decodeProposal(encodeProposal({ ...trade, lev: 2.5 })));
   assert.equal(extractToken('nothing here'), null);

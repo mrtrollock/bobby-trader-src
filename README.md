@@ -1,89 +1,97 @@
 # Bobby Trader
 
-A Telegram Mini App that turns AI-written trade proposals into **PIN-approved orders, signed on the user's phone**, on
-[Arcus](https://docs.arcus.xyz) and on Hyperliquid, including HIP-3 dexes such as **Entropy** (`io:` markets).
+A small **web app (PWA, add to home screen)** that turns AI-written trade proposals into **PIN-approved orders, signed on
+the user's own device**, on [Arcus](https://docs.arcus.xyz) and on Hyperliquid, including HIP-3 dexes such as
+**Entropy** (`io:` markets), plus a **TxFlow manual mode** (no signing: the order is placed in app.txflow.com and
+checked from public data). Works the same on a computer and a phone. The app UI is in French.
 
 The AI assistant never holds trading keys and never places orders. It can only *propose*. The human reviews each
-proposal in the Mini App, the app re-checks it against live market data, and only a PIN unlock on the phone can sign and
-send it.
+proposal in the app, the app re-checks it against live market data and the risk policy, and only a PIN unlock on the
+device can sign and send it.
 
-Built with **Grok Bot**. The app UI is in French.
+Built with **Grok Bot**.
 
 ## How it works
 
 ```
- AI assistant ──► make_proposal.py ──► unsigned link     #p=v1.<base64url json>.<sha256[:16]>
-                         │
-                 send_batch.py ──► Telegram: one message per platform, numbered buttons
-                                          │
-                                    user taps a button
-                                          ▼
-                Telegram Mini App (single static file, strict CSP)
+ AI assistant ──► send_batch.py send trades.json ──► public/proposals.json  (inbox, served next to index.html)
+                                                               │
+                                     user opens 📥 Propositions in the web app, taps "Ouvrir"
+                                                               ▼
+                Web app (single static index.html, strict hash-based CSP, no Telegram)
                   1. decode + validate proposal (corruption check)
-                  2. live check: mark, size rounding, margin, fees, liquidation,
-                     loss at SL / gain at TP incl. fees, max leverage, expiry, drift
+                  2. live check: mark, size rounding, margin, LIVE fees, liquidation, loss at SL incl. fees,
+                     max leverage, expiry, drift + RISK POLICY (hard blocks, see below)
                   3. user approves → PIN → keys decrypted in memory → sign → send
-                     straight from the phone to Arcus / Hyperliquid
-                                          │
-                 send_batch.py check ──► reads public account state, ticks ✅ per trade,
-                                         edits the message to "✅ all executed"
+                     straight from the device to Arcus / Hyperliquid          (TxFlow: manual card + public check)
+                                                               │
+                 send_batch.py check ──► reads public account state, marks each trade done / expired in proposals.json
 ```
+
+### Risk policy (`src/risk.js` `POLICY`, editable in Réglages) — hard blocks, the approve button stays disabled
+- **Maker only**: new positions must be **post-only limit** entries (Arcus `ALO`, Hyperliquid / TxFlow `Alo`); a limit
+  that would cross the book is blocked. Market entries are refused (closing a position stays possible).
+- **Max leverage 1×** (isolated).
+- **Stop-loss mandatory** on every new position.
+- **Max loss at stop per trade = 1 % of platform capital** (default capital $300 per platform → **$3**), fees included
+  (maker fee on the entry leg, taker fee on the stop).
+- **Weekly loss cap $50 per platform** (week = Monday 00:00 UTC). Used = realized PnL net of fees this week, read from
+  public fills (Arcus `/v1/fills`, Hyperliquid `userFillsByTime`, TxFlow `userFills`); if fills cannot be read, the
+  local journal's SL risk is used and a warning is shown. A trade that could cross the cap is blocked.
+- **Margin above free collateral** is blocked.
+- **No deposit / withdraw churn, no vault**: fund-moving and vault actions (`withdraw*`, `usdSend`, `tokenSend`,
+  `vaultTransfer`, …, Arcus `/v1/withdraw`) are refused by every signer path, and `vaultAddress` is never used.
+- `send_batch.py` refuses non-compliant proposals at publish time too.
+
+### Live fees (`src/fees.js`)
+Arcus: per-market maker/taker ppm from `/v1/markets`, less the referral discount from `/v1/account/stats?include=feeTier`
+(`/v1/feetiers` as second source). Hyperliquid main dex: `userFees` (`userAddRate` / `userCrossRate`). TxFlow: `userFees`.
+HIP-3 dexes (Entropy) set their own fees: the configured fallback is used. Hardcoded values are the last fallback.
 
 ### Key handling
-- Keys are typed once into the Mini App and stored **only on the device**, encrypted with the user's PIN
-  (PBKDF2-SHA256, 600k iterations → AES-256-GCM, WebCrypto). Auto-lock after inactivity.
-- Arcus: Ed25519 API signing key. Hyperliquid: an *API/agent wallet* key (trade-only, cannot withdraw).
-- The page is one static `index.html` with JS/CSS inlined and a hash-based Content-Security-Policy:
-  `connect-src` is limited to the Arcus and Hyperliquid APIs, so the code cannot talk to anything else.
+- Keys are typed once in the app and stored **only on the device**, encrypted with the PIN
+  (PBKDF2-SHA256, 600k iterations → AES-256-GCM, WebCrypto) in this origin's IndexedDB. Auto-lock after inactivity.
+- Arcus: Ed25519 API signing key (trade-only when created through the public `createApiKey`). Hyperliquid: an
+  *API/agent wallet* key (trade-only, cannot withdraw). TxFlow: **no key at all** (manual mode).
+- `connect-src` is limited to `'self'` (proposals.json) and the Arcus / Hyperliquid / TxFlow APIs.
 - Default mode is **DRY RUN**: it signs and shows the payload but sends nothing. A testnet toggle is available.
 
-### Risk checks (`src/risk.js`)
-Before approval the app shows notional, margin, fees, an isolated-margin liquidation estimate, and the **loss at
-stop-loss including fees on both sides**. Hard blocks: leverage above the market max, SL/TP on the wrong side.
-Red warnings (need a second confirmation): SL loss over the configured limit, liquidation before the SL, expired
-proposal, price moved more than 1% since the proposal, margin above free collateral. For TP/SL updates on an
-open position, the side check is against the *mark*, so a stop moved past entry to lock in profit is accepted, and
-the locked gain is shown.
+### TxFlow (`src/txflow.js`)
+- **Manual mode (default)**: the proposal card lists market, side, post-only limit, size, leverage, SL/TP, expiry and
+  opens app.txflow.com; "Vérifier l’exécution" reads `clearinghouseState` + `frontendOpenOrders` (public `POST /info`)
+  and flags a position without a stop. The dashboard shows the points-epoch activity (Mon→Mon UTC): fills, volume, fees,
+  active days, maker share (`userFills`, `tradeSide`).
+- **Agent signing stub, feature-flagged OFF** (`TXFLOW_AGENT_ENABLED = false`): post-only order builder, agent EIP-712
+  signing and the one-time `approveAgent` typed data (agent name `bobby`, to be signed by the user's own wallet).
+  Reproduces the test vectors published on docs.txflow.com/api/signing. Needs the mainnet `/exchange` whitelist.
 
-### Arcus TP/SL replacement (`src/replace.js`)
-Arcus allows one position-level TP and one SL per market (`POSITION_TPSL_ALREADY_EXISTS`) and cannot modify TP/SL
-legs. A `tpsl` proposal therefore replaces them in a single approval:
-cancel the position-level legs → wait until they are gone → place the new position TP/SL (re-signed, retried on
-`ALREADY_EXISTS`) → verify it is live → only then cancel entry-linked legs of the replaced type. The leg you did not
-change is carried over. If placement fails, the result screen raises a 🚨 alert when the position is left without a
-stop and offers a one-tap "restore previous TP/SL".
-
-### Batched Telegram proposals (`send_batch.py`)
-One message per platform (🏹 Arcus / 🤖 Entropy / 🤖 Hyperliquid), numbered trades, one Mini App button per trade.
-Execution is detected **without a server**: `check` compares each proposal with the live public account state
-against a baseline taken at send time (position moved, resting order at the price, TP/SL triggers present, order
-gone). Each line gets a ✅ when executed and ⌛ when expired; when a whole message is done it is edited to a green
-✅ header and its buttons are removed.
-
+### Proposals inbox (`send_batch.py`)
 ```
-python3 send_batch.py send trades.json [--dry]
+python3 send_batch.py send trades.json [--dry]     # writes public/proposals.json (+ dist/ if built)
 python3 send_batch.py check [--watch 3600 --every 60]
 python3 send_batch.py status | done <id> | test [--dry]
 ```
-Configuration comes from environment variables only (see `.env.example`). Local state goes in `batches.json`
-(git-ignored, chmod 600).
+No token or secret: only public addresses (`.env.example`). Baselines stay in `batches.json` (git-ignored, chmod 600).
+On GitHub Pages, publishing new proposals = commit + push `public/proposals.json` (and rebuild/deploy `dist/`).
 
 ### Proposal format (v1)
-`id, pf (arcus|hl), m, act (open|tpsl|cancel), sd (long|short), sz, lev, et (market|limit), px, ref, sl, tp, exp, n`.
-HL markets: `BTC` (main dex) or `io:ANTH` (HIP-3 dex). Arcus markets: `TSLA-USD`. The hash only detects
-corruption. It is not a security boundary; the security boundary is the human approval plus the PIN.
+`id, pf (arcus|hl|txflow), m, act (open|tpsl|cancel), sd (long|short), sz, lev, et (market|limit), px, ref, sl, tp, exp, n`.
+HL markets: `BTC` (main dex) or `io:ANTH` (HIP-3 dex). Arcus markets: `TSLA-USD`. TxFlow: `BTC-USDC`. The hash only
+detects corruption. It is not a security boundary; the security boundary is the human approval plus the PIN.
 
 ## Layout
 | Path | What |
 |---|---|
-| `src/app.js` | Mini App UI (views, approval flow, settings, journal) |
+| `src/app.js` | Web app UI (inbox, dashboard, approval flow, TxFlow manual card, settings, journal) |
 | `src/arcus.js`, `src/hl.js` | Request builders + signers (Ed25519 for Arcus, EIP-712 L1 actions for Hyperliquid) |
-| `src/risk.js` | Pre-trade risk math |
+| `src/risk.js` | Pre-trade risk math + risk POLICY + trade-only guard |
+| `src/fees.js` | Live fee readers with fallbacks |
+| `src/txflow.js` | TxFlow public reads, manual execution check, agent-signing stub (flag off) |
 | `src/replace.js` | Arcus TP/SL replace state machine |
 | `src/proposal.js`, `src/keystore.js` | Proposal codec, PIN-encrypted keystore |
 | `src/dec.js`, `src/canon.js`, `src/api.js` | Decimal snapping, canonical JSON, read endpoints |
-| `build.mjs` | esbuild bundle → single `dist/index.html` with hash-based CSP |
-| `make_proposal.py`, `send_batch.py` | Proposal links and batched Telegram messages |
+| `build.mjs` | esbuild bundle → `dist/index.html` with hash-based CSP, + `public/` (manifest, icons, proposals.json) |
+| `make_proposal.py`, `send_batch.py` | Proposal links and the proposals inbox (`public/proposals.json`) |
 | `reference/arcus.py` | Minimal Python Arcus client, used as the reference signer in parity tests |
 | `tests/` | Node test suite + Python reference scripts + headless e2e |
 
@@ -91,18 +99,26 @@ corruption. It is not a security boundary; the security boundary is the human ap
 ```bash
 npm ci
 python3 -m venv venv && venv/bin/pip install -r requirements-dev.txt
-npm test          # 31 tests
-npm run e2e       # optional: headless Chrome, testnet + dry run (needs /usr/bin/google-chrome)
+npm test          # 50 tests
+npm run e2e       # optional: headless Chrome, TESTNET + dry run (needs /usr/bin/google-chrome)
 ```
-- **Parity**: Arcus requests are byte-identical to `reference/arcus.py`, and Hyperliquid signatures, action hashes
-  and order wires are byte-identical to the official `hyperliquid-python-sdk` (randomised cases, throwaway keys).
-- **Risk math**, **proposal codec + keystore**, **TP/SL replace** (simulated matching engine with async cancels,
-  transient errors, hard failures), and **batch messaging** (Telegram mocked, offline).
-- **e2e**: drives the built app in headless Chrome with throwaway keys on testnet in dry-run mode; every
-  mutating endpoint is also blocked at the network layer.
+- **Parity**: Arcus requests are byte-identical to `reference/arcus.py`, Hyperliquid signatures/hashes/wires to the
+  official `hyperliquid-python-sdk`, TxFlow signing to the vectors published in the TxFlow docs.
+- **Risk policy** (maker-only, 1×, mandatory SL, 1 % per trade, weekly cap, Monday-UTC week, realized loss, trade-only
+  guard, post-only builders), **risk math**, **proposal codec + keystore**, **TP/SL replace**, **fees parsing**,
+  **TxFlow reads / epoch activity / execution check**, **inbox publisher** (offline).
+- **e2e**: drives the built app in headless Chrome on testnet in dry-run mode; every mutating endpoint and every
+  mainnet host is blocked at the network layer.
 
 Test child processes run with every `*KEY*`, `*TOKEN*`, `*SECRET*`, `*PASS*` env var stripped, so a real key can
 never leak into a test.
+
+## Preview locally / publish
+```bash
+npm run serve      # builds, then serves dist/ on http://127.0.0.1:8080
+```
+GitHub Pages: publish the `dist/` folder (e.g. a Pages workflow uploading `dist/`, or a `gh-pages` branch with its
+contents). `.nojekyll` is included. Serve over HTTPS only (WebCrypto + PWA install need a secure context).
 
 ## Disclaimer
 MIT licensed (see `LICENSE`). Personal project, not financial advice. Trading perpetuals with leverage can lose more than you expect. Use dry run

@@ -103,11 +103,11 @@ export function positionTpsl(ctx, m, positionSide, { takeProfit = null, stopLoss
 // Entry + bound TP/SL children (grouping entryTpsl). Same per-leg signing as positionTpsl in arcus.py:
 // entry leg op=1, TPSL children op=4, every leg's ct == shared X-Timestamp; children sized to the entry quantity.
 export function entryTpsl(ctx, m, side, qty, { type = 'market', limitPrice = null, takeProfit = null, stopLoss = null,
-  slippage = 0.02, tpslSlippage = 0.05, clientId = null } = {}) {
+  slippage = 0.02, tpslSlippage = 0.05, clientId = null, postOnly = false } = {}) {
   const ts = ctx.nowNs(), g = goodTilUs(ctx);
   let price, orderType, tif;
   if (type === 'market') { price = protectivePrice(m, side, m.markPrice, slippage); orderType = 'MARKET'; tif = 'IOC'; }
-  else { price = D.snap(String(limitPrice), tickFor(m, limitPrice), side === 'BUY' ? 'floor' : 'ceil'); orderType = 'LIMIT'; tif = 'GTT'; }
+  else { price = D.snap(String(limitPrice), tickFor(m, limitPrice), side === 'BUY' ? 'floor' : 'ceil'); orderType = 'LIMIT'; tif = postOnly ? 'ALO' : 'GTT'; }
   const payload = orderPayload(ctx, OP_PLACE, m, ts, side, price, qty, tif, false, g, clientId);
   const entry = orderBody(ctx, m, ts, side, orderType, qty, price, tif, false, g, clientId);
   entry.signature = signHex(ctx.priv, payload);
@@ -151,6 +151,10 @@ export function signedGet(ctx, path) {
 export function maxLeverage(m) {
   const imf = Number(m.isOutsideRth ? (m.offHoursInitialMarginFraction || m.initialMarginFraction) : m.initialMarginFraction);
   return imf > 0 ? Math.floor(1 / imf + 1e-9) : 1;
+}
+export function makerFee(m) {
+  const ppm = Number(m.effectiveMakerFeePpm ?? m.baseMakerFeePpm);
+  return Number.isFinite(ppm) ? ppm / 1e6 : null; // may be 0 (beta) or negative (rebate)
 }
 export function takerFee(m) {
   const ppm = Number(m.effectiveTakerFeePpm ?? m.baseTakerFeePpm);
