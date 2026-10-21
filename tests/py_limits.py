@@ -46,6 +46,8 @@ st["arcus"]["limits"]["halted"]["until"] = (NOW - 1) * 1000
 d2 = LM.build(CAPS, st, {"txflow": {"from": U(2026, 10, 19), "fills": [{"time": U(2026, 10, 20) * 1000, "closedPnl": "-60", "fee": "0"}]}}, {}, NOW, {"enabled": False})
 P2 = {r["id"]: r for r in d2["platforms"]}
 assert P2["arcus"]["status"] == "ok" and "not trading" in P2["arcus"]["note"]
+st["arcus"]["equity"] = 0
+assert "unfunded" in LM.build(CAPS, st, {}, {}, NOW, SW)["platforms"][0]["note"]
 assert P2["txflow"]["status"] == "over cap" and P2["txflow"]["weeklyRemaining"] == 0 and P2["txflow"]["weeklyPct"] == 1.0
 assert P2["variational"]["weeklyUsed"] is None and "points_manual.json" in P2["variational"]["note"]
 # txflow fills that start after Monday cannot measure the week

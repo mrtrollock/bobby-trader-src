@@ -121,6 +121,8 @@ def build(caps_doc, statuses, activity, manual, now, switches=None):
                     row.update(status="halted", haltedUntil=int(float(h["until"]) / 1000), haltScope=h.get("scope"), note=h.get("reason"))
                 else:
                     row["status"] = "ok"
+                if s.get("equity") is not None and float(s["equity"] or 0) <= 0:
+                    row["note"] = (row["note"] + " · " if row["note"] else "") + "unfunded (equity $0): no trade fits the per-trade cap"
                 if not row["trading"]:
                     row["note"] = (row["note"] + " · " if row["note"] else "") + "Bobby is not trading here right now (switch off or no key)"
             else:
