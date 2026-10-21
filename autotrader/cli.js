@@ -43,7 +43,7 @@ function readQueue() {
 
 async function boot({ needKeys = true } = {}) {
   const cfg = C.loadConfig(process.env);
-  SECRETS = C.secretsOf(cfg).concat([process.env.ARCUS_API_PRIVATE_KEY, process.env.ARCUS_API_KEY].filter(Boolean).map((x) => String(x).trim()));
+  SECRETS = C.secretsOf(cfg).concat([process.env.ARCUS_API_PRIVATE_KEY, process.env.ARCUS_API_KEY, process.env.HL_AGENT_PRIVATE_KEY].filter(Boolean).map((x) => String(x).trim()));
   for (const [pf, why] of Object.entries(cfg.disabled || {})) log('WARN', `${pf}: ${why}`);
   const net = C.realNet(cfg);
   if (needKeys) {

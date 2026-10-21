@@ -198,6 +198,15 @@ test('executor live (mock): orphan stops of this mode on a flat market are cance
   } finally { s.restore(); }
 });
 
+test('an exit that just vanished (filled while the position feed lags) is not re-placed for 45 s', () => {
+  const vs = { markets: { 'US100-USD': { phase: 'pos', filledAt: T0 - 60e3, exitAt: T0 - 10e3, requotes: [] } } };
+  const pos = { market: 'US100-USD', side: 'long', size: 0.004, entry: 24999, mark: 25000 };
+  const r = V.decideVolume({ vc: VC({ QFEX_VOL_MARKETS: 'US100' }), st: ST({ positions: [pos] }), refs: REFS, fees: FEES, quotes: QUOTES, vstate: vs, now: T0, rng: rng0, limits: LIM });
+  assert.deepEqual(r.actions, []); assert.ok(r.notes.some((n) => /waiting for the position feed/.test(n)));
+  const r2 = V.decideVolume({ vc: VC({ QFEX_VOL_MARKETS: 'US100' }), st: ST({ positions: [pos] }), refs: REFS, fees: FEES, quotes: QUOTES, vstate: vs, now: T0 + 40e3, rng: rng0, limits: LIM });
+  assert.equal(r2.actions[0].kind, 'exit');
+});
+
 test('volume stats: day / week / month volume, fees and PnL; goal progress', () => {
   const f = (t, px, sz, fee, pnl = 0) => ({ time: t, px, sz, fee, closedPnl: pnl });
   const v = C.volumeStats([f(T0 - 40 * 86400e3, 100, 1, 1), f(Date.UTC(2026, 9, 2), 100, 10, 0.2), f(Date.UTC(2026, 9, 19, 9), 25000, 0.004, 0.02, 0.1), f(T0 - 3600e3, 98, 1, 0)], T0);

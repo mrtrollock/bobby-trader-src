@@ -142,6 +142,9 @@ export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Ma
       if (isLong && q.bid != null) px = Math.max(target, Number((q.bid + step).toFixed(10)));
       if (!isLong && q.ask != null) px = Math.min(target, Number((q.ask - step).toFixed(10)));
       px = Q.snap(px, tick, isLong ? 'ceil' : 'floor');
+      // an exit placed moments ago may have just filled while the position feed still shows the position: wait a tick
+      // (seen live: a duplicate reduce-only exit was refused with INVALID_QUANTITY)
+      if (!exits.length && m.exitAt && now - m.exitAt < 45e3) { notes.push(`${s}: exit placed ${Math.round((now - m.exitAt) / 1000)}s ago is gone; waiting for the position feed`); continue; }
       if (!exits.length) { actions.push({ kind: 'exit', market: s, side: pos.side, qty: pos.size, px, why: held ? 'held too long: exit at the touch' : 'take-profit exit (maker)' }); m.exitAt = now; continue; }
       const ex = exits[0];
       if (held && ex.px != null && Math.abs(ex.px - px) / px > vc.stalePct && requoteOk(m)) { m.requotes.push(now); actions.push({ kind: 'cancel', market: s, id: ex.id, why: 'held too long: exit re-quoted at the touch' }); }
@@ -150,7 +153,7 @@ export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Ma
     // flat market
     for (const o of exits) actions.push({ kind: 'cancel', market: s, id: o.id, why: 'exit left on a flat market' });
     if (m.phase === 'pos') { // round trip finished (maker exit, stop or backup TP)
-      vstate.stats.roundTrips += 1; m.rt = (m.rt || 0) + 1; m.phase = 'idle'; m.risk = 0;
+      vstate.stats.roundTrips += 1; m.rt = (m.rt || 0) + 1; m.phase = 'idle'; m.risk = 0; m.exitAt = 0;
       m.cooldownUntil = now + 1000 * (vc.cooldownS[0] + rng() * (vc.cooldownS[1] - vc.cooldownS[0]));
     }
     if (vstops.length) {

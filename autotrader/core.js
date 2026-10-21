@@ -48,7 +48,8 @@ export function loadConfig(env = process.env) {
   // Arcus key without its account address: Arcus stays OFF (fail closed, no orders, no reads); the other platforms run.
   cfg.disabled = {};
   if (cfg.arcus && !cfg.arcus.address) { cfg.arcus = null; cfg.disabled.arcus = 'ARCUS_ACCOUNT_ADDRESS is not set: Arcus is disabled (no orders, no reads)'; }
-  if (cfg.hl && !cfg.hl.address) throw new Error('HL_ACCOUNT_ADDRESS is required with HL_AGENT_PRIVATE_KEY');
+  // same for Entropy/Hyperliquid: an agent key without HL_ACCOUNT_ADDRESS keeps Entropy OFF instead of aborting the loop
+  if (cfg.hl && !cfg.hl.address) { cfg.hl = null; cfg.disabled.entropy = 'HL_ACCOUNT_ADDRESS is not set: Entropy is disabled (no orders)'; }
   // parse now so a malformed key fails early (the error message never contains the key)
   if (cfg.arcus) { cfg.arcus.priv = A.keyFromHex(cfg.arcus.key); cfg.arcus.apiKey = A.apiKeyOf(cfg.arcus.priv); }
   // master switch: Arcus trades only with AUTOTRADER_ARCUS=1 (key parsed + address present but switch off -> no orders, read-only status still works)
