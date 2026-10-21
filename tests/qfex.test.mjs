@@ -265,3 +265,29 @@ test('QFEX loss limits: $3/trade (fees + stop slippage), ≤ 5% of live equity, 
   assert.match(checkPolicy({ pf: 'arcus', act: 'open', et: 'limit', lev: 1, sl: 1 }, r).blocks.join(), /\(1\.0% of \$300\)/);
   assert.equal(checkPolicy({ pf: 'qfex', act: 'open', et: 'limit', lev: 1, sl: 1 }, r, { policy: policyFor('qfex') }).maxLoss, 3); // web app: 5 % of $100 = $5 -> $3
 });
+
+test('QFEX client_order_id: always 1-36 chars (mainnet limit), unique, allowed characters; buildEntry refuses longer ids', () => {
+  const ids = ['live-test-qfex-gold-1', '2026-10-21-qfex-us100-1-with-a-very-long-proposal-identifier', 'x', 'é/ü?'];
+  const seen = new Set();
+  for (const id of ids) for (let i = 0; i < 50; i++) { const c = Q.clientOrderId(id); assert.ok(c.length >= 1 && c.length <= 36, c); assert.match(c, /^[A-Za-z0-9_-]+$/); seen.add(c); }
+  assert.equal(seen.size, ids.length * 50);
+  assert.throws(() => Q.buildEntry({ symbol: 'GOLD-USD', isLong: true, qty: 0.001, px: 4139, sl: 4122.5, tp: 4172.1, clientOrderId: 'y'.repeat(37) }), /1-36/);
+});
+
+// Exact mainnet shapes recorded during the live GOLD test (2026-10-21; ids replaced).
+test('QFEX confirmed shapes: STOPLOSS/TAKEPROFIT stop rows, STOP_LOSS/TAKE_PROFIT orders, one row per id, fee = rate', () => {
+  const stops = [{ stop_order_id: 'tp1', account_id: 'x', symbol: 'GOLD-USD', price: 4174.3, quantity: 0.001, direction: 'SELL', stop_order_type: 'TAKEPROFIT', client_order_id: 'b-x-take-profit' },
+    { stop_order_id: 'sl1', account_id: 'x', symbol: 'GOLD-USD', price: 4124.7, quantity: 0.001, direction: 'SELL', stop_order_type: 'STOPLOSS', client_order_id: 'b-x-stop-loss' }];
+  const orders = [{ order_id: 'tp1', symbol: 'GOLD-USD', status: 'ACK', quantity: 0.001, price: 4174.3, take_profit: 0, stop_loss: 0, side: 'SELL', type: 'TAKE_PROFIT', time_in_force: 'GTC', quantity_remaining: 0.001, reduce_only: true, order_origin: 'STOP_ORDER' },
+    { order_id: 'sl1', symbol: 'GOLD-USD', status: 'ACK', quantity: 0.001, price: 4124.7, take_profit: 0, stop_loss: 0, side: 'SELL', type: 'STOP_LOSS', time_in_force: 'GTC', quantity_remaining: 0.001, reduce_only: true, order_origin: 'STOP_ORDER' },
+    { order_id: 'e1', symbol: 'GOLD-USD', status: 'ACK', quantity: 0.001, price: 4141.2, take_profit: 4174.3, stop_loss: 4124.7, side: 'BUY', type: 'ALO', time_in_force: 'GTC', quantity_remaining: 0.001, reduce_only: false, order_origin: 'PORT' }];
+  assert.deepEqual(Q.stopRows(stops).map((r) => [r.kind, r.trig]), [['TP', 4174.3], ['SL', 4124.7]]);
+  const o = Q.orderRows(orders);
+  assert.deepEqual(o.map((r) => [r.kind, r.trig, r.px, r.reduceOnly, !!r.stop]), [['TP', 4174.3, null, true, true], ['SL', 4124.7, null, true, true], ['LIMIT', null, 4141.2, false, false]]);
+  const m = Q.mergeOrders(orders, stops);
+  assert.equal(m.length, 3);
+  assert.deepEqual(m.filter((r) => r.kind === 'SL').map((r) => r.trig), [4124.7]);
+  const [t] = Q.tradeRows([{ order_timestamp: 1792583042.9472547, realised_pnl_change: 0, fee: 0.0002, symbol: 'GOLD-USD', price: 4141.2, quantity: 0.001, side: 'BUY', order_type: 'ALO' }]);
+  assert.ok(Math.abs(t.fee - 0.00082824) < 1e-9 && t.feeRate === 0.0002, JSON.stringify(t));
+  assert.equal(Q.entryError({ status: 'ACK', stop_loss: 4124.7, take_profit: 4174.3 }, true), null);
+});

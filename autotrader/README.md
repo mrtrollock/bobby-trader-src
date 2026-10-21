@@ -131,6 +131,14 @@ Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses
   opposite side sized to the position, so it can only reduce).
 * **Stops unknown**: QFEX has no "list stop orders" request; they are read from the `stop_orders` subscription. If a
   position exists and no stop can be read, new entries are refused and `status` reports `stopsKnown:false`.
+* **Confirmed with one live mainnet trade (2026-10-21, GOLD-USD long 0.001, ALO GTC, 1×)**: `POST /user/leverage` answers
+  `{leverage: 1}` and `get_user_leverage` reads 1×; the `add_order` reply is `order_response` status `ACK` and **echoes
+  `stop_loss` / `take_profit`**; the entry rests (`all_orders_response`), then `order_response` `FILLED` + `fill_response`.
+  The SL/TP stop orders are created **only when the entry fills** (none while it rests): `stop_order_response` with
+  `stop_order_type` `STOPLOSS` / `TAKEPROFIT` (re-sent about every second), and they also appear in `get_user_orders` as
+  `type` `STOP_LOSS` / `TAKE_PROFIT`, `reduce_only: true`, `order_origin: STOP_ORDER` (merged into one row per id).
+  `client_order_id` must be 1–36 characters (the bot's ids are ≤ 36). `GET /user/trade` `fee` is the **rate**
+  (dollar fee = rate × price × qty). The bot therefore checks the echo at placement; `status` shows `protected` per position.
 
 ### QFEX key: one subaccount, Execute + View only
 1. Create a QFEX account with a **separate email / fresh wallet** — never the TxFlow/main wallet. Complete KYC/T&Cs if asked

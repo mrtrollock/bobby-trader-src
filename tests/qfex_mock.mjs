@@ -25,6 +25,8 @@ export function fakeWsClass(state, log) {
         if (ch === 'stop_orders' && !state.noStopsSnapshot) for (const st of state.stops || []) this.reply({ stop_order_response: st }); } return; }
       if (m.type === 'get_user_orders') return this.reply({ all_orders_response: { orders: state.orders || [], twaps: [] } });
       if (m.type === 'cancel_on_disconnect') return;
+      // mainnet behaviour (2026-10-21): an over-long client id is rejected with InvalidOrder
+      if (m.type === 'add_order' && !(String(p.client_order_id || 'x').length <= 36)) return this.reply({ err: { error_code: 'InvalidOrder', message: 'Invalid order: InvalidClientOrderId - client order id must be between 1 and 36 characters', incoming_message: m } });
       if (m.type === 'add_order') return this.reply({ order_response: { order_id: 'oid-1', symbol: p.symbol, status: state.entryStatus || 'ACK', quantity: p.quantity, price: p.price,
         take_profit: state.ackStops === false ? 0 : p.take_profit, stop_loss: state.ackStops === false ? 0 : p.stop_loss, side: p.side, type: p.order_type,
         time_in_force: p.order_time_in_force, client_order_id: p.client_order_id, quantity_remaining: p.quantity } });

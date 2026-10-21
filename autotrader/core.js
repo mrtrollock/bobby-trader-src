@@ -57,6 +57,9 @@ export function loadConfig(env = process.env) {
   cfg.bases.qfex = Q.bases(testnet);
   return cfg;
 }
+// Exchange reply kept in the journal (non-identifying fields only; ids of users/accounts are dropped, the log is redacted too).
+export const echoOf = (body) => (body && typeof body === 'object' ? Object.fromEntries(Object.entries(body).filter(([k]) => !/user|account|address|api_key|signature/i.test(k))
+  .map(([k, v]) => [k, v && typeof v === 'object' ? JSON.stringify(v).slice(0, 300) : v])) : body);
 export const secretsOf = (cfg) => [cfg.arcus && cfg.arcus.key, cfg.hl && cfg.hl.key, cfg.qfex && cfg.qfex.secret, cfg.qfex && cfg.qfex.pub, cfg.qfex && cfg.qfex.accountId].filter(Boolean);
 
 export function realNet(cfg) {
@@ -212,7 +215,7 @@ async function qfexState(cfg, net, { sinceMs } = {}) {
   const positions = ((pb && pb.positions) || []).filter((p) => Number(p.position) !== 0).map((p) => ({ market: p.symbol, side: Number(p.position) > 0 ? 'long' : 'short',
     size: Math.abs(Number(p.position)), entry: Number(p.average_price), mark: null, upnl: Number(p.unrealised_pnl || 0), leverage: Number(p.leverage), raw: p }));
   const ws = await net.qfex.wsRead();
-  const orders = [...Q.orderRows(ws.orders), ...Q.stopRows(ws.stops)];
+  const orders = Q.mergeOrders(ws.orders, ws.stops);
   const weekFrom = weekStartUtc(net.now());
   const week = await qfexTrades(net, cfg, weekFrom);
   const fills = sinceMs != null ? (sinceMs >= weekFrom ? week.filter((t) => t.time >= sinceMs) : await qfexTrades(net, cfg, sinceMs)) : undefined;

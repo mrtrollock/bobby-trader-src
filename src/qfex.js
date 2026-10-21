@@ -123,10 +123,17 @@ export function roundProposal({ isLong, px, sl, tp, qty }, ref) {
   };
 }
 let cidSeq = 0;
-export const clientOrderId = (id) => `bobby-${String(id).replace(/[^A-Za-z0-9_-]/g, '').slice(0, 40)}-${Date.now().toString(36)}${(cidSeq++).toString(36)}`;
+// QFEX limit (mainnet reply, 2026-10-21): "client order id must be between 1 and 36 characters".
+export const CID_MAX = 36;
+export const clientOrderId = (id) => {
+  const tail = `${Date.now().toString(36)}${(cidSeq++ % 1296).toString(36)}`;
+  const slug = String(id).replace(/[^A-Za-z0-9_-]/g, '').slice(-(CID_MAX - 3 - tail.length));
+  return `b-${slug}-${tail}`.slice(0, CID_MAX);
+};
 export function buildEntry({ symbol, isLong, qty, px, sl, tp, clientOrderId: cid }) {
   if (!(px > 0) || !(qty > 0)) throw new Error('QFEX entry: price and quantity required');
   if (!(sl > 0) || !(tp > 0)) throw new Error('QFEX entry: stop-loss and take-profit required');
+  if (cid != null && !(String(cid).length >= 1 && String(cid).length <= CID_MAX)) throw new Error('QFEX entry: client_order_id must be 1-36 characters');
   if (isLong ? !(sl < px && tp > px) : !(sl > px && tp < px)) throw new Error('QFEX entry: SL/TP on the wrong side of the entry');
   const m = { type: 'add_order', params: { symbol: normSymbol(symbol), side: isLong ? 'BUY' : 'SELL', order_type: 'ALO', order_time_in_force: 'GTC',
     quantity: qty, price: px, take_profit: tp, stop_loss: sl, client_order_id: cid } };
@@ -170,20 +177,38 @@ export function entryError(order, want) {
   if (want && (!(Number(order.stop_loss) > 0) || !(Number(order.take_profit) > 0))) return 'order ACKed but the exchange echoed no stop_loss/take_profit';
   return null;
 }
+// Shapes confirmed on mainnet with a live fill (2026-10-21):
+//  stop_orders channel: {"stop_order_response":{stop_order_id, account_id, symbol, price, quantity, direction:"SELL",
+//    stop_order_type:"STOPLOSS"|"TAKEPROFIT", client_order_id:"<entry cid>-stop-loss"|"-take-profit", update_time}}, re-sent ~every second;
+//    the stops only exist once the entry has FILLED (none while it rests).
+//  get_user_orders lists the same stops as orders {type:"STOP_LOSS"|"TAKE_PROFIT", price:<trigger>, reduce_only:true, order_origin:"STOP_ORDER"}.
+const stopKind = (t) => { const k = String(t || '').toUpperCase().replace(/[^A-Z]/g, ''); return k === 'STOPLOSS' ? 'SL' : k === 'TAKEPROFIT' ? 'TP' : null; };
 export function stopRows(stops) {
-  return (stops || []).map((s) => ({ id: String(s.stop_order_id), market: s.symbol, side: s.direction, kind: s.stop_order_type === 'STOP_LOSS' ? 'SL' : s.stop_order_type === 'TAKE_PROFIT' ? 'TP' : 'TRIGGER',
+  return (stops || []).map((s) => ({ id: String(s.stop_order_id), market: s.symbol, side: s.direction, kind: stopKind(s.stop_order_type) || 'TRIGGER',
     px: null, trig: num(s.price), size: num(s.quantity), reduceOnly: true, stop: true, raw: s }));
 }
 export function orderRows(orders) {
-  return (orders || []).filter((o) => !['CANCELLED', 'FILLED', 'EXPIRED', 'REJECTED'].includes(o.status)).map((o) => ({ id: String(o.order_id), market: o.symbol, side: o.side,
-    kind: o.type === 'STOP_LOSS' ? 'SL' : o.type === 'TAKE_PROFIT' ? 'TP' : 'LIMIT', px: num(o.price), trig: null, size: num(o.quantity_remaining ?? o.quantity),
-    sl: num(o.stop_loss) || null, tp: num(o.take_profit) || null, reduceOnly: false, raw: o }));
+  return (orders || []).filter((o) => !['CANCELLED', 'FILLED', 'EXPIRED', 'REJECTED'].includes(o.status)).map((o) => {
+    const k = stopKind(o.type);
+    return { id: String(o.order_id), market: o.symbol, side: o.side, kind: k || 'LIMIT', px: k ? null : num(o.price), trig: k ? num(o.price) : null,
+      size: num(o.quantity_remaining ?? o.quantity), sl: num(o.stop_loss) || null, tp: num(o.take_profit) || null,
+      reduceOnly: !!o.reduce_only, ...(k || o.order_origin === 'STOP_ORDER' ? { stop: true } : {}), raw: o };
+  });
 }
-// GET /user/trade rows -> {time ms, closedPnl, fee}. realised_pnl_change is not documented as net of fees: the fee is
+// Open orders + stops, one row per exchange id (the stops appear in both feeds; the stop_orders row wins).
+export function mergeOrders(orders, stops) {
+  const m = new Map();
+  for (const r of [...orderRows(orders), ...stopRows(stops)]) m.set(r.id, r);
+  return [...m.values()];
+}
+// GET /user/trade rows -> {time ms, closedPnl, fee $}. Confirmed on mainnet (2026-10-21): `fee` is the RATE (0.0002 on a
+// maker fill whose balance `fees` rose by 0.0002 x price x qty), so the dollar fee is rate x price x quantity; the larger
+// of the two readings is used (conservative). realised_pnl_change is not documented as net of fees: the fee is
 // subtracted as well, which can only overstate a loss (conservative, like Hyperliquid/TxFlow in risk.realizedLoss).
 export function tradeRows(rows) {
-  return (rows || []).map((t) => { const ts = Number(t.order_timestamp); return { time: ts > 1e12 ? ts : ts * 1000, closedPnl: Number(t.realised_pnl_change || 0), fee: Number(t.fee || 0),
-    m: t.symbol, px: num(t.price), sz: num(t.quantity), side: t.side, type: t.order_type, liquidation: t.liquidation }; });
+  return (rows || []).map((t) => { const ts = Number(t.order_timestamp), rate = Math.abs(Number(t.fee || 0)), px = num(t.price), sz = num(t.quantity);
+    return { time: ts > 1e12 ? ts : ts * 1000, closedPnl: Number(t.realised_pnl_change || 0), fee: Math.max(rate, rate * Math.abs(px || 0) * Math.abs(sz || 0)), feeRate: rate,
+      m: t.symbol, px, sz, side: t.side, type: t.order_type, liquidation: t.liquidation }; });
 }
 
 // ---------------------------------------------------------------- Node network layer (lazy; not used by the browser bundle)

@@ -80,7 +80,7 @@ export async function processQueue(cfg, net, { queue, state, stopExists, logFn =
     const res = await C.send(pfKey, reqs, net);
     const ok = res.every((x) => x.ok);
     logFn(ok ? 'PLACED' : 'ERROR', `${q.id}: ${res.map((x) => `${x.label}: ${x.ok ? 'ok' : x.error}`).join(' | ')}`);
-    journalFn({ id: q.id, decision: ok ? 'placed' : 'failed', risk: ev.risk, results: res.map(({ label, status, ok: o, error }) => ({ label, status, ok: o, error })), mode });
+    journalFn({ id: q.id, decision: ok ? 'placed' : 'failed', risk: ev.risk, results: res.map(({ label, status, ok: o, error, body }) => ({ label, status, ok: o, error, ...(body ? { echo: C.echoOf(body) } : {}) })), mode });
     state[mode][q.id] = { status: ok ? 'placed' : 'failed', t: Date.now() };
     delete stCache[pfKey];
     results.push({ id: q.id, status: ok ? 'placed' : 'failed' });
@@ -106,8 +106,9 @@ async function status(sinceMs, only) {
       const st = await C.accountState(pf, cfg, net, { sinceMs: sinceMs ?? Date.now() - 86400e3 });
       const strip = (x) => { const { raw, ...rest } = x; return rest; };
       out.platforms[pf] = { equity: st.equity, free: st.free, weeklyLoss: st.weeklyLoss, ...(st.deposit != null ? { deposit: st.deposit } : {}),
-        positions: st.positions.map((p) => ({ ...strip(p), sl: st.orders.filter((o) => o.market === p.market && o.kind === 'SL').map((o) => o.trig),
-          tp: st.orders.filter((o) => o.market === p.market && o.kind === 'TP').map((o) => o.trig) })),
+        positions: st.positions.map((p) => { const sl = st.orders.filter((o) => o.market === p.market && o.kind === 'SL').map((o) => o.trig),
+          tp = st.orders.filter((o) => o.market === p.market && o.kind === 'TP').map((o) => o.trig);
+          return { ...strip(p), sl, tp, protected: sl.length > 0 && tp.length > 0 }; }),
         ...(pf === 'qfex' ? { limits: { weeklyLossCap: cfg.qfex.weeklyLossCap, weeklyRemaining: Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss),
           maxTradeLoss: Math.min(cfg.qfex.maxTradeLossUsd, 0.05 * st.equity, Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss)) } } : {}),
         openOrders: st.orders.map(strip), fills: st.fills, ...(st.stopsKnown !== undefined ? { stopsKnown: st.stopsKnown } : {}) };
