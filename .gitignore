@@ -10,3 +10,9 @@ tests/e2e_*.png
 *.tmp
 snapshots.json
 .briefing_comments.json
+autotrader/logs/
+autotrader/state.json
+autotrader/state.json.tmp
+autotrader/STOP
+autotrader/.env
+autotrader/queue.json

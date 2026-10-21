@@ -47,6 +47,12 @@ levels become public at the site URL**. Comments file: `{"arcus": {"detail": "..
 (keys arcus | entropy | txflow); a human comment replaces the generated one. Offline demo:
 `python3 briefing.py --mock tests/fixtures/briefing_mock.json --snapshots /tmp/s.json --out /tmp/b.json`.
 
+### Autotrader (Arcus + Entropy, headless)
+
+`autotrader/` runs fully automatic, policy-gated maker trades on Arcus and Entropy (Hyperliquid dex `io`) from
+`autotrader/queue.json`, with the same signing and risk code as the app. Dry run and kill switch by default;
+see [autotrader/README.md](autotrader/README.md). TxFlow stays manual.
+
 ### Risk policy (`src/risk.js` `POLICY`, editable in Settings) — hard blocks, the approve button stays disabled
 - **Maker only**: new positions must be **post-only limit** entries (Arcus `ALO`, Hyperliquid / TxFlow `Alo`); a limit
   that would cross the book is blocked. Market entries are refused (closing a position stays possible).

@@ -7,7 +7,9 @@
     "test": "node --test tests/",
     "build": "node build.mjs",
     "e2e": "node build.mjs && node tests/e2e_dryrun.mjs",
-    "serve": "node build.mjs && python3 -m http.server 8080 --bind 127.0.0.1 -d dist"
+    "serve": "node build.mjs && python3 -m http.server 8080 --bind 127.0.0.1 -d dist",
+    "autotrader": "node autotrader/cli.js",
+    "e2e:autotrader": "node tests/autotrader_e2e.mjs"
   },
   "keywords": [],
   "author": "",

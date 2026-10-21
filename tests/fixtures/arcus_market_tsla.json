@@ -1,0 +1,121 @@
+{
+ "marketDisplayName": "TSLA-USD",
+ "fullAssetName": "Tesla",
+ "marketId": 29,
+ "status": "ONLINE",
+ "baseAsset": "TSLA",
+ "quoteAsset": "USD",
+ "tickSize": "0.01",
+ "stepSize": "0.0000001",
+ "tickTiers": [
+  {
+   "upToPrice": "5000",
+   "tick": "0.01"
+  },
+  {
+   "upToPrice": "10000",
+   "tick": "0.02"
+  },
+  {
+   "upToPrice": "20000",
+   "tick": "0.05"
+  },
+  {
+   "upToPrice": "50000",
+   "tick": "0.1"
+  },
+  {
+   "upToPrice": "100000",
+   "tick": "0.2"
+  },
+  {
+   "tick": "0.5"
+  }
+ ],
+ "minOrderNotional": "5",
+ "minOrderSize": "0.01",
+ "maxOrderSize": "100000",
+ "oraclePrice": "400.00",
+ "markPrice": "400.00",
+ "lastTradePrice": "381.44",
+ "fundingRate": "0.000005057870393518",
+ "nextFundingRate": "0.00000474537037037",
+ "nextFundingAt": 1792548000,
+ "priceChange24h": "0.0290",
+ "volume24h": "4957.36",
+ "volume24hNotional": "1879454.76",
+ "high24h": "381.77",
+ "low24h": "376.24",
+ "trades24h": 41,
+ "openInterest": "5907.7178329",
+ "openInterestCapNotional": null,
+ "liquidationFeePpm": 10000,
+ "initialMarginFraction": "0.1",
+ "maintenanceMarginFraction": "0.066667",
+ "offHoursInitialMarginFraction": "0.15",
+ "regularTradingHours": {
+  "startSecondsOfDay": 14400,
+  "endSecondsOfDay": 72000,
+  "timezone": "America/New_York",
+  "isOvernight": false
+ },
+ "isOutsideRth": true,
+ "currentSettlementPrice": "383.79",
+ "upperTradingBound": "402.97",
+ "lowerTradingBound": "364.61",
+ "nextUpperTradingBound": "422.16",
+ "nextLowerTradingBound": "345.42",
+ "isUpperInExpansionZone": true,
+ "isLowerInExpansionZone": false,
+ "upperZoneEnteredAt": 1792544472,
+ "upperExpectedExpansionAt": 1792548072,
+ "lowerZoneEnteredAt": null,
+ "lowerExpectedExpansionAt": null,
+ "type": "PERPETUAL",
+ "category": "EQUITIES",
+ "addedTimestamp": 1747310340,
+ "assetResolution": "10000000000",
+ "pythId": "1435",
+ "baseMakerFeePpm": 0,
+ "baseTakerFeePpm": 225,
+ "hasCustomFeeSchedule": false,
+ "effectiveMakerFeePpm": 0,
+ "effectiveTakerFeePpm": 225,
+ "feeTiers": [
+  {
+   "level": 0,
+   "makerFeePpm": 0,
+   "takerFeePpm": 225
+  },
+  {
+   "level": 1,
+   "makerFeePpm": 0,
+   "takerFeePpm": 190
+  },
+  {
+   "level": 2,
+   "makerFeePpm": 0,
+   "takerFeePpm": 160
+  },
+  {
+   "level": 3,
+   "makerFeePpm": 0,
+   "takerFeePpm": 135
+  },
+  {
+   "level": 4,
+   "makerFeePpm": 0,
+   "takerFeePpm": 115
+  },
+  {
+   "level": 5,
+   "makerFeePpm": -20,
+   "takerFeePpm": 100
+  },
+  {
+   "level": 6,
+   "makerFeePpm": -30,
+   "takerFeePpm": 95
+  }
+ ]
+}

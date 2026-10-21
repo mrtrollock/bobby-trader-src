@@ -1,0 +1,6 @@
+[
+ {"id": "2026-10-21-arcus-tsla-1", "platform": "arcus", "market": "TSLA-USD", "side": "long", "type": "limit", "price": 395.5, "size": 0.2,
+  "leverage": 1, "stopLoss": 386, "takeProfit": 412, "expiry": 1792600000, "refPrice": 398.1, "rationale": "pullback to support, maker entry"},
+ {"id": "2026-10-21-entropy-anth-1", "pf": "entropy", "m": "io:ANTH", "sd": "short", "et": "limit", "px": 382.0, "sz": 0.3,
+  "lev": 1, "sl": 390.0, "tp": 370.0, "exp": 1792600000, "ref": 379.5, "n": "fade into resistance"}
+]
