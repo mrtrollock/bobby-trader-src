@@ -410,6 +410,10 @@ function viewBalances(app) {
   const al = j.alerts;
   if (al && al.count) card.append(h('div', { class: 'alert block', id: 'guardalert' }, `⚠️ Protection guard: ${al.count} alert${al.count > 1 ? 's' : ''}. Latest: `,
     ...al.latest.slice(-3).reverse().map((x) => h('div', { class: 'small' }, `${x.t ? x.t.slice(0, 16).replace('T', ' ') + ' UTC' : ''} · ${x.pf || ''} ${x.market || ''}: ${x.kind}${x.missing ? ' (missing ' + x.missing.join('+') + ')' : ''}${x.ok === false ? ' FAILED' : ''}${x.reason ? ' — ' + x.reason : ''}${x.held ? ' — held: ' + x.held : ''}`))));
+  const vol = j.volume;
+  if (vol && vol.month) { const k = (x) => '$' + (x >= 1000 ? (x / 1000).toFixed(1) + 'K' : Math.round(x));
+    card.append(h('div', { class: 'small', id: 'volumeline' }, h('b', {}, '📈 QFEX volume: '),
+      `this week ${k(vol.week.volume)} · this month ${k(vol.month.volume)} · goal ${k(vol.goal)}: ${fmt(vol.monthPct, 1)}% · fees this week $${fmt(vol.week.fees, 2)} · PnL this week ${sgn2(vol.week.pnl)}`)); }
   const cls = (x) => (x == null ? '' : x >= 0 ? 'green' : 'redtxt');
   const row = (name, r, tot) => (r.status === 'ok' || tot
     ? h('tr', { class: tot ? 'total' : '' }, h('th', {}, name), h('td', {}, usd0(r.start)), h('td', {}, usd0(r.current)), h('td', {}, sgn2(r.netDeposits)),

@@ -5,7 +5,8 @@
 //  * every REST request goes through assertQfexRest(): only a short allowlist of GET reads plus POST /user/leverage;
 //    the funding service (banker.qfex.*), /withdraw, /address, /user/transfer, builder/web3 and API-key endpoints are refused;
 //  * every WebSocket message goes through assertQfexMessage(): add_order must be a post-only ALO GTC entry with BOTH
-//    stop_loss and take_profit; stop orders can never be cancelled/modified; no TWAP, no cancel_all, no modify;
+//    stop_loss and take_profit, or (volume mode) a post-only reduce-only maker exit without stops; stop orders are never
+//    modified and only cancelled by the volume mode when ORPHANED (market flat); no TWAP, no cancel_all, no modify;
 //  * no builder code and no wallet-signed (SIWE / builder) key flow exists in this code.
 // The browser app only imports the pure helpers (fees, categories, policy, builders); the network part is Node-only and
 // loads `ws` lazily, so the secret key never has to enter the browser.
@@ -91,7 +92,9 @@ export function assertQfexRest(base, method, path) {
   if (!ok) throw new Error(`QFEX request forbidden by policy: ${method} ${p}`);
 }
 const WS_TYPES = new Set(['auth', 'subscribe', 'unsubscribe', 'add_order', 'cancel_order', 'close_position', 'cancel_on_disconnect',
-  'get_user_orders', 'get_user_trades', 'get_user_leverage']);
+  'get_user_orders', 'get_user_trades', 'get_user_leverage', 'cancel_stop_order']);
+// Hard leverage ceiling of this code (volume mode only; queue entries stay 1x). Also bounded by the market's maximum.
+export const MAX_VOLUME_LEVERAGE = 10;
 export const STOP_TYPES = new Set(['STOP_LOSS', 'TAKE_PROFIT']);
 export function assertQfexMessage(m) {
   if (!m || !WS_TYPES.has(m.type)) throw new Error('QFEX message forbidden by policy: ' + (m && m.type));
@@ -100,11 +103,17 @@ export function assertQfexMessage(m) {
   if (m.type === 'add_order' && STOP_TYPES.has(p.order_type)) { // standalone protective stop (attached to an OPEN position by the guard)
     if (!(Number(p.price) > 0) || !(Number(p.quantity) > 0)) throw new Error('QFEX policy: stop order needs a trigger price and a quantity');
     if (Number(p.stop_loss) > 0 || Number(p.take_profit) > 0) throw new Error('QFEX policy: a stop order carries no further stops');
+  } else if (m.type === 'add_order' && p.reduce_only === true) { // volume mode: maker exit of an OPEN position (can only reduce)
+    if (p.order_type !== 'ALO' || p.order_time_in_force !== 'GTC') throw new Error('QFEX policy: exits must be post-only (ALO, GTC)');
+    if (!(Number(p.price) > 0) || !(Number(p.quantity) > 0)) throw new Error('QFEX policy: an exit needs a price and a quantity');
+    if (Number(p.stop_loss) > 0 || Number(p.take_profit) > 0) throw new Error('QFEX policy: a reduce-only exit carries no stops (the position keeps its own)');
   } else if (m.type === 'add_order') {
     if (p.order_type !== 'ALO' || p.order_time_in_force !== 'GTC') throw new Error('QFEX policy: entries must be post-only (ALO, GTC)');
     if (!(Number(p.stop_loss) > 0) || !(Number(p.take_profit) > 0)) throw new Error('QFEX policy: stop_loss and take_profit are mandatory on every entry');
     if (p.reduce_only) throw new Error('QFEX policy: entries are never reduce-only');
   }
+  // cancel_stop_order is only built by the volume mode for ORPHAN stops (market flat, no resting entry); never for a position
+  if (m.type === 'cancel_stop_order' && !p.stop_order_id) throw new Error('QFEX policy: cancel_stop_order needs a stop_order_id');
   if (m.type === 'cancel_order' && p.cancel_order_id_type !== 'order_id') throw new Error('QFEX policy: cancel by exchange order_id only');
   if (m.type === 'cancel_on_disconnect' && p.cancel_on_disconnect !== false) throw new Error('QFEX policy: cancel-on-disconnect stays off (resting entries and stops must survive the bot)');
   if (m.type === 'subscribe' || m.type === 'unsubscribe') {
@@ -152,13 +161,26 @@ export function buildStopOrder({ symbol, positionIsLong, kind, qty, trig }) {
     order_time_in_force: 'GTC', quantity: qty, price: trig } };
   assertQfexMessage(m); return m;
 }
+// Maker take-profit exit (volume mode): ALO GTC, reduce-only, opposite side of the position, no stops of its own.
+export function buildExit({ symbol, positionIsLong, qty, px, clientOrderId: cid }) {
+  if (!(px > 0) || !(qty > 0)) throw new Error('QFEX exit: price and quantity required');
+  if (cid != null && !(String(cid).length >= 1 && String(cid).length <= CID_MAX)) throw new Error('QFEX exit: client_order_id must be 1-36 characters');
+  const m = { type: 'add_order', params: { symbol: normSymbol(symbol), side: positionIsLong ? 'SELL' : 'BUY', order_type: 'ALO', order_time_in_force: 'GTC',
+    quantity: qty, price: px, take_profit: 0, stop_loss: 0, reduce_only: true, client_order_id: cid } };
+  assertQfexMessage(m); return m;
+}
+// Orphan stop (its position is gone): only ever built by the volume mode after it has checked the market is flat.
+export const buildCancelStop = (stopOrderId) => { const m = { type: 'cancel_stop_order', params: { stop_order_id: String(stopOrderId) } }; assertQfexMessage(m); return m; };
 export const buildCancel = (symbol, orderId) => { const m = { type: 'cancel_order', params: { symbol: normSymbol(symbol), order_id: String(orderId), cancel_order_id_type: 'order_id' } }; assertQfexMessage(m); return m; };
 // The engine sizes a LIMIT IOC on the opposite side to the open position: it can only reduce (close in full).
 export const buildClosePosition = (symbol, cid) => { const m = { type: 'close_position', params: { symbol: normSymbol(symbol), ...(cid ? { client_order_id: cid } : {}) } }; assertQfexMessage(m); return m; };
 export const cancelOnDisconnectOff = () => ({ type: 'cancel_on_disconnect', params: { cancel_on_disconnect: false } });
-export const leverageRequest = (symbol, leverage = 1) => {
-  if (Number(leverage) !== 1) throw new Error('QFEX policy: leverage is always 1x');
-  return { method: 'POST', path: '/user/leverage', body: JSON.stringify({ symbol: normSymbol(symbol), leverage: 1 }) };
+// Queue entries: always 1x. The volume mode (only) may pass { volume: true, maxLev } for 1..MAX_VOLUME_LEVERAGE (<= market max).
+export const leverageRequest = (symbol, leverage = 1, { volume = false, maxLev = MAX_VOLUME_LEVERAGE } = {}) => {
+  const lev = Number(leverage);
+  if (!volume && lev !== 1) throw new Error('QFEX policy: leverage is always 1x');
+  if (!(Number.isInteger(lev) && lev >= 1 && lev <= Math.min(MAX_VOLUME_LEVERAGE, Number(maxLev) || 1))) throw new Error(`QFEX policy: leverage ${leverage}x outside 1..${Math.min(MAX_VOLUME_LEVERAGE, Number(maxLev) || 1)}`);
+  return { method: 'POST', path: '/user/leverage', body: JSON.stringify({ symbol: normSymbol(symbol), leverage: lev }) };
 };
 
 // ---------------------------------------------------------------- response parsing
@@ -288,6 +310,25 @@ export async function mdsQuote(b, symbol, { WS, timeoutMs = 8000 } = {}) {
   });
 }
 
+// Public market data for several symbols over ONE MDS connection: { SYM: {mark, bid, ask} } (symbols that answered in time).
+export async function mdsQuotes(b, symbols, { WS, timeoutMs = 6000 } = {}) {
+  const Ctor = WS || await wsCtor(); const syms = [...new Set(symbols.map(normSymbol))], out = {};
+  if (!syms.length) return out;
+  const ws = new Ctor(b.mds);
+  return new Promise((resolve) => {
+    const full = () => syms.every((s) => out[s] && out[s].mark != null && out[s].bboSeen);
+    const done = () => { clearTimeout(t); try { ws.close(); } catch { /* */ } resolve(out); };
+    const t = setTimeout(done, timeoutMs);
+    const onMsg = (d) => { let m; try { m = JSON.parse(String(d && d.data !== undefined ? d.data : d)); } catch { return; }
+      if (!syms.includes(m.symbol)) return; const o = out[m.symbol] || (out[m.symbol] = { symbol: m.symbol, mark: null, bid: null, ask: null });
+      if (m.type === 'mark_price') o.mark = num(m.price);
+      if (m.type === 'bbo') { const best = (side) => { const r = (m[side] || []).find((x) => Number(x[1]) > 0); return r ? Number(r[0]) : null; }; o.bid = best('bid'); o.ask = best('ask'); o.bboSeen = true; }
+      if (full()) done(); };
+    const onOpen = () => ws.send(JSON.stringify({ type: 'subscribe', channels: ['mark_price', 'bbo'], symbols: syms }));
+    if (ws.on) { ws.on('open', onOpen); ws.on('message', onMsg); ws.on('error', done); }
+    else { ws.addEventListener('open', onOpen); ws.addEventListener('message', onMsg); ws.addEventListener('error', done); }
+  });
+}
 // Network object used by the autotrader (mockable): reads + the guarded send path.
 export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
   return {
@@ -295,6 +336,19 @@ export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
     get: async (path, params, opts = {}) => must(await rest(b, 'GET', path, { params, creds, accountId: opts.accountId }), 'GET ' + path),
     getRaw: (path, params, opts = {}) => rest(b, 'GET', path, { params, creds, accountId: opts.accountId }),
     quote: (symbol) => mdsQuote(b, symbol, { WS }),
+    quotes: (symbols) => mdsQuotes(b, symbols, { WS }),
+    // current leverage per symbol (trade socket get_user_leverage, weight 0.1): { SYM: leverage }
+    leverage: async (symbols) => {
+      const s = await openSession(b, creds, { WS }); const out = {};
+      try {
+        for (const sym of [...new Set(symbols.map(normSymbol))]) {
+          s.queue.length = 0; s.send({ type: 'get_user_leverage', params: { symbol: sym } });
+          const lv = await s.wait((c) => c.kind === 'leverage' || (c.kind === 'err' && c.err.incoming_message && c.err.incoming_message.type === 'get_user_leverage'), 10000, 'leverage');
+          const row = lv.kind === 'leverage' ? lv.rows.find((x) => x.symbol === sym) : null; if (row) out[sym] = Number(row.leverage);
+        }
+      } finally { s.close(); }
+      return out;
+    },
     // WS reads: open (non-stop) orders + stop orders (TP/SL) via a short-lived authenticated session.
     wsRead: async ({ stopsMs = defStopsMs } = {}) => {
       const s = await openSession(b, creds, { WS });
@@ -319,16 +373,17 @@ export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
           if (r.kind === 'rest') {
             const res = await rest(b, r.d.method, r.d.path, { body: r.d.body, creds });
             let err = res.ok ? null : `HTTP ${res.status} ${JSON.stringify(res.body).slice(0, 200)}`;
-            if (!err && r.d.path === '/user/leverage' && res.body && res.body.leverage != null && Number(res.body.leverage) !== 1) err = 'leverage is ' + res.body.leverage + ', not 1x';
-            if (!err && r.d.path === '/user/leverage') { // confirm on the trade socket (authoritative, shape verified): the symbol must read 1x
+            const want = r.d.path === '/user/leverage' ? Number(JSON.parse(r.d.body).leverage) : null;
+            if (!err && want != null && res.body && res.body.leverage != null && Number(res.body.leverage) !== want) err = 'leverage is ' + res.body.leverage + ', not ' + want + 'x';
+            if (!err && want != null) { // confirm on the trade socket (authoritative, shape verified): the symbol must read the requested leverage
               const sym = JSON.parse(r.d.body).symbol;
               if (!s) { s = await openSession(b, creds, { WS }); s.send({ type: 'subscribe', params: { channels: ['order_responses'] } }); }
               s.send({ type: 'get_user_leverage', params: { symbol: sym } });
               let lv; try { lv = await s.wait((c) => c.kind === 'leverage' || (c.kind === 'err' && c.err.incoming_message && c.err.incoming_message.type === 'get_user_leverage'), 10000, 'leverage'); }
               catch (e) { lv = null; }
               const row = lv && lv.kind === 'leverage' ? lv.rows.find((x) => x.symbol === sym) : null;
-              if (!row) err = 'could not confirm 1x leverage on ' + sym;
-              else if (Number(row.leverage) !== 1) err = `leverage on ${sym} is ${row.leverage}x, not 1x`;
+              if (!row) err = `could not confirm ${want}x leverage on ` + sym;
+              else if (Number(row.leverage) !== want) err = `leverage on ${sym} is ${row.leverage}x, not ${want}x`;
             }
             out.push({ label: r.label, status: res.status, ok: !err, error: err, body: res.body }); if (err) break; continue;
           }
@@ -336,15 +391,21 @@ export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
           const m = r.d; s.send(m);
           if (m.type === 'cancel_on_disconnect') { out.push({ label: r.label, ok: true, status: 'sent' }); continue; }
           const cid = m.params.client_order_id, isStop = m.type === 'add_order' && STOP_TYPES.has(m.params.order_type);
+          const isExit = m.type === 'add_order' && m.params.reduce_only === true, isStopCancel = m.type === 'cancel_stop_order';
           const match = (c) => (c.kind === 'order' && (isStop ? c.order.symbol === m.params.symbol && c.order.type === m.params.order_type
+            : isStopCancel ? String(c.order.order_id) === m.params.stop_order_id
             : (cid && c.order.client_order_id === cid) || (!cid && c.order.symbol === m.params.symbol)))
+            || (isStopCancel && c.kind === 'stop' && String(c.stop.stop_order_id) === m.params.stop_order_id && /CANCEL/i.test(String(c.stop.status || '')))
             || (c.kind === 'err' && c.err.incoming_message && c.err.incoming_message.type === m.type);
           let c; try { c = await s.wait(match, 10000, m.type + ' response'); } catch (e) { out.push({ label: r.label, ok: false, error: e.message + ' (state unknown: run status before retrying)' }); break; }
           if (c.kind === 'err') { out.push({ label: r.label, ok: false, error: c.err.error_code + (c.err.message ? ': ' + c.err.message : '') }); break; }
+          const stStatus = c.kind === 'stop' ? c.stop.status : c.order.status;
+          if (isStopCancel) { const e2 = /CANCEL|ACK/i.test(String(stStatus)) ? null : 'cancel stop ' + stStatus; out.push({ label: r.label, ok: !e2, error: e2, status: stStatus }); if (e2) break; continue; }
           let err = isStop ? (c.order.status === 'ACK' ? null : 'stop order ' + c.order.status)
+            : isExit ? entryError(c.order, false)
             : m.type === 'add_order' ? entryError(c.order, true) : m.type === 'cancel_order' ? (c.order.status === 'CANCELLED' ? null : 'cancel ' + c.order.status)
             : (['ACK', 'FILLED', 'IOC_PARTIALLY_FILLED', 'IOC_CANCELLED'].includes(c.order.status) ? null : 'close ' + c.order.status);
-          if (m.type === 'add_order' && !isStop && c.order.status === 'ACK' && err) { // safety: never leave an entry without its stops
+          if (m.type === 'add_order' && !isStop && !isExit && c.order.status === 'ACK' && err) { // safety: never leave an entry without its stops
             try { s.send(buildCancel(m.params.symbol, c.order.order_id)); err += ' -> entry cancelled'; } catch (e) { err += ' -> CANCEL FAILED: ' + e.message; }
           }
           out.push({ label: r.label, ok: !err, error: err, status: c.order.status, body: c.order }); if (err) break;

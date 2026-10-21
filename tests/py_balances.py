@@ -30,7 +30,8 @@ d = BL.update(led, {"entropy": {"equity": 85.0, "flowsSince": 40.0}}, {}, T0 + 1
 assert {r["id"]: r for r in d["platforms"]}["entropy"]["pnl"] == 4
 # CLI: refuses without passphrase; writes ciphertext only
 tmp = Path(tempfile.mkdtemp()); mock = tmp / "m.json"; mock.write_text(json.dumps({"qfex": {"equity": 100, "deposit": 100, "positions": [{"market": "GOLD-USD", "side": "long", "size": 0.001, "entry": 4141.2,
-    "mark": 4139.6, "upnl": -0.0016, "sl": [4124.7], "tp": [4174.3], "protected": True}]}}))
+    "mark": 4139.6, "upnl": -0.0016, "sl": [4124.7], "tp": [4174.3], "protected": True}],
+    "volume": {"day": {"volume": 1000, "fees": 0.2, "pnl": -0.1, "trades": 4}, "week": {"volume": 70000, "fees": 14, "pnl": -5, "trades": 300}, "month": {"volume": 150000, "fees": 30, "pnl": -12, "trades": 700}, "goal": 300000}}}))
 (tmp / "ALERT").write_text(json.dumps({"t": "2026-10-21T12:00:00Z", "pf": "qfex", "market": "GOLD-USD", "kind": "close", "missing": ["sl"], "ok": True, "reason": "no planned SL/TP"}) + "\nbad\n")
 args = ["--mock", str(mock), "--ledger", str(tmp / "l.json"), "--starts", str(tmp / "s.json"), "--out", str(tmp / "b.enc.json"), "--now", str(T0), "--alerts", str(tmp / "ALERT")]
 try:
@@ -45,6 +46,8 @@ assert "qfex" not in raw and "100" not in json.loads(raw)["ct"][:0] and json.loa
 doc = vaultpy.read_sealed(tmp / "b.enc.json")
 assert doc["positions"] == [{"pf": "qfex", "market": "GOLD-USD", "side": "long", "size": 0.001, "entry": 4141.2, "mark": 4139.6, "upnl": -0.0016, "sl": [4124.7], "tp": [4174.3], "protected": True}]
 assert BL.positions_of({"positions": [{"market": "X", "side": "short", "size": 1, "sl": [], "tp": [2]}]})[0]["protected"] is False
+assert doc["volume"]["month"]["volume"] == 150000 and doc["volume"]["monthPct"] == 50.0 and doc["volume"]["week"]["fees"] == 14
+assert BL.volume_line(None) is None and BL.volume_line({"x": 1}) is None
 assert doc["alerts"]["count"] == 1 and doc["alerts"]["latest"][0]["kind"] == "close"
 assert {r["id"]: r for r in doc["platforms"]}["qfex"]["current"] == 100 and oct(os.stat(tmp / "l.json").st_mode)[-3:] == "600"
 try:

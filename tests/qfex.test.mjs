@@ -71,8 +71,22 @@ test('order construction: ALO GTC entry with SL+TP, safe tick/lot rounding, guar
   for (const bad of [{ ...e, params: { ...e.params, order_type: 'LIMIT' } }, { ...e, params: { ...e.params, order_type: 'MARKET', order_time_in_force: 'IOC' } },
     { ...e, params: { ...e.params, stop_loss: 0 } }, { ...e, params: { ...e.params, take_profit: undefined } }])
     assert.throws(() => Q.assertQfexMessage(bad), /post-only|mandatory/);
-  for (const t of ['modify_order', 'cancel_all_orders', 'cancel_stop_order', 'modify_stop_order', 'add_twap', 'transfer', 'withdraw'])
+  for (const t of ['modify_order', 'cancel_all_orders', 'modify_stop_order', 'add_twap', 'transfer', 'withdraw', 'set_user_leverage'])
     assert.throws(() => Q.assertQfexMessage({ type: t, params: {} }), /forbidden/);
+  // cancel_stop_order exists only for the volume mode's ORPHAN stops and needs an id
+  assert.throws(() => Q.assertQfexMessage({ type: 'cancel_stop_order', params: {} }), /stop_order_id/);
+  assert.deepEqual(Q.buildCancelStop('s-1'), { type: 'cancel_stop_order', params: { stop_order_id: 's-1' } });
+  // volume-mode maker exit: ALO GTC reduce-only, no stops; anything else reduce-only is refused
+  const x = Q.buildExit({ symbol: 'us100', positionIsLong: true, qty: 0.003, px: 29620, clientOrderId: 'b-vx-1' });
+  assert.deepEqual(x.params, { symbol: 'US100-USD', side: 'SELL', order_type: 'ALO', order_time_in_force: 'GTC', quantity: 0.003, price: 29620, take_profit: 0, stop_loss: 0, reduce_only: true, client_order_id: 'b-vx-1' });
+  for (const bad of [{ ...x.params, order_type: 'LIMIT' }, { ...x.params, order_type: 'MARKET', order_time_in_force: 'IOC' }, { ...x.params, stop_loss: 29000 }, { ...x.params, price: 0 }])
+    assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: bad }), /post-only|no stops|price/);
+  assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: { ...e.params, reduce_only: 1 } }), /never reduce-only/);
+  // leverage: queue entries 1x only; volume mode 1..10 and <= the market max
+  assert.deepEqual(JSON.parse(Q.leverageRequest('US100', 5, { volume: true, maxLev: 30 }).body), { symbol: 'US100-USD', leverage: 5 });
+  assert.throws(() => Q.leverageRequest('US100', 11, { volume: true, maxLev: 30 }), /outside/);
+  assert.throws(() => Q.leverageRequest('CL', 10, { volume: true, maxLev: 5 }), /outside/);
+  assert.throws(() => Q.leverageRequest('CL', 2.5, { volume: true, maxLev: 10 }), /outside/);
   assert.throws(() => Q.assertQfexMessage({ type: 'cancel_on_disconnect', params: { cancel_on_disconnect: true } }), /stays off/);
   assert.throws(() => Q.assertQfexMessage({ type: 'auth', params: { builder_code: 'x' } }), /builder/);
   assert.throws(() => Q.leverageRequest('US100-USD', 2), /1x/);

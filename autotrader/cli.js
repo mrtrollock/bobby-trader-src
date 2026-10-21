@@ -3,7 +3,7 @@
 //   node autotrader/cli.js verify                     # key-permission checks only
 //   node autotrader/cli.js status [--since UNIX_MS] [--pf qfex]  # JSON: equity, positions, open orders, SL/TP, fills
 //   node autotrader/cli.js once                       # process autotrader/queue.json once
-//   node autotrader/cli.js loop                       # process every AUTOTRADER_INTERVAL_S (60) seconds (+ protection guard)
+//   node autotrader/cli.js loop                       # process every AUTOTRADER_INTERVAL_S (60) seconds (+ protection guard, + volume mode if QFEX_VOLUME_MODE=1)
 //   node autotrader/cli.js guard                      # READ-ONLY: is every open position protected (SL + TP)? never sends
 //   node autotrader/cli.js cancel <arcus|entropy|qfex> <market> <orderId>
 //   node autotrader/cli.js close  <arcus|entropy|qfex> <market>
@@ -11,6 +11,7 @@ import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, ren
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as C from './core.js';
+import * as V from './volume.js';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const P = { queue: process.env.AUTOTRADER_QUEUE || join(DIR, 'queue.json'), stop: join(DIR, 'STOP'), logs: join(DIR, 'logs'), state: join(DIR, 'state.json'), alert: join(DIR, 'ALERT') };
@@ -106,11 +107,27 @@ async function once(ctx) {
   saveState(state);
   const out = await processQueue(cfg, net, { queue: readQueue(), state, stopExists: () => existsSync(P.stop) });
   saveState(state);
+  // volume mode (QFEX_VOLUME_MODE=1 only): after the guard; new exposure only while the guard sees QFEX healthy
+  let volume = null;
+  if (cfg.qfexVol && cfg.qfexVol.enabled) {
+    state.volume ||= {};
+    const guardOk = !guard.some((g) => g.pf === 'qfex' && ['unknown', 'close', 'attach'].includes(g.kind));
+    try { volume = await V.volumeTick(cfg, net, state.volume, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal, alert, guardOk, accountState: C.accountState }); }
+    catch (e) { log('ERROR', 'volume tick failed: ' + e.message); volume = { enabled: true, error: e.message }; }
+    saveState(state);
+  }
   // hot = re-check soon: an entry is resting (it may fill at any moment) or a position is inside its grace period
   out.hot = guard.some((g) => g.kind === 'grace' || g.resting > 0) || out.some((r) => r.status === 'placed');
-  return Object.assign(out, { guard });
+  return Object.assign(out, { guard, volume, tickMs: volume ? cfg.qfexVol.tickS * 1000 : null });
 }
 
+function volumeStatus(cfg) {
+  const vc = cfg.qfexVol; if (!vc) return null;
+  const vs = loadState().volume || {};
+  return { enabled: vc.enabled, sending: vc.enabled && cfg.enabled && cfg.live, leverage: vc.leverage, maxMarkets: vc.maxMarkets, markets: vc.markets, tpPct: vc.tpPct, slPct: vc.slPct,
+    dailyLossStop: +(vc.dailyLossFrac * cfg.qfex.weeklyLossCap).toFixed(2), halted: vs.halted || null, stats: vs.stats || null,
+    active: Object.entries(vs.markets || {}).filter(([, m]) => m.phase !== 'idle').map(([k, m]) => ({ market: k, phase: m.phase })) };
+}
 async function status(sinceMs, only) {
   const cfg = C.loadConfig(process.env); SECRETS = C.secretsOf(cfg);
   const net = C.realNet(cfg);
@@ -124,6 +141,7 @@ async function status(sinceMs, only) {
         positions: st.positions.map((p) => { const sl = st.orders.filter((o) => o.market === p.market && o.kind === 'SL').map((o) => o.trig),
           tp = st.orders.filter((o) => o.market === p.market && o.kind === 'TP').map((o) => o.trig);
           return { ...strip(p), sl, tp, protected: sl.length > 0 && tp.length > 0 }; }),
+        ...(pf === 'qfex' ? { volume: st.volume, dailyLoss: st.dailyLoss, volumeMode: volumeStatus(cfg) } : {}),
         ...(pf === 'qfex' ? { limits: { weeklyLossCap: cfg.qfex.weeklyLossCap, weeklyRemaining: Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss),
           maxTradeLoss: Math.min(cfg.qfex.maxTradeLossUsd, 0.05 * st.equity, Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss)) } } : {}),
         openOrders: st.orders.map(strip), fills: st.fills, ...(st.stopsKnown !== undefined ? { stopsKnown: st.stopsKnown } : {}) };
@@ -146,18 +164,19 @@ async function reduceCmd(kind, pf, market, oid) {
 
 async function loop() {
   const every = Math.max(15, Number(process.env.AUTOTRADER_INTERVAL_S || 60)) * 1000;
-  let ctx = await boot(), verifiedAt = Date.now(), stopping = false, hot = false;
-  log('INFO', `loop started (${ctx.cfg.network}, ${ctx.cfg.live ? 'LIVE' : 'DRY RUN'}, every ${every / 1000}s)`);
+  let ctx = await boot(), verifiedAt = Date.now(), stopping = false, hot = false, volTick = null;
+  log('INFO', `loop started (${ctx.cfg.network}, ${ctx.cfg.live ? 'LIVE' : 'DRY RUN'}, every ${every / 1000}s, QFEX volume mode ${ctx.cfg.qfexVol && ctx.cfg.qfexVol.enabled ? 'ON (' + ctx.cfg.qfexVol.leverage + 'x)' : 'off'})`);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; log('INFO', 'stopping on ' + sig); });
   while (!stopping) {
     try {
       if (Date.now() - verifiedAt > 30 * 60e3) { ctx = await boot(); verifiedAt = Date.now(); }
-      const r = await once(ctx); hot = !!(r && r.hot);
+      const r = await once(ctx); hot = !!(r && r.hot); volTick = r && r.tickMs;
     } catch (e) {
       log('ERROR', 'iteration failed: ' + e.message);
       if (/key|agent|permission|approved|registered|expired|QFEX: (authentication|this API key|could not verify|set QFEX_KEY)/i.test(e.message)) { log('ERROR', 'key check failed, aborting loop'); process.exit(2); }
     }
-    const wait = hot ? Math.min(every, 20000) : every; // while an entry rests / a fill is staging its stops: re-check every 20 s
+    // while an entry rests / a fill is staging its stops: re-check every 20 s; volume mode ticks every QFEX_VOL_TICK_S
+    const wait = Math.min(hot ? Math.min(every, 20000) : every, volTick || Infinity);
     for (let t = 0; t < wait && !stopping; t += 1000) await new Promise((r) => setTimeout(r, 1000));
   }
 }

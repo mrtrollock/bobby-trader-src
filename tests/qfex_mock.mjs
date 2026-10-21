@@ -40,6 +40,8 @@ export function fakeWsClass(state, log) {
       if (m.type === 'add_order') return this.reply({ order_response: { order_id: 'oid-1', symbol: p.symbol, status: state.entryStatus || 'ACK', quantity: p.quantity, price: p.price,
         take_profit: state.ackStops === false ? 0 : p.take_profit, stop_loss: state.ackStops === false ? 0 : p.stop_loss, side: p.side, type: p.order_type,
         time_in_force: p.order_time_in_force, client_order_id: p.client_order_id, quantity_remaining: p.quantity } });
+      if (m.type === 'cancel_stop_order') { state.stops = (state.stops || []).filter((x) => x.stop_order_id !== p.stop_order_id); state.stopCancels = (state.stopCancels || []).concat(p.stop_order_id);
+        return this.reply({ order_response: { order_id: p.stop_order_id, status: 'CANCELLED' } }); }
       if (m.type === 'cancel_order') return this.reply({ order_response: { order_id: p.order_id, symbol: p.symbol, status: 'CANCELLED' } });
       if (m.type === 'close_position') { state.closed = (state.closed || []).concat(p.symbol); state.positions = (state.positions || []).filter((x) => x.symbol !== p.symbol); state.stops = []; }
       if (m.type === 'close_position') return this.reply({ order_response: { order_id: 'close-1', symbol: p.symbol, status: 'FILLED', client_order_id: p.client_order_id } });

@@ -6,6 +6,7 @@ import * as H from '../src/hl.js';
 import * as Q from '../src/qfex.js';
 import * as API from '../src/api.js';
 import * as F from '../src/fees.js';
+import { loadVolumeConfig } from './volume.js';
 import { computeRisk, checkPolicy, POLICY, weekStartUtc, realizedLoss, assertTradeOnly, policyFor } from '../src/risk.js';
 
 export const MAX_POSITIONS = 3;
@@ -55,6 +56,8 @@ export function loadConfig(env = process.env) {
     if (!(cfg.qfex.maxTradeLossUsd > 0 && cfg.qfex.maxTradeLossUsd <= cfg.qfex.weeklyLossCap)) throw new Error('QFEX_MAX_TRADE_LOSS_USD must be > 0 and <= the weekly cap');
   }
   cfg.bases.qfex = Q.bases(testnet);
+  // volume mode: OFF unless QFEX_VOLUME_MODE=1 (and still needs AUTOTRADER_ENABLED=1 + AUTOTRADER_LIVE=1 to send anything)
+  cfg.qfexVol = cfg.qfex ? loadVolumeConfig(env) : null;
   return cfg;
 }
 // Exchange reply kept in the journal (non-identifying fields only; ids of users/accounts are dropped, the log is redacted too).
@@ -201,6 +204,18 @@ async function qfexTrades(net, cfg, fromMs) {
   }
   return Q.tradeRows(rows).filter((t) => t.time >= fromMs);
 }
+// ---------------------------------------------------------------- volume / fee / PnL tracking (QFEX fills, UTC periods)
+export const VOLUME_GOAL_MONTH = 300000;
+export const dayStartUtc = (ms) => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()); };
+export const monthStartUtc = (ms) => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); };
+// fills: Q.tradeRows -> { day, week, month: {volume $, fees $, pnl $ (realised - fees), trades}, goal, monthPct }
+export function volumeStats(fills, nowMs, { goal = VOLUME_GOAL_MONTH } = {}) {
+  const per = (from) => { const r = { volume: 0, fees: 0, pnl: 0, trades: 0 };
+    for (const f of fills || []) { if (!(f.time >= from)) continue; r.volume += Math.abs(Number(f.px || 0) * Number(f.sz || 0)); r.fees += Number(f.fee || 0); r.pnl += Number(f.closedPnl || 0) - Number(f.fee || 0); r.trades += 1; }
+    return { volume: +r.volume.toFixed(2), fees: +r.fees.toFixed(4), pnl: +r.pnl.toFixed(4), trades: r.trades }; };
+  const month = per(monthStartUtc(nowMs));
+  return { day: per(dayStartUtc(nowMs)), week: per(weekStartUtc(nowMs)), month, goal, monthPct: +(100 * month.volume / goal).toFixed(2), periods: 'UTC (week from Monday 00:00 UTC)' };
+}
 async function qfexState(cfg, net, { sinceMs } = {}) {
   const q = cfg.qfex;
   const pb = await net.qfex.get('/user/positions', null, { accountId: q.accountId });
@@ -227,11 +242,12 @@ async function qfexState(cfg, net, { sinceMs } = {}) {
     if (p.mark == null && p.size > 0 && Number.isFinite(p.entry)) p.mark = p.entry + (p.side === 'long' ? p.upnl / p.size : -p.upnl / p.size);
   }
   const orders = Q.mergeOrders(ws.orders, ws.stops);
-  const weekFrom = weekStartUtc(net.now());
-  const week = await qfexTrades(net, cfg, weekFrom);
-  const fills = sinceMs != null ? (sinceMs >= weekFrom ? week.filter((t) => t.time >= sinceMs) : await qfexTrades(net, cfg, sinceMs)) : undefined;
+  const now = net.now(), weekFrom = weekStartUtc(now), dayFrom = dayStartUtc(now), monthFrom = monthStartUtc(now);
+  const from = Math.min(weekFrom, monthFrom);
+  const all = await qfexTrades(net, cfg, from), week = all.filter((t) => t.time >= weekFrom);
+  const fills = sinceMs != null ? (sinceMs >= from ? all.filter((t) => t.time >= sinceMs) : await qfexTrades(net, cfg, sinceMs)) : undefined;
   return { pf: 'qfex', equity, free, deposit: Number(bal.deposit || 0), positions, orders, stopsKnown: ws.stops.length > 0 || !positions.length, stopsSubscribed: ws.stopsSubscribed,
-    weeklyLoss: realizedLoss(week, weekFrom), fills };
+    weeklyLoss: realizedLoss(week, weekFrom), dailyLoss: realizedLoss(all, dayFrom), volume: volumeStats(all, now), fills };
 }
 
 export async function accountState(pf, cfg, net, { sinceMs } = {}) {

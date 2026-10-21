@@ -84,7 +84,7 @@ def read_live(testnet, start):
 
     def qfex():
         q = B.fetch_qfex(testnet, int(time.time() * 1000))
-        return {"equity": f(q.get("equity")), "deposit": f(q.get("deposit")), "positions": positions_of(q)}
+        return {"equity": f(q.get("equity")), "deposit": f(q.get("deposit")), "positions": positions_of(q), "volume": q.get("volume")}
 
     out = {}
     for pf, ok, fn in (("arcus", addr, arcus), ("entropy", hl_addr, entropy), ("txflow", tx_addr, txflow), ("qfex", qkey, qfex)):
@@ -162,6 +162,16 @@ def read_alerts(path, keep=5):
     return {"count": len(rows), "latest": [{k: r.get(k) for k in keys if r.get(k) is not None} for r in rows[-keep:]]}
 
 
+def volume_line(v):
+    """QFEX traded volume / fees / PnL (from the autotrader status, UTC periods) for the Balances tab; None when unknown."""
+    if not isinstance(v, dict) or not isinstance(v.get("month"), dict):
+        return None
+    keep = lambda p: {k: round(float((v.get(p) or {}).get(k) or 0), 2) for k in ("volume", "fees", "pnl", "trades")}
+    goal = float(v.get("goal") or 300000)
+    month = keep("month")
+    return {"pf": "qfex", "day": keep("day"), "week": keep("week"), "month": month, "goal": goal, "monthPct": round(100 * month["volume"] / goal, 2) if goal else None}
+
+
 def main(argv=None):
     B.load_env()
     ap = argparse.ArgumentParser(description="Bobby balances / PnL -> public/balances.enc.json (encrypted)")
@@ -184,6 +194,7 @@ def main(argv=None):
     doc["network"] = "mock" if a.mock else ("testnet" if a.testnet else "mainnet")
     doc["alerts"] = read_alerts(Path(a.alerts))
     doc["positions"] = [{"pf": pf, **p} for pf in ORDER for p in ((readings.get(pf) or {}).get("positions") or [])]
+    doc["volume"] = volume_line((readings.get("qfex") or {}).get("volume"))
     text = json.dumps(doc)
     if any(s and s.lower() in text.lower() for s in secrets):
         raise SystemExit("refusing to write: an address or key would be included")

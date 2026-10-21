@@ -109,6 +109,64 @@ nohup node autotrader/cli.js loop >> autotrader/logs/nohup.out 2>&1 &
   cannot be read the guard reports `unknown` (never closes on missing data) and alerts after 5 minutes.
 * `node autotrader/cli.js guard` = read-only check (prints the decision per position, sends nothing, writes no alert).
 
+## QFEX volume mode (DISABLED by default)
+
+Maker round trips on QFEX index/commodity markets to build traded volume, inside the same hard limits. QFEX only: no
+hedge legs anywhere (Arcus points terms disqualify delta-neutral / hedged farming). Runs inside `loop` after the
+protection guard, every `QFEX_VOL_TICK_S`; it only sends with `QFEX_VOLUME_MODE=1` **and** `AUTOTRADER_ENABLED=1` **and**
+`AUTOTRADER_LIVE=1` and no `STOP` file. Otherwise it only reports what it would do.
+
+Per market (at most `QFEX_VOL_MAX_MARKETS`, one position per market, never an entry and an exit at the same time):
+1. after a random cooldown (`QFEX_VOL_COOLDOWN_S`, e.g. `20-90`): ALO GTC entry at the touch (bid for long, ask for short;
+   sides alternate with some randomness, size jittered by `QFEX_VOL_SIZE_JITTER`), with an attached **protective
+   stop_loss** at `QFEX_VOL_SL_PCT` and a backup take_profit at `QFEX_VOL_TP_PCT x QFEX_VOL_TP_BACKUP_MULT`;
+   client ids `b-vol-…`;
+2. stale entry (touch moved more than `QFEX_VOL_STALE_PCT`): cancelled and re-quoted, at most `QFEX_VOL_REQUOTES_PER_MIN`
+   per market (QFEX allows 12,000 weight per minute; add/cancel weigh 1 each, so this is far below the limit);
+3. filled: the rest of a partial entry is cancelled first, then a **maker exit**: ALO GTC `reduce_only` limit at
+   `+QFEX_VOL_TP_PCT` (client id `b-vx-…`). After `QFEX_VOL_MAX_HOLD_S` it is re-quoted at the touch (still maker);
+4. flat again: the round trip is counted; exits left on the flat market are cancelled; **orphan** stops of this mode
+   (their position is gone) are cancelled so they can never hit a later position. Stops of an open position are never
+   cancelled, and positions or stops it did not open (e.g. a queue trade) are never touched.
+
+Checked before **every** entry (any failure means no entry):
+- worst loss at the stop = move to the SL + maker entry fee + stop taker fee (floor 0.05 %) + slippage (0.05 %)
+  <= `QFEX_MAX_TRADE_LOSS_USD` (and <= 5 % of equity);
+- realised week loss incl. fees + worst case of all open volume trades + this one <= `QFEX_WEEKLY_LOSS_CAP_USD`; reaching
+  the cap **halts volume mode until Monday 00:00 UTC** (alert); resting entries are cancelled;
+- the same for the day with `QFEX_VOL_DAILY_LOSS_FRAC` x the weekly cap (halt until 00:00 UTC);
+- margin (notional / leverage) + resting entries <= free collateral;
+- cross-margin liquidation distance (equity / total notional - maintenance) >= `QFEX_VOL_LIQ_MULT` x the stop distance;
+- leverage `QFEX_LEVERAGE` (integer 1..10, <= market max) is read (`get_user_leverage`) and, if different, set and read
+  back before the entry; a mismatch blocks that market for 10 minutes (alert);
+- the guard sees QFEX healthy (no unknown / unprotected position), market in its **regular** session now and in 15 min,
+  spread <= `QFEX_VOL_MAX_SPREAD_PCT`.
+
+Markets: `QFEX_VOL_MARKETS` (or `auto` = every INDEX/COMMODITY market), ordered by the **live maker fee** from
+`GET /user/fees` (refreshed hourly), then `QFEX_VOL_PREFER` (default `US100,US500`), then random.
+
+Tracking: `status` shows `volume` (day / week / month volume, fees, PnL, % of the $300K monthly goal; UTC periods),
+`dailyLoss` and `volumeMode`; the Balances tab shows the Volume line (encrypted, via `balances.py`).
+
+| Variable | Default | Meaning |
+|---|---|---|
+| `QFEX_VOLUME_MODE` | off | `1` enables the mode (plus `AUTOTRADER_ENABLED=1` + `AUTOTRADER_LIVE=1` to send) |
+| `QFEX_LEVERAGE` | 5 | per-market leverage for volume entries (1..10); queue entries stay 1x |
+| `QFEX_VOL_MAX_MARKETS` | 3 | concurrent markets |
+| `QFEX_VOL_MARKETS` | auto | comma list, e.g. `CL,GOLD,US500,US100,SILVER` |
+| `QFEX_VOL_TP_PCT` / `QFEX_VOL_SL_PCT` | 0.001 / 0.004 | maker exit offset / protective stop distance (fractions) |
+| `QFEX_VOL_NOTIONAL_USD` | auto | per-trade notional; auto = equity x leverage x `QFEX_VOL_UTILISATION` (0.8) / max markets |
+| `QFEX_VOL_COOLDOWN_S` | 20-90 | random pause after a round trip |
+| `QFEX_VOL_DAILY_LOSS_FRAC` | 0.4 | daily stop as a fraction of the weekly cap |
+| `QFEX_VOL_STALE_PCT`, `QFEX_VOL_REQUOTES_PER_MIN`, `QFEX_VOL_MAX_HOLD_S`, `QFEX_VOL_LIQ_MULT`, `QFEX_VOL_TICK_S`, `QFEX_VOL_MAX_SPREAD_PCT`, `QFEX_VOL_SIZE_JITTER`, `QFEX_VOL_TP_BACKUP_MULT`, `QFEX_VOL_CANCEL_ORPHAN_STOPS` | 0.0005, 3, 1800, 3, 15, 0.0005, 0.15, 3, 1 | see above |
+
+Not yet confirmed on mainnet: an ALO order with `reduce_only: true` (the docs list the field; if QFEX rejects it the
+position keeps its exchange SL/TP and an alert is raised after 3 failures), and the reply shape of `cancel_stop_order`
+(an unconfirmed cancel is reported as failed and re-checked on the next tick).
+
+Simulation on live public prices (no key, no orders): `node tools/qfex_volume_sim.mjs MINUTES OUT.json [SYMBOLS…]`
+(`SIM_TPS` / `SIM_SLS` override the grids).
+
 ## QFEX
 QFEX (https://qfex.com, docs https://docs.qfex.com) is an off-chain CLOB for perps on US stocks, indices, commodities.
 Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses UAT (`api.qfex.io`, `wss://trade.qfex.io`,
