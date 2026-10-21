@@ -71,3 +71,10 @@ test('QFEX REST calls are bounded by a timeout (a hanging request cannot freeze 
     assert.equal(C.isTransientError(e), true, e.message);
   } finally { globalThis.fetch = realFetch; if (prev == null) delete process.env.QFEX_HTTP_TIMEOUT_MS; else process.env.QFEX_HTTP_TIMEOUT_MS = prev; }
 });
+
+test('a tick where the guard read worked but a later read failed backs off without moving toward the abort', () => {
+  const h = C.readHealth(); const t0 = 1e12; let t = t0, r;
+  for (let i = 0; i < 12; i++) { r = h.fail(t, { partial: true }); assert.equal(r.abort, false); t += r.waitMs; }
+  assert.ok(t - t0 > 10 * 60e3); assert.equal(r.waitMs, 240e3); assert.equal(h.degraded, true);
+  assert.equal(h.fail(t + 1000).abort, false); // a full failure starts the 10-min window from the last partial success
+});

@@ -157,7 +157,9 @@ export function isTransientError(e) {
 // abort only once reads have failed continuously for longer than maxDownMs.
 export function readHealth({ baseMs = 15e3, capMs = 240e3, maxDownMs = 10 * 60e3 } = {}) {
   const h = { since: null, n: 0, get degraded() { return h.since != null; },
-    fail(t) { if (h.since == null) h.since = t; h.n += 1; const downMs = t - h.since;
+    // partial: another QFEX read of the same tick succeeded (the key demonstrably works): backoff continues, but the
+    // "continuous failure" window that leads to the abort restarts
+    fail(t, { partial = false } = {}) { if (h.since == null || partial) h.since = t; h.n += 1; const downMs = t - h.since;
       return { downMs, n: h.n, waitMs: Math.min(capMs, baseMs * 2 ** (h.n - 1)), abort: downMs > maxDownMs }; },
     ok(t) { const r = h.since == null ? null : { downMs: t - h.since, n: h.n }; h.since = null; h.n = 0; return r; } };
   return h;

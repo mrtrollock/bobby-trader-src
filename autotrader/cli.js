@@ -134,6 +134,7 @@ async function once(ctx, { degraded = false } = {}) {
   // a failed QFEX read this tick (guard could not read, or the volume tick hit a transient error) -> backoff + paused entries
   const gErr = guard.find((g) => g.pf === 'qfex' && g.kind === 'unknown');
   const readError = gErr ? new Error(gErr.error || 'QFEX guard read failed') : volume && volume.error && C.isTransientError(volume.error) ? new Error(volume.error) : null;
+  if (readError && !gErr) readError.partial = true; // the guard's read worked this tick
   return Object.assign(out, { guard, volume, readError, tickMs: volume ? cfg.qfexVol.tickS * 1000 : null });
 }
 
@@ -211,7 +212,7 @@ async function loop() {
     lastDone = Date.now();
     let wait = Math.min(hot ? Math.min(every, 20000) : every, volTick || Infinity);
     if (failure) {
-      const h = health.fail(Date.now());
+      const h = health.fail(Date.now(), { partial: !!failure.partial });
       if (h.abort) {
         const msg = `QFEX reads failed continuously for ${Math.round(h.downMs / 60e3)} min (${redact(failure.message)}): treating it as a key problem, aborting loop (exchange stops stay in place)`;
         log('ERROR', msg); alert({ pf: 'qfex', kind: 'abort', reason: msg }); process.exit(2);
