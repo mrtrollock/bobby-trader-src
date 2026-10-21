@@ -49,6 +49,8 @@ export function loadConfig(env = process.env) {
   if (cfg.hl && !cfg.hl.address) throw new Error('HL_ACCOUNT_ADDRESS is required with HL_AGENT_PRIVATE_KEY');
   // parse now so a malformed key fails early (the error message never contains the key)
   if (cfg.arcus) { cfg.arcus.priv = A.keyFromHex(cfg.arcus.key); cfg.arcus.apiKey = A.apiKeyOf(cfg.arcus.priv); }
+  // master switch: Arcus trades only with AUTOTRADER_ARCUS=1 (key parsed + address present but switch off -> no orders, read-only status still works)
+  if (cfg.arcus && env.AUTOTRADER_ARCUS !== '1') { cfg.arcus = null; cfg.disabled.arcus = 'AUTOTRADER_ARCUS is not 1: Arcus trading is disabled (no orders)'; }
   if (cfg.hl) { cfg.hl.priv = H.keyFromHex(cfg.hl.key); cfg.hl.agent = H.addressOf(cfg.hl.priv); }
   if (cfg.qfex) {
     Q.checkCreds(cfg.qfex);

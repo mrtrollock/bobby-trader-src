@@ -16,7 +16,7 @@ const post = (u, b) => fetch(u, { method: 'POST', headers: { 'Content-Type': 'ap
 
 // 1. real key checks abort
 const lb = (await fetch('https://api.testnet.arcus.xyz/v1/leaderboard?limit=30').then((r) => r.json())).entries;
-const env = cleanEnv({ AUTOTRADER_NETWORK: 'testnet', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: lb[0].address, ARCUS_ACCOUNT_INDEX: '0' });
+const env = cleanEnv({ AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ARCUS: '1', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: lb[0].address, ARCUS_ACCOUNT_INDEX: '0' });
 const v = spawnSync('node', ['autotrader/cli.js', 'verify'], { env, encoding: 'utf8' });
 assert.equal(v.status, 2, v.stdout + v.stderr); assert.match(v.stderr, /ABORT: Arcus: this API key is not registered/);
 const v2 = spawnSync('node', ['autotrader/cli.js', 'verify'], { env: cleanEnv({ AUTOTRADER_NETWORK: 'testnet', HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: '0x' + '33'.repeat(20) }), encoding: 'utf8' });
@@ -35,7 +35,7 @@ const SYNTH_HL = { clearinghouseState: { marginSummary: { accountValue: '300' },
   userRole: { role: 'agent', data: { user: hlAddr } } };
 console.error('accounts found:', !!arcusAddr, !!hlAddr);
 
-const cfgA = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ENABLED: '1', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: arcusAddr || '0x' + '44'.repeat(20) });
+const cfgA = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ENABLED: '1', AUTOTRADER_ARCUS: '1', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: arcusAddr || '0x' + '44'.repeat(20) });
 const cfgH = C.loadConfig({ AUTOTRADER_NETWORK: 'mainnet', AUTOTRADER_ENABLED: '1', HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: hlAddr || '0x' + '44'.repeat(20) });
 const noSend = (net) => ({ ...net, sendArcus: () => { throw new Error('SEND BLOCKED'); }, sendHl: () => { throw new Error('SEND BLOCKED'); } });
 const realA = C.realNet(cfgA);

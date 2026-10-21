@@ -12,7 +12,7 @@ const FX = (f) => JSON.parse(readFileSync(new URL('./fixtures/' + f, import.meta
 const NOW = Date.UTC(2026, 9, 21, 12, 0, 0);
 const OWNER = '0x' + '11'.repeat(20), MASTER = '0x' + '22'.repeat(20);
 const ARCUS_KEY = randHex(32), HL_KEY = '0x' + randHex(32);
-const ENV = { AUTOTRADER_NETWORK: 'testnet', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: OWNER, ARCUS_ACCOUNT_INDEX: '0',
+const ENV = { AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ARCUS: '1', ARCUS_API_PRIVATE_KEY: ARCUS_KEY, ARCUS_ACCOUNT_ADDRESS: OWNER, ARCUS_ACCOUNT_INDEX: '0',
   HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: MASTER };
 const cfgOf = (extra = {}) => C.loadConfig({ ...ENV, ...extra });
 
@@ -231,4 +231,14 @@ test('Arcus key without ARCUS_ACCOUNT_ADDRESS: Arcus disabled (fail closed), con
   assert.deepEqual(C.GUARD_PFS(cfg), []);
   const ev = await C.evaluate({ id: 'a1', pf: 'arcus', m: 'BTC', sd: 'long', px: 1, sz: 1, sl: 0.9, tp: 1.1, ref: 1, exp: NOW / 1000 + 600 }, cfg, { now: () => NOW });
   assert.equal(ev.ok, false); assert.ok(ev.reasons.some((r) => /no key configured/.test(r)));
+});
+
+test('AUTOTRADER_ARCUS master switch: Arcus off unless =1 (key still validated), Arcus proposals rejected', async () => {
+  const cfg = C.loadConfig({ ...ENV, AUTOTRADER_ARCUS: '0' });
+  assert.equal(cfg.arcus, null); assert.match(cfg.disabled.arcus, /AUTOTRADER_ARCUS/);
+  assert.equal(cfg.arcusAddress, OWNER); // read-only status keeps working
+  assert.throws(() => C.loadConfig({ ...ENV, AUTOTRADER_ARCUS: undefined, ARCUS_API_PRIVATE_KEY: 'nothex' }), (e) => !e.message.includes('nothex'));
+  assert.ok(C.loadConfig({ ...ENV, AUTOTRADER_ARCUS: '1' }).arcus);
+  const ev = await C.evaluate({ id: 'a2', pf: 'arcus', m: 'BTC', sd: 'long', px: 1, sz: 1, sl: 0.9, tp: 1.1, ref: 1, exp: NOW / 1000 + 600 }, cfg, { now: () => NOW });
+  assert.equal(ev.ok, false);
 });
