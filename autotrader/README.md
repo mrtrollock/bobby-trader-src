@@ -257,6 +257,8 @@ together with mds.qfex.com 503s). While the loop runs, such a failure no longer 
   (all-accounts scope, foreign account accepted, ...) abort immediately.
 - every QFEX REST request times out after 15 s (`QFEX_HTTP_TIMEOUT_MS`), and a watchdog logs an ERROR + alert when no tick
   has completed for 5 minutes (repeated every 15 minutes while it lasts).
+- after any read failure the healthy loop ticks at most every 45 s for 15 minutes (fewer REST calls and WebSocket
+  handshakes; from 14:30Z the empty-body 403s came back every ~20 s after each recovery, ~70 % of the time paused).
 
 ## Volume-mode tuning (2026-10-21)
 
@@ -267,3 +269,6 @@ together with mds.qfex.com 503s). While the loop runs, such a failure no longer 
 - A post-only entry that QFEX cancels on placement (it would have crossed; never seen resting) is re-quoted at once,
   within the per-market re-quote budget (`QFEX_VOL_REQUOTES_PER_MIN`, default 3), instead of a full cooldown.
 - The volume tick reuses the guard's QFEX read of the same iteration when the guard changed nothing (fewer requests).
+- Reverted 2026-10-21 ~15:35Z after ~45 min: TP 0.04 %/hold 600 s lost -11.8 bp of volume (5 of 7 closes losing, mostly
+  max-hold exits) vs -2.5 bp with TP 0.1 %/hold 1800 s, at lower volume per hour. Live again: `QFEX_VOL_TP_PCT=0.001`,
+  `QFEX_VOL_MAX_HOLD_S=1800` (the fee floor and the immediate re-quote stay; the floor is inactive at 0.1 %).

@@ -155,11 +155,14 @@ export function isTransientError(e) {
 }
 // Consecutive-failure tracker for the loop: exponential backoff (base, 2x, ... capped below the 5-min stall watchdog);
 // abort only once reads have failed continuously for longer than maxDownMs.
-export function readHealth({ baseMs = 15e3, capMs = 240e3, maxDownMs = 10 * 60e3 } = {}) {
-  const h = { since: null, n: 0, get degraded() { return h.since != null; },
+// pace(t): after any failure, the healthy loop waits at least slowMs between ticks for coolMs (fewer REST calls and
+// WebSocket handshakes while the QFEX edge is throwing intermittent 403s; normal speed returns once it has been quiet)
+export function readHealth({ baseMs = 15e3, capMs = 240e3, maxDownMs = 10 * 60e3, slowMs = 45e3, coolMs = 15 * 60e3 } = {}) {
+  const h = { since: null, n: 0, lastFail: null, get degraded() { return h.since != null; },
+    pace(t) { return h.lastFail != null && t - h.lastFail < coolMs ? slowMs : 0; },
     // partial: another QFEX read of the same tick succeeded (the key demonstrably works): backoff continues, but the
     // "continuous failure" window that leads to the abort restarts
-    fail(t, { partial = false } = {}) { if (h.since == null || partial) h.since = t; h.n += 1; const downMs = t - h.since;
+    fail(t, { partial = false } = {}) { if (h.since == null || partial) h.since = t; h.n += 1; h.lastFail = t; const downMs = t - h.since;
       return { downMs, n: h.n, waitMs: Math.min(capMs, baseMs * 2 ** (h.n - 1)), abort: downMs > maxDownMs }; },
     ok(t) { const r = h.since == null ? null : { downMs: t - h.since, n: h.n }; h.since = null; h.n = 0; return r; } };
   return h;

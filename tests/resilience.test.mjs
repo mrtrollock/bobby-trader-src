@@ -78,3 +78,14 @@ test('a tick where the guard read worked but a later read failed backs off witho
   assert.ok(t - t0 > 10 * 60e3); assert.equal(r.waitMs, 240e3); assert.equal(h.degraded, true);
   assert.equal(h.fail(t + 1000).abort, false); // a full failure starts the 10-min window from the last partial success
 });
+
+test('readHealth.pace: slower ticks for 15 min after any read failure, normal speed when quiet', () => {
+  const h = C.readHealth(); const t0 = 1e12;
+  assert.equal(h.pace(t0), 0);
+  h.fail(t0); h.ok(t0 + 30e3);
+  assert.equal(h.pace(t0 + 31e3), 45e3);
+  assert.equal(h.pace(t0 + 14 * 60e3), 45e3);
+  assert.equal(h.pace(t0 + 15 * 60e3 + 1), 0);
+  const g = C.readHealth({ slowMs: 60e3, coolMs: 60e3 }); g.fail(t0, { partial: true });
+  assert.equal(g.pace(t0 + 59e3), 60e3); assert.equal(g.pace(t0 + 61e3), 0);
+});

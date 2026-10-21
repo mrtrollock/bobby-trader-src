@@ -211,6 +211,7 @@ async function loop() {
     }
     lastDone = Date.now();
     let wait = Math.min(hot ? Math.min(every, 20000) : every, volTick || Infinity);
+    wait = Math.max(wait, health.pace(Date.now())); // slower while 403s were seen in the last 15 min
     if (failure) {
       const h = health.fail(Date.now(), { partial: !!failure.partial });
       if (h.abort) {
