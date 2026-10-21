@@ -26,6 +26,8 @@ import briefing as B
 from briefing import entropy_note
 import points as PT
 import limits as LM
+import flows as FL
+import positions as POS
 import vaultpy
 
 HERE = Path(__file__).parent
@@ -89,6 +91,20 @@ def entropy_equity(mode, states, usdc, min_io=10.0):
     return out
 
 
+ARCUS_NOTE = "PnL covers the whole Arcus account (incl. your own tools; Bobby is paused on Arcus)"
+
+
+def arcus_reading(a):
+    """Pure (tested). Arcus GET /v1/account -> equity + netDeposits as `deposit` (deposits are not PnL) + all-time PnL."""
+    eq, nd = f(a.get("equity")), f(a.get("netDeposits"))
+    out = {"equity": eq, "note": ARCUS_NOTE}
+    if nd is not None:
+        out["deposit"], out["depositSrc"] = nd, "Arcus netDeposits (public account API)"
+        if eq is not None:
+            out["allTimePnl"] = round(eq - nd, 2)
+    return out
+
+
 def hl_spot_usdc(B, url, user):
     """Spot USDC of a Hyperliquid user + account mode (unifiedAccount / portfolioMargin hold perp collateral in spot)."""
     try:
@@ -118,7 +134,7 @@ def read_live(testnet, start):
 
     def arcus():
         a = B._get(ep["arcus"] + "/v1/account", {"address": addr, "accountIndex": int(os.environ.get("ARCUS_ACCOUNT_INDEX", "0") or 0)})
-        return {"equity": f(a.get("equity"))}
+        return arcus_reading(a)
 
     def entropy():
         # the Bobby subaccount: account mode read every run (same rules as the autotrader loop, autotrader/core.js)
@@ -136,8 +152,14 @@ def read_live(testnet, start):
         if note:
             out["note"] = note
         s0 = (start.get("entropy") or {}).get("t")
+        try:  # all-time deposits / withdrawals from the beginning (the subaccount's own view)
+            all_ups = B._post(ep["hl"], {"type": "userNonFundingLedgerUpdates", "user": hl_addr, "startTime": 0}) or []
+            out["allTime"] = FL.hl_totals(all_ups, hl_addr)
+        except Exception as e:  # noqa: BLE001
+            all_ups, out["allTimeError"] = None, "ledger not read (" + type(e).__name__ + ")"
         if s0:
-            ups = B._post(ep["hl"], {"type": "userNonFundingLedgerUpdates", "user": hl_addr, "startTime": int(s0 * 1000)})
+            ups = [u for u in all_ups if int(u.get("time") or 0) >= int(s0 * 1000)] if all_ups is not None else \
+                B._post(ep["hl"], {"type": "userNonFundingLedgerUpdates", "user": hl_addr, "startTime": int(s0 * 1000)})
             out["flowsSince"] = hl_flows(ups, hl_addr, list(states) + ["spot"])
         return out
 
@@ -147,6 +169,10 @@ def read_live(testnet, start):
         try:  # positions (+ SL/TP) and deposits/withdrawals since the start, all public by address
             oo = B._tx(ep["txflow"], {"type": "frontendOpenOrders", "user": tx_addr, "limit": 200, "offset": 0}) or []
             out["positions"] = PT.txflow_positions(st, oo.get("data", oo) if isinstance(oo, dict) else oo)
+            try:
+                out["allTime"] = FL.txflow_totals(PT._paged_tx(B, ep["txflow"], {"type": "userNonFundingLedgerUpdates", "user": tx_addr, "startTimeMs": 0}), tx_addr)
+            except Exception as e:  # noqa: BLE001
+                out["allTimeError"] = "ledger not read (" + type(e).__name__ + ")"
             s0 = (start.get("txflow") or {}).get("t")
             if s0:
                 ups = PT._paged_tx(B, ep["txflow"], {"type": "userNonFundingLedgerUpdates", "user": tx_addr, "startTimeMs": int(s0 * 1000)})
@@ -187,10 +213,12 @@ def update(ledger, readings, starts, now_ts):
         st = ledger["start"].get(pf)
         if st is None:
             st = ledger["start"][pf] = {"t": now_ts, "equity": eq, **({"deposit": r["deposit"]} if r.get("deposit") is not None else {})}
+        elif r.get("deposit") is not None and st.get("deposit") is None:  # deposit tracking added later: re-base so old flows are not PnL
+            st = ledger["start"][pf] = {"t": now_ts, "equity": eq, "deposit": r["deposit"], "rebased": "deposit tracking started"}
         ov = starts.get(pf) or {}
         start = float(ov["start"]) if ov.get("start") is not None else float(st["equity"])
         if r.get("deposit") is not None and st.get("deposit") is not None:
-            auto, src = float(r["deposit"]) - float(st["deposit"]), "QFEX deposit field"
+            auto, src = float(r["deposit"]) - float(st["deposit"]), r.get("depositSrc") or "QFEX deposit field"
         elif r.get("flowsSince") is not None:
             auto, src = float(r["flowsSince"]), r.get("flowsSrc") or "Hyperliquid ledger (best effort)"
         elif r.get("manual"):
@@ -200,6 +228,8 @@ def update(ledger, readings, starts, now_ts):
         nd = auto + float(ov.get("netDeposits") or 0)
         pnl = eq - start - nd
         base = start + nd
+        if r.get("allTimePnl") is not None:
+            row["allTimePnl"] = r["allTimePnl"]
         row.update(status="ok", start=round(start, 2), startT=st["t"], current=round(eq, 2), netDeposits=round(nd, 2), ndSource=src,
                    pnl=round(pnl, 2), pnlPct=round(pnl / base, 6) if base > 0 else None, startOverride=ov.get("start") is not None)
         snap["p"][pf] = {"eq": round(eq, 2), "pnl": round(pnl, 2)}
@@ -284,10 +314,17 @@ def main(argv=None):
     doc["limits"] = LM.build(caps, statuses, activity, manual, now_ts)
     doc["network"] = "mock" if a.mock else ("testnet" if a.testnet else "mainnet")
     doc["alerts"] = read_alerts(Path(a.alerts))
-    doc["positions"] = [{"pf": pf, **p} for pf in ORDER for p in ((readings.get(pf) or {}).get("positions") or [])]
+    doc["flows"] = FL.build(readings, manual)
+    if a.mock:
+        doc["positions"] = [{"pf": pf, **p} for pf in ORDER for p in ((readings.get(pf) or {}).get("positions") or [])]
+        pdoc = POS.from_mock(readings, now_ts)
+    else:
+        pdoc = POS.collect(B, a.testnet, now_ts, secrets, txflow_positions=(readings.get("txflow") or {}).get("positions"))
+        doc["positions"] = pdoc["positions"]
+    doc["positionsMeta"], doc["bobby"], doc["orders"] = pdoc["platforms"], pdoc["bobby"], pdoc["orders"]
     doc["volume"] = volume_line((readings.get("qfex") or {}).get("volume"))
     text = json.dumps(doc)
-    if any(s and s.lower() in text.lower() for s in secrets):
+    if any(s and s.lower() in text.lower() for s in secrets + POS.secrets_env()):
         raise SystemExit("refusing to write: an address or key would be included")
     lp.write_text(json.dumps(ledger, indent=0)); os.chmod(lp, 0o600)
     PT.save_ledger(pl_path, pledger)
@@ -295,6 +332,10 @@ def main(argv=None):
     dist = HERE / "dist"
     if dist.is_dir() and out.resolve() == (HERE / "public" / "balances.enc.json").resolve():
         (dist / out.name).write_text(out.read_text())
+    if not a.mock and out.resolve() == (HERE / "public" / "balances.enc.json").resolve():  # same positions doc, also published alone
+        po = vaultpy.write_sealed(HERE / "public" / "positions.enc.json", pdoc)
+        if dist.is_dir():
+            (dist / po.name).write_text(po.read_text())
     print("balances: " + ", ".join(f"{r['id']} {r['status']}" for r in doc["platforms"]) + f" -> {out} (encrypted)")
     return 0
 

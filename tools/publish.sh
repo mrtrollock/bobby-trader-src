@@ -4,6 +4,8 @@
 #   tools/publish.sh briefing   # briefing only (python3 briefing.py) -> public/briefing.enc.json
 #   tools/publish.sh all        # balances + briefing (+ public/proposals.enc.json if send_batch.py changed it)
 #   tools/publish.sh inbox      # just commit/push public/proposals.enc.json written by send_batch.py
+#   tools/publish.sh positions  # open positions + Bobby status only (python3 positions.py) -> public/positions.enc.json
+#   (balances / all also refresh public/positions.enc.json; tools/positions_loop.sh publishes it every 5 min from a separate worktree)
 # Loads ~/.bobby-autotrader.env (override with BOBBY_ENV_FILE). Refuses without BOBBY_VIEW_PASSPHRASE.
 # Commits ONLY those files (path-limited commit) and pushes the web-app branch to the `fork` remote.
 set -euo pipefail
@@ -14,11 +16,12 @@ if [ -z "${BOBBY_VIEW_PASSPHRASE:-}" ]; then echo "refusing to publish: BOBBY_VI
 what=${1:-balances}
 files=()
 case "$what" in
-  balances) python3 balances.py; files=(public/balances.enc.json) ;;
+  balances) python3 balances.py; files=(public/balances.enc.json public/positions.enc.json) ;;
+  positions) python3 positions.py; files=(public/positions.enc.json) ;;
   briefing) python3 briefing.py; files=(public/briefing.enc.json) ;;
-  all)      python3 balances.py; python3 briefing.py; files=(public/balances.enc.json public/briefing.enc.json public/proposals.enc.json) ;;
+  all)      python3 balances.py; python3 briefing.py; files=(public/balances.enc.json public/briefing.enc.json public/proposals.enc.json public/positions.enc.json) ;;
   inbox)    files=(public/proposals.enc.json) ;;
-  *) echo "usage: tools/publish.sh [balances|briefing|all|inbox]" >&2; exit 64 ;;
+  *) echo "usage: tools/publish.sh [balances|briefing|all|inbox|positions]" >&2; exit 64 ;;
 esac
 # guard: every file must be an encrypted envelope (nothing else is allowed onto the public site)
 python3 - "${files[@]}" <<'PY'
@@ -33,5 +36,8 @@ git add -- "${files[@]}"
 if git diff --cached --quiet -- "${files[@]}"; then echo "nothing changed"; exit 0; fi
 name=$(git log -1 --format=%an); mail=$(git log -1 --format=%ae)
 git -c user.name="$name" -c user.email="$mail" commit -q -m "data: refresh encrypted $what ($(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z'))" -- "${files[@]}"
-git push -q fork HEAD:web-app
+# the positions loop pushes too: on a non-fast-forward, rebase onto fork/web-app (our encrypted files win) and retry
+if ! git push -q fork HEAD:web-app 2>/dev/null; then
+  git pull -q --rebase --autostash -X theirs fork web-app && git push -q fork HEAD:web-app
+fi
 echo "published: ${files[*]} (encrypted) -> fork/web-app"

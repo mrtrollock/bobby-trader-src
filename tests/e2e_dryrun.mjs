@@ -100,7 +100,9 @@ await click('Save (encrypted)');
 await sleep(2500);
 const stored = await page.evaluate(() => new Promise((res) => { const q = indexedDB.open('tgtrade'); q.onsuccess = () => { const g = q.result.transaction('kv').objectStore('kv').get('tgtrade_ks_v1'); g.onsuccess = () => res(g.result); }; }));
 const ksOk = !!stored && !stored.includes(arcusKey) && !stored.includes(hlKey.slice(2)) && JSON.parse(stored).it === 600000;
-const dryDefault = await page.evaluate(() => document.body.innerText.includes('DRY RUN'));
+// the app's own sending is off by default (Settings -> Mode); the top bar shows Bobby's status instead of a DRY RUN pill
+const dryDefault = await page.evaluate(() => ((document.querySelector('#appmode') || {}).innerText || '').includes('read-only') && !!document.querySelector('#bobbystatus')
+  && !/DRY RUN/.test(document.querySelector('header').innerText));
 await page.click('.brand'); await sleep(300); await click('Lock keys');
 
 const now = Math.floor(Date.now() / 1000);
@@ -217,7 +219,7 @@ if (!res.lockedOk) fail.push('lock screen'); if (!res.relocked) fail.push('lock 
 if (res.plaintextRequests.length) fail.push('plaintext data requested');
 if (!(res.bal.rows.length === 6 && /QFEX \$100\.00 \$152\.00 \+\$50\.00 \+\$2\.00 \+1\.33%/.test(res.bal.rows.join('|')) && /Arcus \$300\.00 \$297\.50 \$0\.00 -\$2\.50 -0\.83%/.test(res.bal.rows.join('|'))
   && /Entropy not connected yet/.test(res.bal.rows.join('|')) && /Total \$400\.00 \$449\.50 \+\$50\.00 -\$0\.50 -0\.11%/.test(res.bal.rows.join('|')) && res.bal.hist === 2 && res.bal.spark && /Protection guard: 1 alert/.test(res.bal.alert) && /GOLD-USD: attach \(missing sl\+tp\)/.test(res.bal.alert)
-  && /QFEX GOLD long 0\.001 4,141\.2 4,139\.6 -\$0\.00 4,124\.7 4,174\.3 🛡 protected/.test(res.bal.pos.join('|'))
+  && /QFEX GOLD long 0\.001 4,141\.2 4,139\.6 -\$0\.00 4,124\.7 4,174\.3 \S+ 🛡 protected/.test(res.bal.pos.join('|'))
   && /this week \$71\.5K · this month \$152\.0K · goal \$300\.0K: 50\.7%/.test(res.bal.vol))) fail.push('balances');
 if (!res.noTelegram) fail.push('telegram'); if (!res.ksOk) fail.push('keystore'); if (!res.dryDefault) fail.push('dry default');
 if (!res.hl_dry || !res.hl_postOnly_Alo) fail.push('hl dry-run post-only'); if (!res.ar_dry || !res.ar_postOnly_ALO) fail.push('arcus dry-run post-only');

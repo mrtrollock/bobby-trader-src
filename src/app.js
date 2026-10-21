@@ -11,6 +11,7 @@ import { runTpslReplace, legLabel } from './replace.js';
 import { openJson } from './vault.js';
 import { viewPoints } from './points.js';
 import { limitsCard } from './limits.js';
+import * as PV from './positions.js';
 
 const LAUNCH_URL = window.__LAUNCH_URL || location.href;
 const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.02, feeArcus: FEES.arcus, feeIo: FEES.hl_io,
@@ -312,7 +313,8 @@ const showPayload = (reqs) => reqs.map((r) => ({ label: r.label, method: r.d.met
 function header() {
   const st = S.settings;
   return h('header', {}, h('div', { class: 'brand', onclick: () => go('home') }, '⚡ Bobby Trade'),
-    h('div', { class: 'badges' }, st.dryRun ? h('span', { class: 'badge warn' }, 'DRY RUN') : h('span', { class: 'badge live' }, 'LIVE'),
+    // Bobby's real per-platform status (published from the box); this app's own order sending lives in Settings → Mode
+    h('div', { class: 'badges' }, ...PV.bobbyPills(h, PV.latestPositions(S.data)),
       st.testnet ? h('span', { class: 'badge' }, 'TESTNET') : null, h('span', { class: 'badge' }, S.secrets ? '🔓' : '🔒'),
       h('button', { class: 'badge lockbtn', id: 'lockapp', title: 'Lock the app', onclick: lockApp }, 'Lock')));
 }
@@ -333,7 +335,7 @@ function nav() {
 window.addEventListener('popstate', () => { if (S.view !== 'briefing') go('briefing', { result: null }); });
 
 // ---------------------------------------------------------------- private data: every published file is *.enc.json (passphrase vault)
-const DATA_FILES = { briefing: 'briefing.enc.json', proposals: 'proposals.enc.json', balances: 'balances.enc.json' };
+const DATA_FILES = { briefing: 'briefing.enc.json', proposals: 'proposals.enc.json', balances: 'balances.enc.json', positions: 'positions.enc.json' };
 const VP_KEY = 'bobby_viewpass_v1'; // optional "remember on this device": the passphrase encrypted with a PIN (same PBKDF2/AES-GCM as the keystore)
 async function fetchSealed(name) {
   const r = await fetch('./' + name + '?t=' + Date.now(), { cache: 'no-store' });
@@ -407,8 +409,13 @@ function viewBalances(app) {
   const j = S.data && S.data.balances;
   const card = h('section', { class: 'card' }, h('h2', {}, '💰 Balances'),
     h('div', { class: 'muted small' }, j && j.generated ? `${berlinTime(j.generated)} (Berlin time)${j.network && j.network !== 'mainnet' ? ' · ' + j.network : ''}` : 'Not published yet'));
-  app.append(card);
+  card.classList.add('span2');
+  const grid = h('div', { class: 'grid2', id: 'balgrid' }, card);
+  app.append(grid);
   if (!j) { card.append(h('p', { class: 'muted' }, 'No balances yet. Run tools/publish.sh on the box.')); return; }
+  for (const c of PV.flowCards(h, j)) grid.append(c);
+  const tcard = h('section', { class: 'card', id: 'sincecard' }, h('h2', {}, 'Since tracking start'));
+  grid.append(tcard);
   const al = j.alerts;
   if (al && al.count) card.append(h('div', { class: 'alert block', id: 'guardalert' }, `⚠️ Protection guard: ${al.count} alert${al.count > 1 ? 's' : ''}. Latest: `,
     ...al.latest.slice(-3).reverse().map((x) => h('div', { class: 'small' }, `${x.t ? x.t.slice(0, 16).replace('T', ' ') + ' UTC' : ''} · ${x.pf || ''} ${x.market || ''}: ${x.kind}${x.missing ? ' (missing ' + x.missing.join('+') + ')' : ''}${x.ok === false ? ' FAILED' : ''}${x.reason ? ' — ' + x.reason : ''}${x.held ? ' — held: ' + x.held : ''}`))));
@@ -423,25 +430,25 @@ function viewBalances(app) {
     : h('tr', { class: 'muted' }, h('th', {}, name), h('td', { colspan: '5' }, r.status === 'error' ? 'error: ' + (r.error || '') : r.status)));
   const rows = (j.platforms || []).map((r) => row(String(r.name || r.id).replace(/^[^A-Za-z]+/, ''), r));
   if (j.total) rows.push(row('Total', j.total, true));
-  card.append(h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'baltable' },
+  tcard.append(h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'baltable' },
     h('thead', {}, h('tr', {}, ...['', 'Start', 'Now', 'Net dep.', 'PnL', '%'].map((t) => h('th', {}, t)))), h('tbody', {}, ...rows))));
   const notes = (j.platforms || []).filter((r) => r.status === 'ok').map((r) => `${r.name}: since ${berlinTime(r.startT)}${r.startOverride ? ' (manual start)' : ''}; deposits: ${r.ndSource}`);
   for (const r of j.platforms || []) if (r.note) notes.unshift(`${r.name}: ${r.note}`);
   for (const r of j.platforms || []) if (r.split) notes.unshift(`${r.name}: account mode ${r.mode || '?'} · main dex $${fmt(r.split.main, 2)} · io $${fmt(r.split.io, 2)}${r.mode === 'unifiedAccount' || r.mode === 'portfolioMargin' ? ' (uPnL)' : ''} · spot $${fmt(r.split.spot, 2)}`);
-  if (notes.length) card.append(h('ul', { class: 'muted small' }, ...notes.map((n) => h('li', {}, n))));
-  app.append(limitsCard(h, j));
+  if (notes.length) tcard.append(h('ul', { class: 'muted small' }, ...notes.map((n) => h('li', {}, n))));
+  grid.append(limitsCard(h, j));
   const pos = j.positions || [];
-  const pc = h('section', { class: 'card' }, h('h2', {}, 'Open positions'));
-  app.append(pc);
-  if (!pos.length) pc.append(h('p', { class: 'muted', id: 'nopos' }, 'No open positions (QFEX, as of this update).'));
+  const pc = h('section', { class: 'card' }, h('h2', {}, 'Open positions'), h('div', { class: 'muted small' }, 'All platforms, details in the Positions tab'));
+  grid.append(pc);
+  if (!pos.length) pc.append(h('p', { class: 'muted', id: 'nopos' }, 'No open positions (as of this update).'));
   else pc.append(h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'postable' },
-    h('thead', {}, h('tr', {}, ...['Market', 'Side', 'Size', 'Entry', 'Mark', 'uPnL', 'SL', 'TP', ''].map((t) => h('th', {}, t)))),
+    h('thead', {}, h('tr', {}, ...['Market', 'Side', 'Size', 'Entry', 'Mark', 'uPnL', 'SL', 'TP', 'By', ''].map((t) => h('th', {}, t)))),
     h('tbody', {}, ...pos.map((x) => h('tr', {}, h('th', {}, `${String(x.pf || '').toUpperCase()} ${String(x.market).replace(/-USD$/, '')}`), h('td', {}, x.side), h('td', {}, fmtPx(x.size)),
-      h('td', {}, fmtPx(x.entry)), h('td', {}, fmtPx(x.mark)), h('td', { class: cls(x.upnl) }, sgn2(x.upnl)), h('td', {}, pxList(x.sl)), h('td', {}, pxList(x.tp)),
+      h('td', {}, fmtPx(x.entry)), h('td', {}, fmtPx(x.mark)), h('td', { class: cls(x.upnl) }, sgn2(x.upnl)), h('td', {}, pxList(x.sl)), h('td', {}, pxList(x.tp)), h('td', {}, x.by || '—'),
       h('td', { class: isProtected(x) ? 'green' : 'redtxt' }, isProtected(x) ? '🛡 protected' : '⚠️ NOT protected')))))));
   const hist = j.history || [];
   const hc = h('section', { class: 'card' }, h('h2', {}, 'History'));
-  app.append(hc);
+  grid.append(hc);
   if (hist.length >= 2) hc.append(h('div', { class: 'muted small' }, 'Total PnL'), sparkline(hist.map((x) => x.total && x.total.pnl)));
   hc.append(h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'histtable' }, h('thead', {}, h('tr', {}, h('th', {}, 'Berlin time'), h('th', {}, 'Balance'), h('th', {}, 'PnL'))),
     h('tbody', {}, ...hist.slice(-30).reverse().map((x) => h('tr', {}, h('td', {}, berlinTime(x.t)), h('td', {}, usd0(x.total && x.total.eq)),
@@ -773,7 +780,17 @@ function renderResult(app) {
 // ---------------------------------------------------------------- positions / close / cancel
 function viewPositions(app) {
   const st = S.settings;
-  const box = h('section', { class: 'card' }, h('div', { class: 'spin' }), ' Loading…');
+  // 1) what the box publishes (encrypted, every ~5 min): every platform, no setup needed
+  for (const c of PV.publishedPositions(h, PV.latestPositions(S.data))) app.append(c);
+  app.append(PV.bobbyCard(h, PV.latestPositions(S.data)));
+  app.append(h('button', { class: 'btn ghost', id: 'posrefresh', onclick: async () => { try { await refreshData(); render(); } catch (e) { toast(e.message, 'err'); } } }, 'Refresh'));
+  // 2) optional live in-browser check (public reads + close/cancel with this device's keys)
+  if (!st.arcusAddress && !st.hlMaster) {
+    app.append(h('section', { class: 'card', id: 'livepos' }, h('h2', {}, 'Live check (optional)'),
+      h('p', { class: 'muted small' }, 'For a live in-browser read with close / cancel buttons, add public addresses in Settings. The published view above needs no setup.')));
+    return;
+  }
+  const box = h('section', { class: 'card', id: 'livepos' }, h('h2', {}, 'Live check (this device)'), h('div', { class: 'spin' }), ' Loading…');
   app.append(box);
   (async () => {
     const parts = [];
@@ -806,8 +823,7 @@ function viewPositions(app) {
         } catch (e) { parts.push(h('div', { class: 'alert block' }, `HL ${dex || 'main'}: ` + e.message)); }
       }
     }
-    if (!parts.length) parts.push(h('p', {}, 'Enter your addresses in Settings.'));
-    box.replaceChildren(...parts);
+    box.replaceChildren(h('h2', {}, 'Live check (this device)'), ...parts);
   })();
 }
 
@@ -931,7 +947,10 @@ function viewSettings(app) {
     i.addEventListener('change', async () => { const v = Number(i.value); if (Number.isFinite(v) && v > 0) { st[key] = v; await saveSettings(); } });
     return h('label', { class: 'field' }, label, i); };
   app.append(
-    h('section', { class: 'card' }, h('h2', {}, 'Mode'), tog('dryRun', 'Dry run (sign without sending)'), tog('testnet', 'Testnet (Arcus + Hyperliquid)'),
+    h('section', { class: 'card', id: 'modecard' }, h('h2', {}, 'Mode (this app)'),
+      h('p', { class: 'small', id: 'appmode' }, st.dryRun ? '🔒 This app is read-only: orders you approve here are signed but not sent. Bobby on the box is not affected (his status is in the top bar).'
+        : '⚠️ This app sends orders you approve here. Bobby on the box is separate (his status is in the top bar).'),
+      tog('dryRun', 'Dry run (sign without sending)'), tog('testnet', 'Testnet (Arcus + Hyperliquid)'),
       num('maxLoss', 'Loss at SL warning threshold ($)', '1'), num('slippage', 'Market slippage (0.02 = 2%)', '0.005'),
       num('feeIo', 'HL io fee per side (fallback)', '0.00001'), num('feeMain', 'HL main fee per side (fallback)', '0.00001')),
     h('section', { class: 'card' }, h('h2', {}, 'Risk policy (hard blocks)'),

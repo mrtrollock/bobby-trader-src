@@ -32,3 +32,5 @@ autotrader/STOP_VOLUME
 autotrader/STOP_ENTROPY
 # airdrop valuation research inputs (private; published only inside the encrypted balances file)
 valuation_inputs.json
+*.bak*
+public/positions.json

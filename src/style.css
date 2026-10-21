@@ -68,3 +68,13 @@ svg.spark{width:100%;height:48px;display:block;margin:6px 0}
 @media (max-width:420px){.navbtn{font-size:10.5px;padding:0 1px}.navbtn span{font-size:20px}}
 .lim .limhead{margin-bottom:4px}.lim .bar{height:8px;margin:3px 0 6px}
 .warnbox{background:#3a2f0b;color:var(--orange);border-radius:8px;padding:6px 8px;margin:6px 0}.badge.ok{background:#0f3a1f;color:var(--green)}.val h3{margin:4px 0}.valtable td,.valtable th{white-space:nowrap}.valnotes{padding-left:18px;margin:6px 0}
+/* Bobby status pills (top bar) */
+header{flex-wrap:wrap;gap:6px}.badges{flex-wrap:wrap;justify-content:flex-end}
+.badge.pills{white-space:normal;max-width:100%}.pill.ok{color:var(--green)}.pill.warn{color:var(--orange)}
+.badge.ok .pill,.pill{font-weight:600}
+/* balances: always two cards per row (every width); wide content scrolls inside its card */
+.grid2{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:10px;align-items:start}
+.grid2>.card{margin:0;min-width:0;overflow-x:auto;overflow-wrap:anywhere}.grid2>.span2{grid-column:1/-1}
+.grid2 .kv th,.grid2 .kv td{font-size:13px;padding:4px 0}.grid2 .kv td{white-space:nowrap;padding-left:6px}
+@media (max-width:480px){.grid2{gap:6px}.grid2>.card{padding:10px}.grid2 h2{font-size:15px}.grid2 .kv th,.grid2 .kv td{font-size:12px}}
+@media (min-width:720px){#app:has(#balgrid){max-width:960px}}

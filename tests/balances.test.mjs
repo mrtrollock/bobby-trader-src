@@ -32,3 +32,8 @@ test('vault: Python seals -> browser code opens, browser seals -> Python opens; 
   r = py(`vaultpy.write_sealed(${JSON.stringify(join(dir, 'plain.json'))}, {})`);
   assert.notEqual(r.status, 0);
 });
+test('flows.py + positions.py + Arcus deposits: all-time deposits, attribution, Bobby status, re-base (offline)', () => {
+  const r = spawnSync('python3', [join(ROOT, 'tests/py_positions.py')], { encoding: 'utf8', env: cleanEnv() });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout.trim().split('\n').pop()).ok, true);
+});
