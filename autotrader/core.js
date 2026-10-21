@@ -214,7 +214,18 @@ async function qfexState(cfg, net, { sinceMs } = {}) {
   const free = Number(bal.available_balance || 0);
   const positions = ((pb && pb.positions) || []).filter((p) => Number(p.position) !== 0).map((p) => ({ market: p.symbol, side: Number(p.position) > 0 ? 'long' : 'short',
     size: Math.abs(Number(p.position)), entry: Number(p.average_price), mark: null, upnl: Number(p.unrealised_pnl || 0), leverage: Number(p.leverage), raw: p }));
-  const ws = await net.qfex.wsRead();
+  // The trade socket is short-lived per read: a dropped connection is simply re-opened and re-read (the stops live on the
+  // exchange regardless). Three attempts, then the read fails loudly (the guard reports "stops unknown", never assumes).
+  let ws, lastErr;
+  for (let i = 0; i < 3 && !ws; i++) {
+    try { ws = await net.qfex.wsRead(); } catch (e) { lastErr = e; if (/authentication/i.test(e.message)) break; await new Promise((r) => setTimeout(r, (net.retryMs ?? 1000) * (i + 1))); }
+  }
+  if (!ws) throw new Error('QFEX: trade WebSocket read failed after retries (' + (lastErr && lastErr.message) + ')');
+  // mark price per position (public MDS); fallback entry + uPnL / size
+  for (const p of positions) {
+    try { p.mark = (await net.qfex.quote(p.market)).mark; } catch { /* fallback below */ }
+    if (p.mark == null && p.size > 0 && Number.isFinite(p.entry)) p.mark = p.entry + (p.side === 'long' ? p.upnl / p.size : -p.upnl / p.size);
+  }
   const orders = Q.mergeOrders(ws.orders, ws.stops);
   const weekFrom = weekStartUtc(net.now());
   const week = await qfexTrades(net, cfg, weekFrom);
@@ -464,4 +475,127 @@ export async function buildClose(pf, market, cfg, net) {
   const a = H.buildClose({ asset: c.mk.asset, szDecimals: c.mk.szDecimals, szi: pos.side === 'long' ? pos.size : -pos.size, markPx: c.mark });
   if (!a.orders.every((o) => o.r === true)) throw new Error('internal: close is not reduce-only');
   return [{ label: 'close (reduce-only IOC)', d: H.exchangeRequest(cfg.hl.priv, a, nextNonce(net), { isMainnet: !cfg.testnet }) }];
+}
+
+
+// ---------------------------------------------------------------- protection guard (every tick, every platform with keys)
+// A position is protected when a live stop-loss AND a take-profit exist on its market. A position seen unprotected on two
+// consecutive ticks AND for longer than the grace period (QFEX stages the stops right after a fill) is repaired:
+//   1. attach the missing leg(s) reduce-only at the ORIGINAL planned level (decision journal), unless the price is already
+//      past that level or there is no planned level;
+//   2. otherwise, or if attaching failed / did not stick on the next tick: close the position (reduce-only).
+// Every action is logged, journaled and written to autotrader/ALERT (JSON lines) for the balances routine to surface.
+export const GRACE_MS = { qfex: 120e3, arcus: 60e3, entropy: 60e3 };
+const up = (x) => String(x).toUpperCase();
+export const guardKey = (pf, market) => `${pf}:${up(market)}`;
+export function legsOf(st, market) {
+  const same = (o) => up(o.market) === up(market);
+  return { sl: st.orders.some((o) => same(o) && o.kind === 'SL'), tp: st.orders.some((o) => same(o) && o.kind === 'TP') };
+}
+// Planned SL/TP per platform:market from the decision journal (latest live placement wins). Entries carry `plan`; older
+// QFEX entries are read from the exchange echo of the entry (symbol, side, stop_loss, take_profit).
+export function plansFromJournal(lines) {
+  const out = {};
+  for (const raw of lines) {
+    let e; try { e = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch { continue; }
+    if (!e || e.mode !== 'live' || e.decision !== 'placed') continue;
+    let plan = e.plan;
+    if (!plan) {
+      const echo = (e.results || []).map((r) => r.echo).find((x) => x && Number(x.stop_loss) > 0 && Number(x.take_profit) > 0 && x.symbol);
+      if (echo) plan = { pf: 'qfex', market: echo.symbol, side: up(echo.side) === 'BUY' ? 'long' : 'short', sl: Number(echo.stop_loss), tp: Number(echo.take_profit) };
+    }
+    if (plan && plan.pf && plan.market) out[guardKey(plan.pf, plan.market)] = { ...plan, id: e.id, t: e.t };
+  }
+  return out;
+}
+const pastSl = (side, mark, sl) => mark != null && (side === 'long' ? mark <= sl : mark >= sl);
+const pastTp = (side, mark, tp) => mark != null && (side === 'long' ? mark >= tp : mark <= tp);
+// Pure decision step (unit-tested). memo = state.guard (persisted between ticks). Returns actions; mutates memo.
+export function decideProtection(pf, st, plans, memo, nowMs, { graceMs = GRACE_MS[pf] ?? 60e3 } = {}) {
+  const actions = [], seen = new Set();
+  for (const pos of st.positions) {
+    const key = guardKey(pf, pos.market); seen.add(key);
+    const legs = legsOf(st, pos.market);
+    if (legs.sl && legs.tp) { if (memo[key]) actions.push({ pf, key, market: pos.market, kind: 'recovered' }); delete memo[key]; actions.push({ pf, key, market: pos.market, kind: 'ok', pos }); continue; }
+    const m = memo[key] || (memo[key] = { first: nowMs, ticks: 0, attempts: 0 });
+    m.ticks += 1; m.last = nowMs;
+    const missing = [!legs.sl && 'sl', !legs.tp && 'tp'].filter(Boolean);
+    if (m.ticks < 2 || nowMs - m.first < graceMs) { actions.push({ pf, key, market: pos.market, kind: 'grace', missing, ageMs: nowMs - m.first, pos }); continue; }
+    const plan = plans[key] && plans[key].side === pos.side ? plans[key] : null;
+    let why = null;
+    if (m.attempts >= 1) why = 'attached stop(s) did not stick';
+    else if (!plan) why = 'no planned SL/TP in the decision journal';
+    else if (missing.includes('sl') && pastSl(pos.side, pos.mark, plan.sl)) why = `price ${pos.mark} already past the planned stop-loss ${plan.sl}`;
+    else if (missing.includes('tp') && pastTp(pos.side, pos.mark, plan.tp)) why = `price ${pos.mark} already past the planned take-profit ${plan.tp}`;
+    if (why) { actions.push({ pf, key, market: pos.market, kind: 'close', missing, reason: why, pos }); continue; }
+    m.attempts += 1;
+    actions.push({ pf, key, market: pos.market, kind: 'attach', missing, sl: missing.includes('sl') ? plan.sl : null, tp: missing.includes('tp') ? plan.tp : null, pos });
+  }
+  for (const k of Object.keys(memo)) if (k.startsWith(pf + ':') && !seen.has(k)) delete memo[k];
+  return actions;
+}
+// Reduce-only requests that attach the missing legs to an OPEN position (signed, not sent).
+export async function buildProtect(pf, pos, { sl, tp }, cfg, net) {
+  const isLong = pos.side === 'long';
+  if (pf === 'qfex') {
+    const ref = await qfexRef(net, Q.normSymbol(pos.market));
+    const r = Q.roundProposal({ isLong, px: pos.entry || pos.mark || 1, sl: sl ?? 1, tp: tp ?? 1, qty: pos.size }, ref);
+    return [sl != null && { label: `attach stop-loss ${r.sl}`, kind: 'ws', d: Q.buildStopOrder({ symbol: pos.market, positionIsLong: isLong, kind: 'SL', qty: pos.size, trig: r.sl }) },
+      tp != null && { label: `attach take-profit ${r.tp}`, kind: 'ws', d: Q.buildStopOrder({ symbol: pos.market, positionIsLong: isLong, kind: 'TP', qty: pos.size, trig: r.tp }) }].filter(Boolean);
+  }
+  if (pf === 'arcus') {
+    const ms = (await net.arcusGet('/v1/markets')).markets; const m = ms.find((x) => x.marketDisplayName === pos.market);
+    if (!m) throw new Error('Arcus market not found: ' + pos.market);
+    return [{ label: `attach position TP/SL (sl ${sl ?? '-'} tp ${tp ?? '-'})`, d: A.positionTpsl(await arcusCtx(cfg, net), m, isLong ? 'LONG' : 'SHORT', { stopLoss: sl, takeProfit: tp }) }];
+  }
+  const c = await marketCtx('entropy', { m: pos.market, sz: 0 }, cfg, net);
+  const a = H.buildPositionTpsl({ asset: c.mk.asset, szDecimals: c.mk.szDecimals, positionIsLong: isLong, sl, tp });
+  if (!a.orders.every((o) => o.r === true)) throw new Error('internal: TP/SL is not reduce-only');
+  return [{ label: `attach position TP/SL (sl ${sl ?? '-'} tp ${tp ?? '-'})`, d: H.exchangeRequest(cfg.hl.priv, a, nextNonce(net), { isMainnet: !cfg.testnet }) }];
+}
+export const GUARD_PFS = (cfg) => [cfg.arcus && 'arcus', cfg.hl && 'entropy', cfg.qfex && 'qfex'].filter(Boolean);
+// One guard tick. io = { live, kill, log, journal, alert, plans }. readOnly: decide and report, never send.
+export async function guardTick(cfg, net, memo, io, { readOnly = false } = {}) {
+  const report = [];
+  for (const pf of GUARD_PFS(cfg)) {
+    let st;
+    try { st = await accountState(pf, cfg, net); }
+    catch (e) {
+      const k = pf + ':__read'; memo[k] = memo[k] || { first: net.now(), ticks: 0 }; memo[k].ticks += 1;
+      io.log('WARN', `guard ${pf}: account read failed (${e.message}); the exchange-side stops are unaffected, re-checking next tick`);
+      if (net.now() - memo[k].first > 5 * 60e3 && !memo[k].alerted) { memo[k].alerted = true; io.alert({ pf, kind: 'unknown', reason: 'positions/stops could not be read for > 5 min: ' + e.message }); }
+      report.push({ pf, kind: 'unknown', error: e.message }); continue;
+    }
+    delete memo[pf + ':__read'];
+    const resting = st.orders.filter((o) => o.kind === 'LIMIT' && !o.reduceOnly && !o.stop).length;
+    for (const a of decideProtection(pf, st, io.plans || {}, memo, net.now())) {
+      const { pos, ...pub } = a; const row = { ...pub, size: pos && pos.size, side: pos && pos.side, mark: pos && pos.mark, resting };
+      if (a.kind === 'ok' || a.kind === 'grace') { report.push(row); continue; }
+      if (a.kind === 'recovered') { io.log('INFO', `guard ${a.key}: protected again`); report.push(row); continue; }
+      const what = a.kind === 'attach' ? `attach ${a.missing.join('+')} (sl ${a.sl ?? '-'}, tp ${a.tp ?? '-'})` : `close (${a.reason})`;
+      if (readOnly) { report.push({ ...row, would: what }); continue; }
+      const held = io.kill ? 'kill switch: ' + io.kill : !io.live ? 'dry run' : null;
+      if (held) {
+        io.log('ALERT', `guard ${a.key}: UNPROTECTED (missing ${a.missing.join('+')}), would ${what} — not sent (${held})`);
+        if (!memo[a.key].alerted) { memo[a.key].alerted = true; io.alert({ pf, market: a.market, kind: 'unprotected', missing: a.missing, would: what, held }); }
+        report.push({ ...row, held }); continue;
+      }
+      let res = [], ok = false, did = a.kind;
+      try {
+        const reqs = a.kind === 'attach' ? await buildProtect(pf, pos, a, cfg, net) : await buildClose(pf, a.market, cfg, net);
+        res = await send(pf, reqs, net); ok = res.length > 0 && res.every((x) => x.ok);
+      } catch (e) { res = [{ ok: false, error: e.message }]; }
+      if (a.kind === 'attach' && !ok) { // fall back to closing the position
+        io.log('ERROR', `guard ${a.key}: attaching ${a.missing.join('+')} failed (${res.map((x) => x.error).filter(Boolean).join(' | ')}); closing the position`);
+        try { const r2 = await send(pf, await buildClose(pf, a.market, cfg, net), net); ok = r2.length > 0 && r2.every((x) => x.ok); res = res.concat(r2); did = 'close'; }
+        catch (e) { res.push({ ok: false, error: 'close: ' + e.message }); did = 'close'; ok = false; }
+      }
+      const msg = `guard ${a.key}: ${did === 'attach' ? 'attached ' + a.missing.join('+') : 'closed the position'} ${ok ? 'OK' : 'FAILED'}`;
+      io.log(ok ? 'ALERT' : 'ERROR', msg + (ok ? '' : ': ' + res.map((x) => x.error).filter(Boolean).join(' | ')));
+      io.journal({ decision: 'guard', pf, market: a.market, action: did, missing: a.missing, reason: a.reason, ok, results: res.map(({ label, status, ok: o, error }) => ({ label, status, ok: o, error })), mode: 'live' });
+      io.alert({ pf, market: a.market, kind: did, missing: a.missing, ok, reason: a.reason || null });
+      report.push({ ...row, did, ok });
+    }
+  }
+  return report;
 }

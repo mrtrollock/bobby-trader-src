@@ -93,6 +93,22 @@ nohup node autotrader/cli.js loop >> autotrader/logs/nohup.out 2>&1 &
   master account on every perp dex (including `io`) but cannot withdraw or transfer. Use a fresh agent per process.
   Docs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/nonces-and-api-wallets
 
+## Protection guard (every tick, Arcus / Entropy / QFEX)
+`once` (and therefore every `loop` tick) first checks **every open position** for a live stop-loss **and** take-profit:
+* Unprotected on two consecutive ticks **and** longer than the grace period (QFEX 120 s: it stages the stops right after
+  the fill; Arcus/Entropy 60 s) → attach the missing leg(s) **reduce-only at the original planned level** from the decision
+  journal (`plan`, or the QFEX entry echo). QFEX: `add_order` `STOP_LOSS`/`TAKE_PROFIT` sized to the position; Arcus:
+  `positionTpsl`; Entropy: `positionTpsl` trigger orders.
+* No planned level, price already past it, attaching rejected, or the attached stop did not show up next tick →
+  **close the position** reduce-only (QFEX `close_position`, Arcus/Entropy reduce-only IOC).
+* Every action is logged, journaled (`decision: guard`) and appended to **`autotrader/ALERT`** (JSON lines, git-ignored);
+  `balances.py` publishes the count + latest alerts (encrypted) and the Balances tab shows them in red.
+* Dry run / kill switch: nothing is sent, the guard logs `ALERT ... would ...` and writes one alert per position.
+* While an entry rests (or a position is in its grace period) the loop re-checks every 20 s instead of every interval.
+* QFEX trade socket dropped: the stops live on the exchange; each read re-opens the socket (3 attempts). If positions/stops
+  cannot be read the guard reports `unknown` (never closes on missing data) and alerts after 5 minutes.
+* `node autotrader/cli.js guard` = read-only check (prints the decision per position, sends nothing, writes no alert).
+
 ## QFEX
 QFEX (https://qfex.com, docs https://docs.qfex.com) is an off-chain CLOB for perps on US stocks, indices, commodities.
 Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses UAT (`api.qfex.io`, `wss://trade.qfex.io`,

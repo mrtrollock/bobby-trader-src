@@ -30,7 +30,8 @@ d = BL.update(led, {"entropy": {"equity": 85.0, "flowsSince": 40.0}}, {}, T0 + 1
 assert {r["id"]: r for r in d["platforms"]}["entropy"]["pnl"] == 4
 # CLI: refuses without passphrase; writes ciphertext only
 tmp = Path(tempfile.mkdtemp()); mock = tmp / "m.json"; mock.write_text(json.dumps({"qfex": {"equity": 100, "deposit": 100}}))
-args = ["--mock", str(mock), "--ledger", str(tmp / "l.json"), "--starts", str(tmp / "s.json"), "--out", str(tmp / "b.enc.json"), "--now", str(T0)]
+(tmp / "ALERT").write_text(json.dumps({"t": "2026-10-21T12:00:00Z", "pf": "qfex", "market": "GOLD-USD", "kind": "close", "missing": ["sl"], "ok": True, "reason": "no planned SL/TP"}) + "\nbad\n")
+args = ["--mock", str(mock), "--ledger", str(tmp / "l.json"), "--starts", str(tmp / "s.json"), "--out", str(tmp / "b.enc.json"), "--now", str(T0), "--alerts", str(tmp / "ALERT")]
 try:
     BL.main(args); raise AssertionError("published without passphrase")
 except SystemExit as e:
@@ -41,6 +42,7 @@ assert BL.main(args) == 0
 raw = (tmp / "b.enc.json").read_text()
 assert "qfex" not in raw and "100" not in json.loads(raw)["ct"][:0] and json.loads(raw)["alg"] == "AES-256-GCM" and json.loads(raw)["it"] == 600000
 doc = vaultpy.read_sealed(tmp / "b.enc.json")
+assert doc["alerts"]["count"] == 1 and doc["alerts"]["latest"][0]["kind"] == "close"
 assert {r["id"]: r for r in doc["platforms"]}["qfex"]["current"] == 100 and oct(os.stat(tmp / "l.json").st_mode)[-3:] == "600"
 try:
     vaultpy.read_sealed(tmp / "b.enc.json", "wrong-passphrase"); raise AssertionError("wrong passphrase accepted")

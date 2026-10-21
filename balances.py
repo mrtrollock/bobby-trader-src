@@ -138,12 +138,26 @@ def update(ledger, readings, starts, now_ts):
     return {"v": 1, "generated": now_ts, "tz": "Europe/Berlin", "platforms": rows, "total": tot, "history": ledger["snapshots"][-200:]}
 
 
+def read_alerts(path, keep=5):
+    """autotrader/ALERT (written by the protection guard): count + latest entries, shown at the top of the Balances tab."""
+    rows = []
+    if path.exists():
+        for line in path.read_text().splitlines():
+            try:
+                rows.append(json.loads(line))
+            except ValueError:
+                continue
+    keys = ("t", "pf", "market", "kind", "missing", "ok", "reason", "would", "held")
+    return {"count": len(rows), "latest": [{k: r.get(k) for k in keys if r.get(k) is not None} for r in rows[-keep:]]}
+
+
 def main(argv=None):
     B.load_env()
     ap = argparse.ArgumentParser(description="Bobby balances / PnL -> public/balances.enc.json (encrypted)")
     ap.add_argument("--out", default=str(HERE / "public" / "balances.enc.json"))
     ap.add_argument("--ledger", default=str(HERE / "balances_ledger.json"))
     ap.add_argument("--starts", default=str(HERE / "balances_start.json"))
+    ap.add_argument("--alerts", default=str(HERE / "autotrader" / "ALERT"), help="autotrader protection-guard alerts (JSON lines)")
     ap.add_argument("--mock"); ap.add_argument("--testnet", action="store_true"); ap.add_argument("--now", type=float)
     a = ap.parse_args(argv)
     vaultpy.passphrase()  # refuse before reading anything: the output is published
@@ -157,6 +171,7 @@ def main(argv=None):
         readings, secrets = read_live(a.testnet, ledger.get("start", {}))
     doc = update(ledger, readings, starts, now_ts)
     doc["network"] = "mock" if a.mock else ("testnet" if a.testnet else "mainnet")
+    doc["alerts"] = read_alerts(Path(a.alerts))
     text = json.dumps(doc)
     if any(s and s.lower() in text.lower() for s in secrets):
         raise SystemExit("refusing to write: an address or key would be included")

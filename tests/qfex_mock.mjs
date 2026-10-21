@@ -8,7 +8,10 @@ export const ACCT = '0b7c6a7e-1d2f-4c3b-9a8e-5f6d7c8b9a01', USER = '9a8b7c6d-5e4
 // state: { mark, bid, ask, orders[], stops[], authOk, ackStops (echo SL/TP), noStopsSnapshot, entryStatus }
 export function fakeWsClass(state, log) {
   return class FakeWS extends EventEmitter {
-    constructor(url) { super(); this.url = url; log.push({ open: url }); setTimeout(() => this.emit('open'), 1); }
+    constructor(url) { super(); this.url = url; log.push({ open: url });
+      // state.dropTrade = n: the next n trade-socket connections fail (simulates a dropped / refused WebSocket)
+      if (!/mds/.test(url) && state.dropTrade > 0) { state.dropTrade -= 1; setTimeout(() => this.emit('error', new Error('socket hang up')), 1); return; }
+      setTimeout(() => this.emit('open'), 1); }
     reply(m) { setTimeout(() => this.emit('message', Buffer.from(JSON.stringify(m))), 1); }
     send(raw) {
       const m = JSON.parse(raw); log.push({ url: this.url, m });
@@ -27,10 +30,18 @@ export function fakeWsClass(state, log) {
       if (m.type === 'cancel_on_disconnect') return;
       // mainnet behaviour (2026-10-21): an over-long client id is rejected with InvalidOrder
       if (m.type === 'add_order' && !(String(p.client_order_id || 'x').length <= 36)) return this.reply({ err: { error_code: 'InvalidOrder', message: 'Invalid order: InvalidClientOrderId - client order id must be between 1 and 36 characters', incoming_message: m } });
+      if (m.type === 'add_order' && ['STOP_LOSS', 'TAKE_PROFIT'].includes(p.order_type)) { // standalone stop (guard)
+        if (state.stopReject) return this.reply({ err: { error_code: 'InvalidOrder', message: 'Invalid order: stop rejected', incoming_message: m } });
+        const id = 'stop-' + (state.stops = state.stops || []).length;
+        state.stops.push({ stop_order_id: id, account_id: ACCT, symbol: p.symbol, price: p.price, quantity: p.quantity, direction: p.side, stop_order_type: p.order_type.replace('_', '') });
+        return this.reply({ order_response: { order_id: id, symbol: p.symbol, status: 'ACK', quantity: p.quantity, price: p.price, take_profit: 0, stop_loss: 0, side: p.side, type: p.order_type,
+          time_in_force: 'GTC', client_order_id: '', quantity_remaining: p.quantity, reduce_only: true, order_origin: 'STOP_ORDER' } });
+      }
       if (m.type === 'add_order') return this.reply({ order_response: { order_id: 'oid-1', symbol: p.symbol, status: state.entryStatus || 'ACK', quantity: p.quantity, price: p.price,
         take_profit: state.ackStops === false ? 0 : p.take_profit, stop_loss: state.ackStops === false ? 0 : p.stop_loss, side: p.side, type: p.order_type,
         time_in_force: p.order_time_in_force, client_order_id: p.client_order_id, quantity_remaining: p.quantity } });
       if (m.type === 'cancel_order') return this.reply({ order_response: { order_id: p.order_id, symbol: p.symbol, status: 'CANCELLED' } });
+      if (m.type === 'close_position') { state.closed = (state.closed || []).concat(p.symbol); state.positions = (state.positions || []).filter((x) => x.symbol !== p.symbol); state.stops = []; }
       if (m.type === 'close_position') return this.reply({ order_response: { order_id: 'close-1', symbol: p.symbol, status: 'FILLED', client_order_id: p.client_order_id } });
       this.reply({ err: { error_code: 'InvalidJSONFormat', message: 'unknown', incoming_message: m } });
     }

@@ -3,7 +3,8 @@
 //   node autotrader/cli.js verify                     # key-permission checks only
 //   node autotrader/cli.js status [--since UNIX_MS] [--pf qfex]  # JSON: equity, positions, open orders, SL/TP, fills
 //   node autotrader/cli.js once                       # process autotrader/queue.json once
-//   node autotrader/cli.js loop                       # process every AUTOTRADER_INTERVAL_S (60) seconds
+//   node autotrader/cli.js loop                       # process every AUTOTRADER_INTERVAL_S (60) seconds (+ protection guard)
+//   node autotrader/cli.js guard                      # READ-ONLY: is every open position protected (SL + TP)? never sends
 //   node autotrader/cli.js cancel <arcus|entropy|qfex> <market> <orderId>
 //   node autotrader/cli.js close  <arcus|entropy|qfex> <market>
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, renameSync } from 'node:fs';
@@ -12,7 +13,7 @@ import { dirname, join } from 'node:path';
 import * as C from './core.js';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
-const P = { queue: process.env.AUTOTRADER_QUEUE || join(DIR, 'queue.json'), stop: join(DIR, 'STOP'), logs: join(DIR, 'logs'), state: join(DIR, 'state.json') };
+const P = { queue: process.env.AUTOTRADER_QUEUE || join(DIR, 'queue.json'), stop: join(DIR, 'STOP'), logs: join(DIR, 'logs'), state: join(DIR, 'state.json'), alert: join(DIR, 'ALERT') };
 
 let SECRETS = [];
 const redact = (s) => { let t = String(s); for (const k of SECRETS) if (k) t = t.split(k).join('<redacted>').split(k.replace(/^0x/, '')).join('<redacted>'); return t; };
@@ -26,6 +27,9 @@ function journal(entry) {
   mkdirSync(P.logs, { recursive: true });
   appendFileSync(join(P.logs, 'journal.jsonl'), redact(JSON.stringify({ t: new Date().toISOString(), ...entry })) + '\n');
 }
+// autotrader/ALERT: JSON lines, newest last; surfaced by balances.py (count + latest) in the encrypted Balances tab.
+function alert(entry) { appendFileSync(P.alert, redact(JSON.stringify({ t: new Date().toISOString(), ...entry })) + '\n'); }
+const readJournal = () => { try { return readFileSync(join(P.logs, 'journal.jsonl'), 'utf8').split('\n').filter(Boolean); } catch { return []; } };
 const loadState = () => { try { return JSON.parse(readFileSync(P.state, 'utf8')); } catch { return { dry: {}, live: {} }; } };
 const saveState = (s) => { writeFileSync(P.state + '.tmp', JSON.stringify(s, null, 1)); renameSync(P.state + '.tmp', P.state); };
 function readQueue() {
@@ -80,7 +84,7 @@ export async function processQueue(cfg, net, { queue, state, stopExists, logFn =
     const res = await C.send(pfKey, reqs, net);
     const ok = res.every((x) => x.ok);
     logFn(ok ? 'PLACED' : 'ERROR', `${q.id}: ${res.map((x) => `${x.label}: ${x.ok ? 'ok' : x.error}`).join(' | ')}`);
-    journalFn({ id: q.id, decision: ok ? 'placed' : 'failed', risk: ev.risk, results: res.map(({ label, status, ok: o, error, body }) => ({ label, status, ok: o, error, ...(body ? { echo: C.echoOf(body) } : {}) })), mode });
+    journalFn({ id: q.id, decision: ok ? 'placed' : 'failed', plan: { pf: pfKey, market: ev.ctx.market, side: ev.p.sd, size: ev.ctx.size, px: ev.p.px, sl: ev.p.sl, tp: ev.p.tp }, risk: ev.risk, results: res.map(({ label, status, ok: o, error, body }) => ({ label, status, ok: o, error, ...(body ? { echo: C.echoOf(body) } : {}) })), mode });
     state[mode][q.id] = { status: ok ? 'placed' : 'failed', t: Date.now() };
     delete stCache[pfKey];
     results.push({ id: q.id, status: ok ? 'placed' : 'failed' });
@@ -88,12 +92,23 @@ export async function processQueue(cfg, net, { queue, state, stopExists, logFn =
   return results;
 }
 
+async function runGuard(cfg, net, state, { readOnly = false } = {}) {
+  state.guard ||= {};
+  const quiet = () => {};
+  return C.guardTick(cfg, net, state.guard, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal: readOnly ? quiet : journal, alert: readOnly ? quiet : alert,
+    plans: C.plansFromJournal(readJournal()) }, { readOnly });
+}
 async function once(ctx) {
   const { cfg, net } = ctx || await boot();
   const state = loadState();
+  // guard BEFORE new entries (repairs come first) and again after them (a fill during this tick is seen next tick)
+  const guard = await runGuard(cfg, net, state);
+  saveState(state);
   const out = await processQueue(cfg, net, { queue: readQueue(), state, stopExists: () => existsSync(P.stop) });
   saveState(state);
-  return out;
+  // hot = re-check soon: an entry is resting (it may fill at any moment) or a position is inside its grace period
+  out.hot = guard.some((g) => g.kind === 'grace' || g.resting > 0) || out.some((r) => r.status === 'placed');
+  return Object.assign(out, { guard });
 }
 
 async function status(sinceMs, only) {
@@ -131,18 +146,19 @@ async function reduceCmd(kind, pf, market, oid) {
 
 async function loop() {
   const every = Math.max(15, Number(process.env.AUTOTRADER_INTERVAL_S || 60)) * 1000;
-  let ctx = await boot(), verifiedAt = Date.now(), stopping = false;
+  let ctx = await boot(), verifiedAt = Date.now(), stopping = false, hot = false;
   log('INFO', `loop started (${ctx.cfg.network}, ${ctx.cfg.live ? 'LIVE' : 'DRY RUN'}, every ${every / 1000}s)`);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; log('INFO', 'stopping on ' + sig); });
   while (!stopping) {
     try {
       if (Date.now() - verifiedAt > 30 * 60e3) { ctx = await boot(); verifiedAt = Date.now(); }
-      await once(ctx);
+      const r = await once(ctx); hot = !!(r && r.hot);
     } catch (e) {
       log('ERROR', 'iteration failed: ' + e.message);
       if (/key|agent|permission|approved|registered|expired|QFEX: (authentication|this API key|could not verify|set QFEX_KEY)/i.test(e.message)) { log('ERROR', 'key check failed, aborting loop'); process.exit(2); }
     }
-    for (let t = 0; t < every && !stopping; t += 1000) await new Promise((r) => setTimeout(r, 1000));
+    const wait = hot ? Math.min(every, 20000) : every; // while an entry rests / a fill is staging its stops: re-check every 20 s
+    for (let t = 0; t < wait && !stopping; t += 1000) await new Promise((r) => setTimeout(r, 1000));
   }
 }
 
@@ -152,7 +168,11 @@ async function main(argv) {
   switch (cmd) {
     case 'verify': await boot(); return;
     case 'status': return status(flag('--since') != null ? Number(flag('--since')) : undefined, flag('--pf'));
-    case 'once': { const r = await once(); console.log(JSON.stringify(r.map(({ requests, ...x }) => x))); return; }
+    case 'once': { const r = await once(); console.log(JSON.stringify({ results: r.map(({ requests, ...x }) => x), guard: r.guard })); return; }
+    case 'guard': { // read-only: decisions are computed and printed, nothing is sent, the persisted guard memo is not changed
+      const cfg = C.loadConfig(process.env); SECRETS = C.secretsOf(cfg);
+      const rep = await runGuard(cfg, C.realNet(cfg), { guard: JSON.parse(JSON.stringify(loadState().guard || {})) }, { readOnly: true });
+      console.log(JSON.stringify(rep, null, 1)); return; }
     case 'loop': return loop();
     case 'cancel': return reduceCmd('cancel', rest[0], rest[1], rest[2]);
     case 'close': return reduceCmd('close', rest[0], rest[1]);

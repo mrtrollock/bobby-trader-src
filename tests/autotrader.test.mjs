@@ -182,3 +182,45 @@ test('status: equity, positions with SL/TP, open orders, weekly loss, fills sinc
   const st = await C.accountState('arcus', cfg, net, { sinceMs: NOW - 86400e3 });
   assert.equal(st.equity, 300); assert.equal(st.positions[0].upnl, 1.5); assert.equal(st.orders[0].kind, 'SL'); assert.equal(st.weeklyLoss, 2); assert.equal(st.fills.length, 1);
 });
+
+// ---------------------------------------------------------------- protection guard (Arcus / Entropy)
+test('guard Arcus/Entropy: unprotected -> attach position TP/SL at the planned level (reduce-only); no plan -> reduce-only close', async () => {
+  const cfg = cfgOf();
+  const net = mockNet(cfg, {
+    positions: [{ marketDisplayName: 'TSLA-USD', side: 'LONG', size: '0.1', averageEntryPrice: '398', markPrice: '400', unrealizedPnl: '0.2' }],
+    orders: [{ orderId: '77', marketDisplayName: 'TSLA-USD', side: 'SELL', tpslType: 'STOP_LOSS', triggerPrice: '371', price: '0' }], // SL only
+    hlPositions: [{ position: { coin: 'io:ANTH', szi: '-0.1', entryPx: '382', positionValue: '38', unrealizedPnl: '0.2' } }],
+  });
+  let now = NOW; net.now = () => now;
+  const io = { live: true, kill: null, logs: [], alerts: [], journals: [], plans: { 'arcus:TSLA-USD': { pf: 'arcus', market: 'TSLA-USD', side: 'long', sl: 371, tp: 420 } } };
+  io.log = (l, m) => io.logs.push(l + ' ' + m); io.alert = (a) => io.alerts.push(a); io.journal = (j) => io.journals.push(j);
+  const memo = {};
+  let r = await C.guardTick(cfg, net, memo, io);
+  assert.deepEqual(r.map((x) => [x.pf, x.kind]), [['arcus', 'grace'], ['entropy', 'grace']]); assert.equal(net.sent.length, 0);
+  now += 61e3; r = await C.guardTick(cfg, net, memo, io);
+  assert.deepEqual(r.map((x) => [x.pf, x.did, x.ok]), [['arcus', 'attach', true], ['entropy', 'close', true]]);
+  const ar = JSON.parse(net.sent[0].d.body);
+  assert.equal(ar.grouping, 'positionTpsl'); assert.equal(ar.orders.length, 1); // only the missing TP
+  assert.equal(ar.orders[0].tpslType, 'TAKE_PROFIT'); assert.equal(ar.orders[0].reduceOnly, true); assert.equal(ar.orders[0].orderSide, 'SELL'); assert.equal(ar.orders[0].stopPrice, '420.00');
+  const hl = JSON.parse(net.sent[1].d.body).action;
+  assert.equal(hl.type, 'order'); assert.equal(hl.orders[0].r, true); assert.equal(hl.orders[0].b, true); // buy back the short, reduce-only
+  assert.deepEqual(io.alerts.map((a) => [a.pf, a.kind]), [['arcus', 'attach'], ['entropy', 'close']]);
+});
+
+test('guard Arcus: attach rejected -> reduce-only close; protected positions are never touched', async () => {
+  const cfg = cfgOf();
+  const net = mockNet(cfg, { positions: [{ marketDisplayName: 'TSLA-USD', side: 'LONG', size: '0.1', averageEntryPrice: '398', markPrice: '400', unrealizedPnl: '0.2' }] });
+  let n = 0; net.sendArcus = async (d) => { net.sent.push({ pf: 'arcus', d }); n++; return n === 1 ? { ok: false, status: 400, body: { error: 'rejected' } } : { ok: true, status: 200, body: { responses: [{ status: 'OK' }] } }; };
+  let now = NOW; net.now = () => now;
+  const io = { live: true, logs: [], alerts: [], journals: [], plans: { 'arcus:TSLA-USD': { pf: 'arcus', market: 'TSLA-USD', side: 'long', sl: 371, tp: 420 } } };
+  io.log = (l, m) => io.logs.push(l + ' ' + m); io.alert = (a) => io.alerts.push(a); io.journal = (j) => io.journals.push(j);
+  const memo = {};
+  await C.guardTick({ ...cfg, hl: null }, net, memo, io); now += 61e3;
+  const r = await C.guardTick({ ...cfg, hl: null }, net, memo, io);
+  assert.equal(r[0].did, 'close'); assert.equal(net.sent.length, 2);
+  assert.equal(JSON.parse(net.sent[1].d.body).reduceOnly ?? JSON.parse(net.sent[1].d.body).orders?.[0]?.reduceOnly, true);
+  const ok = mockNet(cfg, { positions: [{ marketDisplayName: 'TSLA-USD', side: 'LONG', size: '0.1', averageEntryPrice: '398', markPrice: '400', unrealizedPnl: '0' }],
+    orders: [{ orderId: '1', marketDisplayName: 'TSLA-USD', tpslType: 'STOP_LOSS', triggerPrice: '371' }, { orderId: '2', marketDisplayName: 'TSLA-USD', tpslType: 'TAKE_PROFIT', triggerPrice: '420' }] });
+  for (let i = 0; i < 3; i++) assert.equal((await C.guardTick({ ...cfg, hl: null }, ok, {}, io))[0].kind, 'ok');
+  assert.equal(ok.sent.length, 0);
+});

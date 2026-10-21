@@ -24,7 +24,8 @@ await seal('proposals.enc.json', { v: 1, updated: 0, batches: [] });
 const bt = mkdtempSync(join(tmpdir(), 'bal-'));
 for (const [i, m] of [[0, { qfex: { equity: 100, deposit: 100 }, arcus: { equity: 300 } }], [1, { qfex: { equity: 152, deposit: 150 }, arcus: { equity: 297.5 } }]]) {
   writeFileSync(join(bt, 'm.json'), JSON.stringify(m));
-  execFileSync('python3', ['balances.py', '--mock', join(bt, 'm.json'), '--ledger', join(bt, 'l.json'), '--starts', join(bt, 's.json'), '--out', 'dist/balances.enc.json',
+  writeFileSync(join(bt, 'ALERT'), i ? JSON.stringify({ t: '2026-10-21T12:00:00Z', pf: 'qfex', market: 'GOLD-USD', kind: 'attach', missing: ['sl', 'tp'], ok: true }) + '\n' : '');
+  execFileSync('python3', ['balances.py', '--mock', join(bt, 'm.json'), '--ledger', join(bt, 'l.json'), '--starts', join(bt, 's.json'), '--alerts', join(bt, 'ALERT'), '--out', 'dist/balances.enc.json',
     '--now', String(Math.floor(Date.UTC(2026, 9, 20 + i, 18) / 1000))], { env: pyEnv });
 }
 const srv = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1', '-d', 'dist'], { stdio: 'ignore' });
@@ -177,7 +178,7 @@ await page.screenshot({ path: 'tests/e2e_briefing.png', fullPage: true });
 await click('Balances', 'nav button');
 await page.waitForSelector('#baltable', { timeout: 10000 });
 const bal = await page.evaluate(() => ({ rows: [...document.querySelectorAll('#baltable tbody tr')].map((r) => r.innerText.replace(/\s+/g, ' ').trim()),
-  hist: document.querySelectorAll('#histtable tbody tr').length, spark: !!document.querySelector('svg.spark path'), text: document.body.innerText }));
+  hist: document.querySelectorAll('#histtable tbody tr').length, alert: (document.querySelector('#guardalert') || {}).innerText || '', spark: !!document.querySelector('svg.spark path'), text: document.body.innerText }));
 await page.screenshot({ path: 'tests/e2e_balances.png', fullPage: true });
 // Lock button -> back to the lock screen, nothing left in the DOM
 await page.click('#lockapp'); await sleep(300);
@@ -215,7 +216,7 @@ const fail = [];
 if (!res.lockedOk) fail.push('lock screen'); if (!res.relocked) fail.push('lock button'); if (!res.remember || !res.pinUnlocked) fail.push('remember (PIN)');
 if (res.plaintextRequests.length) fail.push('plaintext data requested');
 if (!(res.bal.rows.length === 5 && /QFEX \$100\.00 \$152\.00 \+\$50\.00 \+\$2\.00 \+1\.33%/.test(res.bal.rows.join('|')) && /Arcus \$300\.00 \$297\.50 \$0\.00 -\$2\.50 -0\.83%/.test(res.bal.rows.join('|'))
-  && /Entropy not connected yet/.test(res.bal.rows.join('|')) && /Total \$400\.00 \$449\.50 \+\$50\.00 -\$0\.50 -0\.11%/.test(res.bal.rows.join('|')) && res.bal.hist === 2 && res.bal.spark)) fail.push('balances');
+  && /Entropy not connected yet/.test(res.bal.rows.join('|')) && /Total \$400\.00 \$449\.50 \+\$50\.00 -\$0\.50 -0\.11%/.test(res.bal.rows.join('|')) && res.bal.hist === 2 && res.bal.spark && /Protection guard: 1 alert/.test(res.bal.alert) && /GOLD-USD: attach \(missing sl\+tp\)/.test(res.bal.alert))) fail.push('balances');
 if (!res.noTelegram) fail.push('telegram'); if (!res.ksOk) fail.push('keystore'); if (!res.dryDefault) fail.push('dry default');
 if (!res.hl_dry || !res.hl_postOnly_Alo) fail.push('hl dry-run post-only'); if (!res.ar_dry || !res.ar_postOnly_ALO) fail.push('arcus dry-run post-only');
 if (res.bad_approveDisabled !== true || !res.bad_blocks.some((b) => /maker/.test(b)) || !res.bad_blocks.some((b) => /leverage 3×/.test(b))) fail.push('policy blocks');

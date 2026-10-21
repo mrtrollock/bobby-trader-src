@@ -92,11 +92,15 @@ export function assertQfexRest(base, method, path) {
 }
 const WS_TYPES = new Set(['auth', 'subscribe', 'unsubscribe', 'add_order', 'cancel_order', 'close_position', 'cancel_on_disconnect',
   'get_user_orders', 'get_user_trades', 'get_user_leverage']);
+export const STOP_TYPES = new Set(['STOP_LOSS', 'TAKE_PROFIT']);
 export function assertQfexMessage(m) {
   if (!m || !WS_TYPES.has(m.type)) throw new Error('QFEX message forbidden by policy: ' + (m && m.type));
   const p = m.params || {};
   if (m.type === 'auth' && (p.builder_code || p.jwt)) throw new Error('QFEX: builder codes and JWT/wallet sessions are not used');
-  if (m.type === 'add_order') {
+  if (m.type === 'add_order' && STOP_TYPES.has(p.order_type)) { // standalone protective stop (attached to an OPEN position by the guard)
+    if (!(Number(p.price) > 0) || !(Number(p.quantity) > 0)) throw new Error('QFEX policy: stop order needs a trigger price and a quantity');
+    if (Number(p.stop_loss) > 0 || Number(p.take_profit) > 0) throw new Error('QFEX policy: a stop order carries no further stops');
+  } else if (m.type === 'add_order') {
     if (p.order_type !== 'ALO' || p.order_time_in_force !== 'GTC') throw new Error('QFEX policy: entries must be post-only (ALO, GTC)');
     if (!(Number(p.stop_loss) > 0) || !(Number(p.take_profit) > 0)) throw new Error('QFEX policy: stop_loss and take_profit are mandatory on every entry');
     if (p.reduce_only) throw new Error('QFEX policy: entries are never reduce-only');
@@ -137,6 +141,15 @@ export function buildEntry({ symbol, isLong, qty, px, sl, tp, clientOrderId: cid
   if (isLong ? !(sl < px && tp > px) : !(sl > px && tp < px)) throw new Error('QFEX entry: SL/TP on the wrong side of the entry');
   const m = { type: 'add_order', params: { symbol: normSymbol(symbol), side: isLong ? 'BUY' : 'SELL', order_type: 'ALO', order_time_in_force: 'GTC',
     quantity: qty, price: px, take_profit: tp, stop_loss: sl, client_order_id: cid } };
+  assertQfexMessage(m); return m;
+}
+// Reduce-only protective stop for an open position (docs: add_order with order_type STOP_LOSS | TAKE_PROFIT; side = the
+// direction of the triggered order; quantity <= the position; fires as a market order on the mark; TIF is not read).
+export function buildStopOrder({ symbol, positionIsLong, kind, qty, trig }) {
+  if (!['SL', 'TP'].includes(kind)) throw new Error('QFEX stop: kind must be SL or TP');
+  if (!(trig > 0) || !(qty > 0)) throw new Error('QFEX stop: trigger and quantity required');
+  const m = { type: 'add_order', params: { symbol: normSymbol(symbol), side: positionIsLong ? 'SELL' : 'BUY', order_type: kind === 'SL' ? 'STOP_LOSS' : 'TAKE_PROFIT',
+    order_time_in_force: 'GTC', quantity: qty, price: trig } };
   assertQfexMessage(m); return m;
 }
 export const buildCancel = (symbol, orderId) => { const m = { type: 'cancel_order', params: { symbol: normSymbol(symbol), order_id: String(orderId), cancel_order_id_type: 'order_id' } }; assertQfexMessage(m); return m; };
@@ -322,14 +335,16 @@ export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
           if (!s) { s = await openSession(b, creds, { WS }); s.send({ type: 'subscribe', params: { channels: ['order_responses'] } }); }
           const m = r.d; s.send(m);
           if (m.type === 'cancel_on_disconnect') { out.push({ label: r.label, ok: true, status: 'sent' }); continue; }
-          const cid = m.params.client_order_id;
-          const match = (c) => (c.kind === 'order' && ((cid && c.order.client_order_id === cid) || (!cid && c.order.symbol === m.params.symbol)))
+          const cid = m.params.client_order_id, isStop = m.type === 'add_order' && STOP_TYPES.has(m.params.order_type);
+          const match = (c) => (c.kind === 'order' && (isStop ? c.order.symbol === m.params.symbol && c.order.type === m.params.order_type
+            : (cid && c.order.client_order_id === cid) || (!cid && c.order.symbol === m.params.symbol)))
             || (c.kind === 'err' && c.err.incoming_message && c.err.incoming_message.type === m.type);
           let c; try { c = await s.wait(match, 10000, m.type + ' response'); } catch (e) { out.push({ label: r.label, ok: false, error: e.message + ' (state unknown: run status before retrying)' }); break; }
           if (c.kind === 'err') { out.push({ label: r.label, ok: false, error: c.err.error_code + (c.err.message ? ': ' + c.err.message : '') }); break; }
-          let err = m.type === 'add_order' ? entryError(c.order, true) : m.type === 'cancel_order' ? (c.order.status === 'CANCELLED' ? null : 'cancel ' + c.order.status)
+          let err = isStop ? (c.order.status === 'ACK' ? null : 'stop order ' + c.order.status)
+            : m.type === 'add_order' ? entryError(c.order, true) : m.type === 'cancel_order' ? (c.order.status === 'CANCELLED' ? null : 'cancel ' + c.order.status)
             : (['ACK', 'FILLED', 'IOC_PARTIALLY_FILLED', 'IOC_CANCELLED'].includes(c.order.status) ? null : 'close ' + c.order.status);
-          if (m.type === 'add_order' && c.order.status === 'ACK' && err) { // safety: never leave an entry without its stops
+          if (m.type === 'add_order' && !isStop && c.order.status === 'ACK' && err) { // safety: never leave an entry without its stops
             try { s.send(buildCancel(m.params.symbol, c.order.order_id)); err += ' -> entry cancelled'; } catch (e) { err += ' -> CANCEL FAILED: ' + e.message; }
           }
           out.push({ label: r.label, ok: !err, error: err, status: c.order.status, body: c.order }); if (err) break;

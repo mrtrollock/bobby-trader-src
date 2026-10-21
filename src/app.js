@@ -406,7 +406,10 @@ function viewBalances(app) {
   const card = h('section', { class: 'card' }, h('h2', {}, '💰 Balances'),
     h('div', { class: 'muted small' }, j && j.generated ? `${berlinTime(j.generated)} (Berlin time)${j.network && j.network !== 'mainnet' ? ' · ' + j.network : ''}` : 'Not published yet'));
   app.append(card);
-  if (!j) { card.append(h('p', { class: 'muted' }, 'No balances yet. Run tools/publish_balances.sh on the box.')); return; }
+  if (!j) { card.append(h('p', { class: 'muted' }, 'No balances yet. Run tools/publish.sh on the box.')); return; }
+  const al = j.alerts;
+  if (al && al.count) card.append(h('div', { class: 'alert block', id: 'guardalert' }, `⚠️ Protection guard: ${al.count} alert${al.count > 1 ? 's' : ''}. Latest: `,
+    ...al.latest.slice(-3).reverse().map((x) => h('div', { class: 'small' }, `${x.t ? x.t.slice(0, 16).replace('T', ' ') + ' UTC' : ''} · ${x.pf || ''} ${x.market || ''}: ${x.kind}${x.missing ? ' (missing ' + x.missing.join('+') + ')' : ''}${x.ok === false ? ' FAILED' : ''}${x.reason ? ' — ' + x.reason : ''}${x.held ? ' — held: ' + x.held : ''}`))));
   const cls = (x) => (x == null ? '' : x >= 0 ? 'green' : 'redtxt');
   const row = (name, r, tot) => (r.status === 'ok' || tot
     ? h('tr', { class: tot ? 'total' : '' }, h('th', {}, name), h('td', {}, usd0(r.start)), h('td', {}, usd0(r.current)), h('td', {}, sgn2(r.netDeposits)),
