@@ -7,7 +7,7 @@
     options: --out PATH (*.enc.json), --ledger PATH (default balances_ledger.json), --starts PATH (default balances_start.json), --now UNIX
 
 Readers (read-only): Arcus GET /v1/account (BOBBY_ACCOUNT_ADDRESS + ARCUS_ACCOUNT_INDEX), Entropy Hyperliquid
-clearinghouseState on BOBBY_HL_DEXES (BOBBY_HL_ADDRESS) + userNonFundingLedgerUpdates for deposits/withdrawals/transfers
+subaccount (BOBBY_HL_ADDRESS): userAbstraction + main dex + io (+ BOBBY_HL_DEXES) + spot USDC + userNonFundingLedgerUpdates for deposits/withdrawals/transfers
 (best effort), TxFlow clearinghouseState (BOBBY_TXFLOW_ADDRESS), QFEX through `node autotrader/cli.js status --pf qfex`
 (QFEX key in the env; `deposit` tracks net transfers in/out of the account). A platform without data shows
 "not connected yet".
@@ -44,17 +44,49 @@ def hl_flows(updates, addr, dexes):
             net += usdc
         elif t == "withdraw" and main:
             net -= usdc + (f(d.get("fee")) or 0.0)
-        elif t == "accountClassTransfer" and main:
+        elif t == "accountClassTransfer" and main and "spot" not in dexes:  # perp <-> spot inside the measured account
             net += usdc if d.get("toPerp") else -usdc
         elif t in ("internalTransfer", "subAccountTransfer") and main:
             net += usdc if str(d.get("destination", "")).lower() == addr else -usdc
         elif t == "send":
             v = f(d.get("usdcValue")) or f(d.get("amount")) or 0.0
+            if d.get("token", "USDC") != "USDC":
+                continue  # only USDC is measured (spot USDC + perp dexes)
             if d.get("destinationDex", "") in dexes and str(d.get("destination", "")).lower() == addr:
                 net += v
             if d.get("sourceDex", "") in dexes and str(d.get("user", "")).lower() == addr:
                 net -= v
     return net
+
+
+UNIFIED = ("unifiedAccount", "portfolioMargin")
+
+
+def entropy_equity(mode, states, usdc, min_io=10.0):
+    """Pure (tested). states = {dex: clearinghouseState} ("" = main perp dex), usdc = spot USDC balance row or None.
+    unifiedAccount / portfolioMargin: every balance and hold lives in spot, per-dex perp states are not meaningful ->
+    equity = spot USDC total + unrealized PnL of the perp positions. Standard (disabled / dexAbstraction / unknown):
+    the balances are separate -> main dex + io + spot USDC. Returns equity, mode, split and a note when the io dex
+    has no usable margin yet."""
+    av = {d: float(((st or {}).get("marginSummary") or {}).get("accountValue") or 0) for d, st in states.items()}
+    upnl = {d: sum(float((ap.get("position") or {}).get("unrealizedPnl") or 0) for ap in (st or {}).get("assetPositions") or []) for d, st in states.items()}
+    npos = sum(len((st or {}).get("assetPositions") or []) for st in states.values())
+    spot = float((usdc or {}).get("total") or 0)
+    hold = float((usdc or {}).get("hold") or 0)
+    split = {"main": round(av.get("", 0.0), 2), "io": round(av.get("io", 0.0), 2), "spot": round(spot, 2)}
+    if mode in UNIFIED:
+        eq = spot + sum(upnl.values())
+        split["io"] = round(upnl.get("io", 0.0), 2)
+        out = {"equity": round(eq, 6), "mode": mode, "collateral": "spot USDC (unified)", "split": split, "splitBasis": "spot USDC + io uPnL"}
+        usable = spot - hold
+    else:
+        eq = sum(av.values()) + spot
+        out = {"equity": round(eq, 6), "mode": mode or "unknown", "split": split, "splitBasis": "main dex + io + spot"}
+        usable = av.get("io", 0.0) + (av.get("", 0.0) if mode == "dexAbstraction" else 0.0)
+    if usable < min_io and not npos and eq >= min_io:
+        out["_fundsNote"] = (f"funds not on EntropyIO yet: ${split['main']:.2f} main perp dex, ${split['io']:.2f} io, ${split['spot']:.2f} spot "
+                             f"(account mode {out['mode']}); switch the Bobby subaccount to unified account so its USDC backs the io dex")
+    return out
 
 
 def hl_spot_usdc(B, url, user):
@@ -89,24 +121,24 @@ def read_live(testnet, start):
         return {"equity": f(a.get("equity"))}
 
     def entropy():
-        eq, upnl = 0.0, 0.0
-        for dex in dexes:
-            st = B._post(ep["hl"], {"type": "clearinghouseState", "user": hl_addr, **({"dex": dex} if dex else {})})
-            eq += float(((st or {}).get("marginSummary") or {}).get("accountValue") or 0)
-            upnl += sum(float((ap.get("position") or {}).get("unrealizedPnl") or 0) for ap in (st or {}).get("assetPositions") or [])
-        # unified / portfolio-margin account: collateral is SPOT USDC (the dex clearinghouse shows ~$0) -> USDC + dex uPnL
-        sp = hl_spot_usdc(B, ep["hl"], hl_addr)
-        spot_used = bool(sp and (sp["unified"] or eq <= 0))
-        if spot_used:
-            eq = sp["total"] + upnl
-        out = {"equity": round(eq, 6), **({"collateral": "spot USDC"} if spot_used else {})}
-        note = entropy_note(HERE / "autotrader" / "entropy_status.json", time.time())
+        # the Bobby subaccount: account mode read every run (same rules as the autotrader loop, autotrader/core.js)
+        try:
+            mode = B._post(ep["hl"], {"type": "userAbstraction", "user": hl_addr})
+        except Exception:  # noqa: BLE001
+            mode = None
+        states = {}
+        for dex in dict.fromkeys(["", "io"] + dexes):  # main perp dex + EntropyIO (+ any extra BOBBY_HL_DEXES)
+            states[dex] = B._post(ep["hl"], {"type": "clearinghouseState", "user": hl_addr, **({"dex": dex} if dex else {})}) or {}
+        sp = B._post(ep["hl"], {"type": "spotClearinghouseState", "user": hl_addr}) or {}
+        usdc = next((b for b in sp.get("balances") or [] if b.get("coin") == "USDC"), None)
+        out = entropy_equity(mode if isinstance(mode, str) else None, states, usdc)
+        note = out.pop("_fundsNote", None) or entropy_note(HERE / "autotrader" / "entropy_status.json", time.time())
         if note:
             out["note"] = note
         s0 = (start.get("entropy") or {}).get("t")
         if s0:
             ups = B._post(ep["hl"], {"type": "userNonFundingLedgerUpdates", "user": hl_addr, "startTime": int(s0 * 1000)})
-            out["flowsSince"] = hl_flows(ups, hl_addr, dexes)
+            out["flowsSince"] = hl_flows(ups, hl_addr, list(states) + ["spot"])
         return out
 
     def txflow():
@@ -147,7 +179,7 @@ def update(ledger, readings, starts, now_ts):
     rows, snap = [], {"t": now_ts, "p": {}}
     for pf in ORDER:
         r = readings.get(pf) or {"status": "not connected yet"}
-        row = {"id": pf, "name": NAMES[pf], **({"note": r["note"]} if r.get("note") else {})}
+        row = {"id": pf, "name": NAMES[pf], **({"note": r["note"]} if r.get("note") else {}), **{k: r[k] for k in ("split", "splitBasis", "mode") if r.get(k)}}
         if r.get("equity") is None:
             row.update(status=r.get("status") or "no data", error=r.get("error"))
             rows.append(row); continue

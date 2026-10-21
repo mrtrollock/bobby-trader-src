@@ -54,18 +54,20 @@ try:
     vaultpy.read_sealed(tmp / "b.enc.json", "wrong-passphrase"); raise AssertionError("wrong passphrase accepted")
 except Exception as e:  # noqa: BLE001
     assert "AssertionError" not in type(e).__name__
-# Entropy on a unified Hyperliquid account: io-dex clearinghouse shows $0, collateral is SPOT USDC (other tokens ignored)
+# Entropy (Bobby subaccount): mode read every run; standard -> main + io + spot USDC; unified/portfolio -> spot USDC + io uPnL
 class FakeHL:
-    def __init__(self, mode, acct="0.0", upnl="0"):
-        self.mode, self.acct, self.upnl = mode, acct, upnl
+    def __init__(self, mode, main="0.0", io="0.0", spot="0.0", upnl="0"):
+        self.mode, self.main, self.io, self.spot, self.upnl = mode, main, io, spot, upnl
     def _post(self, url, body):
         t = body["type"]
         if t == "clearinghouseState":
-            return {"marginSummary": {"accountValue": self.acct}, "assetPositions": [{"position": {"coin": "io:X", "szi": "1", "unrealizedPnl": self.upnl}}] if self.upnl != "0" else []}
+            io = body.get("dex") == "io"
+            return {"marginSummary": {"accountValue": self.io if io else self.main},
+                    "assetPositions": [{"position": {"coin": "io:X", "szi": "1", "unrealizedPnl": self.upnl}}] if io and self.upnl != "0" else []}
         if t == "userAbstraction":
             return self.mode
         if t == "spotClearinghouseState":
-            return {"balances": [{"coin": "USDC", "total": "300.18717387", "hold": "0.0"}, {"coin": "HYPE", "total": "221.0", "hold": "0"}]}
+            return {"balances": [{"coin": "USDC", "total": self.spot, "hold": "0.0"}, {"coin": "HYPE", "total": "221.0", "hold": "0"}]}
         raise AssertionError(t)
     def _get(self, url, q): raise AssertionError("no GET expected")
     def _tx(self, url, body): raise AssertionError("no TxFlow expected")
@@ -73,10 +75,28 @@ class FakeHL:
     scrub = staticmethod(BL.B.scrub)
 _realB = BL.B
 os.environ["BOBBY_HL_ADDRESS"] = "0x" + "cd" * 20
-for mode, acct, upnl, want in (("unifiedAccount", "0.0", "0", 300.18717387), ("unifiedAccount", "0.0", "-2.5", 297.68717387),
-                               ("default", "120.0", "0", 120.0), ("default", "0.0", "0", 300.18717387)):
-    BL.B = FakeHL(mode, acct, upnl)
+cases = (  # mode, main, io, spot, io uPnL, want equity, want split, funds-not-on-io note
+    ("disabled", "300.185872", "0.0", "0.00717387", "0", 300.19304587, {"main": 300.19, "io": 0.0, "spot": 0.01}, True),  # today's real case
+    ("disabled", "0.0", "150.0", "0.0", "0", 150.0, {"main": 0.0, "io": 150.0, "spot": 0.0}, False),
+    ("unifiedAccount", "0.0", "0.0", "300.18717387", "0", 300.18717387, {"main": 0.0, "io": 0.0, "spot": 300.19}, False),
+    ("portfolioMargin", "0.0", "0.0", "300.18717387", "-2.5", 297.68717387, {"main": 0.0, "io": -2.5, "spot": 300.19}, False),
+    ("unifiedAccount", "0.0", "55.0", "300.0", "0", 300.0, {"main": 0.0, "io": 0.0, "spot": 300.0}, False),  # per-dex value ignored
+)
+for mode, main, io, spot, upnl, want, split, noted in cases:
+    BL.B = FakeHL(mode, main, io, spot, upnl)
     live, _ = BL.read_live(False, {})
-    assert abs(live["entropy"]["equity"] - want) < 1e-6, (mode, acct, upnl, live["entropy"])
+    e = live["entropy"]
+    assert abs(e["equity"] - want) < 1e-6 and e["split"] == split and e["mode"] == mode, (mode, e)
+    assert ("funds not on EntropyIO yet" in (e.get("note") or "")) == noted, e
 BL.B = _realB; os.environ.pop("BOBBY_HL_ADDRESS")
+# flows: master -> sub spot sends count, internal spot <-> main moves of the sub net to 0, other tokens ignored
+SUBA, MAS = "0x" + "e2" * 20, "0x" + "34" * 20
+ups = [{"delta": {"type": "send", "user": MAS, "destination": SUBA, "sourceDex": "spot", "destinationDex": "spot", "token": "USDC", "usdcValue": "300.18"}},
+       {"delta": {"type": "send", "user": SUBA, "destination": SUBA, "sourceDex": "spot", "destinationDex": "", "token": "USDC", "usdcValue": "300.18"}},
+       {"delta": {"type": "send", "user": MAS, "destination": SUBA, "sourceDex": "spot", "destinationDex": "cash", "token": "USDT0", "usdcValue": "100"}},
+       {"delta": {"type": "accountClassTransfer", "usdc": "50", "toPerp": True}}]
+assert abs(BL.hl_flows(ups, SUBA, ["", "io", "spot"]) - 300.18) < 1e-9
+# the published row carries the split and mode
+d = BL.update({}, {"entropy": {"equity": 300.19, "split": {"main": 300.19, "io": 0, "spot": 0}, "splitBasis": "main dex + io + spot", "mode": "disabled"}}, {}, T0)
+r = {x["id"]: x for x in d["platforms"]}["entropy"]; assert r["split"]["main"] == 300.19 and r["mode"] == "disabled"
 print(json.dumps({"ok": True, "envelope": json.loads(raw) | {"ct": "…"}}))
