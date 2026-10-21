@@ -16,3 +16,9 @@ autotrader/state.json.tmp
 autotrader/STOP
 autotrader/.env
 autotrader/queue.json
+# private data: only encrypted *.enc.json may ever be published
+public/briefing.json
+public/proposals.json
+public/balances.json
+balances_ledger.json
+balances_start.json

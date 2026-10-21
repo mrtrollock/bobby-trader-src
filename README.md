@@ -13,10 +13,27 @@ device can sign and send it.
 
 Built with **Grok Bot**.
 
+## Privacy: what is public and what is not
+
+- **The code is public** (this repo is a fork of a public repo, and GitHub Pages serves the built app). It contains no
+  key, no secret, no account id, no wallet address and no balance: keys live only on the user's device (PIN-encrypted)
+  or in `~/.bobby-autotrader.env` on the box (chmod 600, outside the repo); addresses go in the git-ignored `.env`.
+- **The whole app is behind a passphrase.** On load it shows only a lock screen; nothing else renders until the
+  passphrase decrypts the data. Every published data file is an encrypted envelope `*.enc.json`
+  (`briefing.enc.json`, `proposals.enc.json`, `balances.enc.json`): AES-256-GCM, key = PBKDF2-SHA256(passphrase,
+  random 16-byte salt, 600,000 iterations), random 12-byte IV. Without `BOBBY_VIEW_PASSPHRASE`, `briefing.py`,
+  `send_batch.py`, `balances.py` and `tools/publish.sh` **refuse to write/publish**; `build.mjs` refuses to build if any
+  plaintext `.json` data file would land in `dist/`. "Remember on this device" stores the passphrase encrypted with a
+  PIN (same PBKDF2/AES-GCM scheme as the key store); the 🔒 Lock button clears it from memory.
+- Not indexed: `<meta name="robots" content="noindex">` and `robots.txt` (`Disallow: /`). The page itself (code, no
+  data) is still reachable by anyone with the URL; it just shows the lock screen.
+- Git history: the plaintext `public/briefing.json` / `public/proposals.json` were only ever committed empty
+  (`{"platforms": []}` / no batches) and are no longer tracked.
+
 ## How it works
 
 ```
- AI assistant ──► send_batch.py send trades.json ──► public/proposals.json  (inbox, served next to index.html)
+ AI assistant ──► send_batch.py send trades.json ──► public/proposals.enc.json  (encrypted inbox, next to index.html)
                                                                │
                                      user opens 📥 Proposals in the web app, taps "Open"
                                                                ▼
@@ -27,27 +44,45 @@ Built with **Grok Bot**.
                   3. user approves → PIN → keys decrypted in memory → sign → send
                      straight from the device to Arcus / Hyperliquid          (TxFlow: manual card + public check)
                                                                │
-                 send_batch.py check ──► reads public account state, marks each trade done / expired in proposals.json
+                 send_batch.py check ──► reads public account state, marks each trade done / expired in the inbox
 ```
 
 ### Briefing (📰 first tab)
 
-`briefing.py` writes `public/briefing.json`, which the Briefing tab renders per platform (🏹 ARCUS, 🤖 ENTROPY, 🌊 TxFLOW):
+`briefing.py` writes `public/briefing.enc.json` (encrypted), which the Briefing tab renders per platform (🏹 ARCUS, 🤖 ENTROPY, 🌊 TxFLOW):
 equity with % change since last night, positions kept / nothing triggered, US market hours for stock/ETF underlyings,
 one bullet per position (uPnL + comment) and an optional "One detail:" note (duplicate SL, stray SL/TP, missing SL).
 
 ```bash
 cp .env.example .env              # fill in PUBLIC addresses only
 python3 briefing.py --snapshot-only   # cron at ~22:00 Europe/Berlin: the "last night" baseline
-python3 briefing.py [--comments my_comments.json]   # morning: write public/briefing.json (+ a new snapshot)
-git add public/briefing.json && git commit -m briefing && git push fork web-app   # publishes in ~1 min
+python3 briefing.py [--comments my_comments.json]   # morning: write public/briefing.enc.json (+ a new snapshot)
+tools/publish.sh briefing      # = refresh + encrypt + commit only that file + push fork web-app (~1 min)
 ```
 
 Only public read endpoints are used, nothing is signed. Snapshots stay local in `snapshots.json` (git-ignored).
-The JSON never contains an address (the script refuses to write if it would), **but equity, positions, PnL and SL/TP
-levels become public at the site URL**. Comments file: `{"arcus": {"detail": "...", "positions": {"TSLA": "I'm holding, ..."}}}`
+The JSON never contains an address (the script refuses to write if it would), and it is encrypted with
+`BOBBY_VIEW_PASSPHRASE` before it is written (equity, positions, PnL and SL/TP levels are only readable after unlocking). Comments file: `{"arcus": {"detail": "...", "positions": {"TSLA": "I'm holding, ..."}}}`
 (keys arcus | entropy | txflow); a human comment replaces the generated one. Offline demo:
-`python3 briefing.py --mock tests/fixtures/briefing_mock.json --snapshots /tmp/s.json --out /tmp/b.json`.
+`python3 briefing.py --mock tests/fixtures/briefing_mock.json --snapshots /tmp/s.json --out /tmp/b.enc.json`.
+
+### Balances (💰 tab, `balances.py`)
+
+Per platform (Arcus, Entropy, TxFlow, QFEX) + total: starting balance, current balance, net deposits/withdrawals since
+the start, PnL $ and % (PnL = current − start − net deposits), plus a snapshot history (Berlin time) with a sparkline.
+
+```bash
+tools/publish.sh               # one command: refresh balances, encrypt, commit ONLY public/balances.enc.json, push fork web-app
+tools/publish.sh all           # balances + briefing (+ the inbox)
+```
+- Readers (read-only): Arcus `/v1/account` (`BOBBY_ACCOUNT_ADDRESS`), Entropy/Hyperliquid `clearinghouseState` on
+  `BOBBY_HL_DEXES` (`BOBBY_HL_ADDRESS`), TxFlow `clearinghouseState` (`BOBBY_TXFLOW_ADDRESS`), QFEX through the
+  autotrader key. A platform without an address/key shows "not connected yet".
+- Ledger `balances_ledger.json` (git-ignored, chmod 600): the first reading becomes the start, every run adds a snapshot.
+- Deposits: QFEX from the account `deposit` field; Hyperliquid from `userNonFundingLedgerUpdates` (best effort);
+  Arcus/TxFlow do not expose them publicly → add them in `balances_start.json` (git-ignored):
+  `{"arcus": {"start": 300, "netDeposits": 50}}` (`start` replaces the recorded one, `netDeposits` is added).
+
 
 ### Autotrader (Arcus + Entropy + QFEX, headless)
 
@@ -80,7 +115,7 @@ HIP-3 dexes (Entropy) set their own fees: the configured fallback is used. Hardc
   (PBKDF2-SHA256, 600k iterations → AES-256-GCM, WebCrypto) in this origin's IndexedDB. Auto-lock after inactivity.
 - Arcus: Ed25519 API signing key (trade-only when created through the public `createApiKey`). Hyperliquid: an
   *API/agent wallet* key (trade-only, cannot withdraw). TxFlow: **no key at all** (manual mode).
-- `connect-src` is limited to `'self'` (proposals.json) and the Arcus / Hyperliquid / TxFlow APIs, plus the public QFEX
+- `connect-src` is limited to `'self'` (the encrypted `*.enc.json` data) and the Arcus / Hyperliquid / TxFlow APIs, plus the public QFEX
   market-data WebSocket (`wss://mds.qfex.com`, `wss://mds.qfex.io`).
 
 ### QFEX (`src/qfex.js`, see [autotrader/README.md](autotrader/README.md#qfex))
@@ -104,12 +139,12 @@ HIP-3 dexes (Entropy) set their own fees: the configured fallback is used. Hardc
 
 ### Proposals inbox (`send_batch.py`)
 ```
-python3 send_batch.py send trades.json [--dry]     # writes public/proposals.json (+ dist/ if built)
+python3 send_batch.py send trades.json [--dry]     # writes public/proposals.enc.json, encrypted (+ dist/ if built)
 python3 send_batch.py check [--watch 3600 --every 60]
 python3 send_batch.py status | done <id> | test [--dry]
 ```
 No token or secret: only public addresses (`.env.example`). Baselines stay in `batches.json` (git-ignored, chmod 600).
-On GitHub Pages, publishing new proposals = commit + push `public/proposals.json` (and rebuild/deploy `dist/`).
+On GitHub Pages, publishing new proposals = `tools/publish.sh inbox` (commits only `public/proposals.enc.json`).
 
 ### Proposal format (v1)
 `id, pf (arcus|hl|txflow|qfex), m, act (open|tpsl|cancel; qfex: open only), sd (long|short), sz, lev, et (market|limit), px, ref, sl, tp, exp, n`.
@@ -127,8 +162,10 @@ detects corruption. It is not a security boundary; the security boundary is the 
 | `src/replace.js` | Arcus TP/SL replace state machine |
 | `src/proposal.js`, `src/keystore.js` | Proposal codec, PIN-encrypted keystore |
 | `src/dec.js`, `src/canon.js`, `src/api.js` | Decimal snapping, canonical JSON, read endpoints |
-| `build.mjs` | esbuild bundle → `dist/index.html` with hash-based CSP, + `public/` (manifest, icons, proposals.json) |
-| `make_proposal.py`, `send_batch.py` | Proposal links and the proposals inbox (`public/proposals.json`) |
+| `build.mjs` | esbuild bundle → `dist/index.html` with hash-based CSP, + `public/` (manifest, icons, robots.txt, `*.enc.json`); refuses plaintext data |
+| `make_proposal.py`, `send_batch.py` | Proposal links and the encrypted proposals inbox (`public/proposals.enc.json`) |
+| `balances.py`, `tools/publish.sh` | Balances/PnL ledger and the one-command encrypted publish |
+| `src/vault.js`, `vaultpy.py` | Passphrase vault (same envelope in the browser and in Python) |
 | `reference/arcus.py` | Minimal Python Arcus client, used as the reference signer in parity tests |
 | `tests/` | Node test suite + Python reference scripts + headless e2e |
 

@@ -5,11 +5,19 @@ import puppeteer from 'puppeteer-core';
 import { spawn } from 'node:child_process';
 import * as Q from '../src/qfex.js';
 import { encodeProposal } from '../src/proposal.js';
+import { sealJson } from '../src/vault.js';
+import { randomBytes } from 'node:crypto';
+import { readFileSync, writeFileSync, existsSync, rmSync } from 'node:fs';
 
 const PORT = 8766, ORIGIN = `http://127.0.0.1:${PORT}`;
 const srv = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1', '-d', 'dist'], { stdio: 'ignore' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await sleep(800);
+// the app is locked until a passphrase decrypts the published data: seal a throwaway fixture (real file restored after)
+const PASS = 'e2e-' + randomBytes(9).toString('hex');
+const FIX = { 'dist/proposals.enc.json': { v: 1, updated: 0, batches: [] }, 'dist/briefing.enc.json': { v: 1, platforms: [] }, 'dist/balances.enc.json': { v: 1, platforms: [], total: null, history: [] } };
+const backup = Object.fromEntries(Object.keys(FIX).map((f) => [f, existsSync(f) ? readFileSync(f, 'utf8') : null]));
+for (const [f, o] of Object.entries(FIX)) writeFileSync(f, JSON.stringify(await sealJson(o, PASS)));
 const q = await Q.mdsQuote(Q.MAINNET, 'US100-USD');
 const now = Math.floor(Date.now() / 1000), mark = q.mark;
 const mk = (o) => encodeProposal({ v: 1, pf: 'qfex', m: 'US100-USD', sd: 'long', et: 'limit', lev: 1, exp: now + 3600, ref: mark, ...o });
@@ -26,6 +34,7 @@ for (const [name, tok, want] of cases) {
   await page.setRequestInterception(true);
   page.on('request', (r) => { const u = r.url(); if (u.startsWith(ORIGIN) || u.startsWith('wss://mds.qfex.')) return r.continue(); blocked.push(u); r.abort(); });
   await page.goto(`${ORIGIN}/index.html?p=${tok}`, { waitUntil: 'domcontentloaded' });
+  await page.waitForSelector('#viewpass'); await page.type('#viewpass', PASS); await page.click('#unlock');
   let text = '';
   for (let i = 0; i < 40; i++) { await sleep(250); text = await page.evaluate(() => document.body.innerText); if (/Live check/.test(text) && !/Loading live price/.test(text)) break; }
   const ok = want.test(text) && /QFEX/.test(text) && !/Approve and send/.test(text);
@@ -35,4 +44,5 @@ for (const [name, tok, want] of cases) {
   await page.close();
 }
 await browser.close(); srv.kill();
+for (const [f, v] of Object.entries(backup)) { if (v == null) rmSync(f, { force: true }); else writeFileSync(f, v); }
 process.exit(fail ? 1 : 0);

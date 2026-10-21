@@ -216,7 +216,7 @@ async function qfexState(cfg, net, { sinceMs } = {}) {
   const weekFrom = weekStartUtc(net.now());
   const week = await qfexTrades(net, cfg, weekFrom);
   const fills = sinceMs != null ? (sinceMs >= weekFrom ? week.filter((t) => t.time >= sinceMs) : await qfexTrades(net, cfg, sinceMs)) : undefined;
-  return { pf: 'qfex', equity, free, positions, orders, stopsKnown: ws.stops.length > 0 || !positions.length, stopsSubscribed: ws.stopsSubscribed,
+  return { pf: 'qfex', equity, free, deposit: Number(bal.deposit || 0), positions, orders, stopsKnown: ws.stops.length > 0 || !positions.length, stopsSubscribed: ws.stopsSubscribed,
     weeklyLoss: realizedLoss(week, weekFrom), fills };
 }
 

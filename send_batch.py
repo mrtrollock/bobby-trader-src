@@ -7,8 +7,8 @@
     python3 send_batch.py status
     python3 send_batch.py test [--dry]                  # harmless demo batch (cancels of fake order ids: the app blocks them)
 
-Batches are written to an inbox file served next to the web app: public/proposals.json (copied into dist/ by
-build.mjs; dist/proposals.json is refreshed too when dist/ exists). The page groups trades per platform
+Batches are written to an inbox file served next to the web app: public/proposals.enc.json, ENCRYPTED with
+BOBBY_VIEW_PASSPHRASE (copied into dist/ by build.mjs; dist/ is refreshed too when it exists). The page groups trades per platform
 (🏹 Arcus / 🤖 Entropy / 🤖 Hyperliquid / 🌊 TxFlow) with an "Open" button per trade.
 Publishing on GitHub Pages = commit + push that file (done by you, never by this script).
 
@@ -28,6 +28,7 @@ BOBBY_TXFLOW_ADDRESS (defaults to BOBBY_ACCOUNT_ADDRESS), BOBBY_INBOX (inbox pat
 Baselines stay local in batches.json (git-ignored, chmod 600); the public inbox only carries links, lines, expiry, status.
 """
 import argparse, json, os, sys, time, urllib.parse, urllib.request
+import vaultpy
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).parent))
@@ -36,7 +37,7 @@ from make_proposal import make_url  # noqa: E402
 BASE_URL = "./"   # links are relative: the inbox is served next to index.html
 HERE = Path(__file__).parent
 STATE = HERE / "batches.json"
-DEFAULT_INBOX = HERE / "public" / "proposals.json"
+DEFAULT_INBOX = HERE / "public" / "proposals.enc.json"  # encrypted with BOBBY_VIEW_PASSPHRASE (vaultpy)
 INBOX = Path(os.environ.get("BOBBY_INBOX") or DEFAULT_INBOX)
 ADDRESS = os.environ.get("BOBBY_ACCOUNT_ADDRESS", "")   # Arcus owner address = Hyperliquid master (public, read-only use)
 TX_ADDRESS = os.environ.get("BOBBY_TXFLOW_ADDRESS", "") or ADDRESS
@@ -228,15 +229,12 @@ def inbox_view(s, now=None):
     return out
 
 def write_inbox(s, now=None):
-    data = json.dumps(inbox_view(s, now), indent=1, ensure_ascii=False) + "\n"
+    """The inbox is published on GitHub Pages: it is ALWAYS encrypted (refuses without BOBBY_VIEW_PASSPHRASE)."""
+    view = inbox_view(s, now)
+    vaultpy.write_sealed(INBOX, view)
     targets = [INBOX]
     if INBOX == DEFAULT_INBOX and (HERE / "dist").is_dir():
-        targets.append(HERE / "dist" / "proposals.json")
-    for t in targets:
-        t.parent.mkdir(parents=True, exist_ok=True)
-        tmp = t.with_suffix(".tmp")
-        tmp.write_text(data)
-        tmp.replace(t)
+        (HERE / "dist" / INBOX.name).write_text(INBOX.read_text()); targets.append(HERE / "dist" / INBOX.name)
     return targets
 
 
@@ -251,6 +249,8 @@ def save(s):
 
 # ------------------------------------------------------------------ commands
 def cmd_send(trades, dry=False, base_url=BASE_URL):
+    if not dry:
+        vaultpy.passphrase()  # the inbox is published: refuse before changing anything if it cannot be encrypted
     bad = {str(t.get("id", i)): policy_errors(t) for i, t in enumerate(trades) if policy_errors(t)}
     if bad:
         raise SystemExit("refused by policy: " + json.dumps(bad, ensure_ascii=False))
@@ -281,6 +281,8 @@ def cmd_send(trades, dry=False, base_url=BASE_URL):
     return sent
 
 def cmd_check(dry=False, now=None, fetch=state_for):
+    if not dry:
+        vaultpy.passphrase()  # the inbox is published: refuse before changing anything if it cannot be encrypted
     now = now or time.time()
     s = load()
     open_b = [b for b in s["batches"] if not b.get("closed")]
@@ -303,6 +305,8 @@ def cmd_check(dry=False, now=None, fetch=state_for):
     return report
 
 def cmd_done(pid, dry=False):
+    if not dry:
+        vaultpy.passphrase()  # the inbox is published: refuse before changing anything if it cannot be encrypted
     s = load()
     for b in s["batches"]:
         for p in b["proposals"]:

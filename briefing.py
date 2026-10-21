@@ -1,12 +1,13 @@
 #!/usr/bin/env python3
-"""Bobby Trader: morning briefing generator -> public/briefing.json (rendered by the app's Briefing tab).
+"""Bobby Trader: morning briefing generator -> public/briefing.enc.json (ENCRYPTED with BOBBY_VIEW_PASSPHRASE,
+decrypted and rendered by the app's Briefing tab; nothing is published in plaintext).
 
-    python3 briefing.py                      # read live public data, write public/briefing.json, store a snapshot
+    python3 briefing.py                      # read live public data, write public/briefing.enc.json, store a snapshot
     python3 briefing.py --testnet            # same against the testnets
     python3 briefing.py --snapshot-only      # just store a snapshot (cron it at ~22:00 Europe/Berlin = "last night")
     python3 briefing.py --mock FILE          # offline: raw API bundles from FILE (tests / demos), no network
     python3 briefing.py --comments FILE      # human comments merged in (see below)
-    options: --out PATH (default public/briefing.json), --snapshots PATH (default snapshots.json), --now UNIX
+    options: --out PATH (default public/briefing.enc.json, must end in .enc.json), --snapshots PATH (default snapshots.json), --now UNIX
 
 Reads PUBLIC account data only (no keys, nothing is signed or sent):
   Arcus    GET /v1/account, /v1/positions, /v1/openOrders, /v1/fills, /v1/markets  (address + accountIndex)
@@ -30,6 +31,8 @@ import argparse, json, os, subprocess, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import vaultpy
 
 HERE = Path(__file__).parent
 BERLIN, NY = ZoneInfo("Europe/Berlin"), ZoneInfo("America/New_York")
@@ -401,12 +404,14 @@ def scrub(text, secrets):
 
 def main(argv=None):
     load_env()
-    ap = argparse.ArgumentParser(description="Bobby morning briefing -> public/briefing.json")
-    ap.add_argument("--out", default=str(HERE / "public" / "briefing.json"))
+    ap = argparse.ArgumentParser(description="Bobby morning briefing -> public/briefing.enc.json (encrypted)")
+    ap.add_argument("--out", default=str(HERE / "public" / "briefing.enc.json"))
     ap.add_argument("--snapshots", default=str(HERE / "snapshots.json"))
     ap.add_argument("--mock"); ap.add_argument("--comments"); ap.add_argument("--testnet", action="store_true")
     ap.add_argument("--snapshot-only", action="store_true"); ap.add_argument("--now", type=float)
     a = ap.parse_args(argv)
+    if not a.snapshot_only:
+        vaultpy.passphrase()  # refuse early: nothing is published without encryption
     now_ts = int(a.now or time.time())
     snap_path = Path(a.snapshots)
     snaps = json.loads(snap_path.read_text()) if snap_path.exists() else []
@@ -469,11 +474,10 @@ def main(argv=None):
     leaked = [s for s in secrets if s and s.lower() in text.lower()]
     if leaked:
         raise SystemExit("refusing to write: an address would be published")
-    Path(a.out).parent.mkdir(parents=True, exist_ok=True)
-    Path(a.out).write_text(text + "\n")
+    out_path = vaultpy.write_sealed(a.out, doc)  # refuses without BOBBY_VIEW_PASSPHRASE or a non-.enc.json name
     dist = HERE / "dist"
-    if dist.is_dir() and Path(a.out).resolve() == (HERE / "public" / "briefing.json").resolve():
-        (dist / "briefing.json").write_text(text + "\n")
+    if dist.is_dir() and out_path.resolve() == (HERE / "public" / "briefing.enc.json").resolve():
+        (dist / "briefing.enc.json").write_text(out_path.read_text())
     print(f"wrote {a.out}: " + ", ".join(f"{p['name']} {'error' if p.get('error') else str(len(p['items'])) + ' pos'}" for p in out) or "no platform configured")
     return 0
 

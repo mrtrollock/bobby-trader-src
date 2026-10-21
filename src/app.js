@@ -8,6 +8,7 @@ import * as Q from './qfex.js';
 import { extractToken, decodeProposal } from './proposal.js';
 import * as KS from './keystore.js';
 import { runTpslReplace, legLabel } from './replace.js';
+import { openJson } from './vault.js';
 
 const LAUNCH_URL = window.__LAUNCH_URL || location.href;
 const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.02, feeArcus: FEES.arcus, feeIo: FEES.hl_io,
@@ -18,7 +19,7 @@ const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.
 const policy = () => { const st = S.settings; return { ...POLICY, makerOnly: !!st.polMakerOnly, maxLeverage: Number(st.polMaxLev), requireStopLoss: !!st.polRequireSl,
   maxLossPct: Number(st.polMaxLossPct), weeklyLossCap: Number(st.polWeeklyCap), capital: { arcus: Number(st.capArcus), hl: Number(st.capHl), txflow: Number(st.capTxflow), qfex: Number(st.capQfex) } }; };
 const PF_NAME = { arcus: '🏹 Arcus', hl: '🤖 Entropy / Hyperliquid', txflow: '🌊 TxFlow', qfex: '📈 QFEX' };
-const S = { settings: { ...DEFAULTS }, secrets: null, lockTimer: null, log: [], view: 'briefing', proposal: null };
+const S = { settings: { ...DEFAULTS }, secrets: null, lockTimer: null, log: [], view: 'briefing', proposal: null, viewPass: null, data: null, pendingTok: null };
 const LOCK_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------- tiny DOM helper
@@ -310,23 +311,124 @@ function header() {
   const st = S.settings;
   return h('header', {}, h('div', { class: 'brand', onclick: () => go('home') }, '⚡ Bobby Trade'),
     h('div', { class: 'badges' }, st.dryRun ? h('span', { class: 'badge warn' }, 'DRY RUN') : h('span', { class: 'badge live' }, 'LIVE'),
-      st.testnet ? h('span', { class: 'badge' }, 'TESTNET') : null, h('span', { class: 'badge' }, S.secrets ? '🔓' : '🔒')));
+      st.testnet ? h('span', { class: 'badge' }, 'TESTNET') : null, h('span', { class: 'badge' }, S.secrets ? '🔓' : '🔒'),
+      h('button', { class: 'badge lockbtn', id: 'lockapp', title: 'Lock the app', onclick: lockApp }, 'Lock')));
 }
 function go(v, extra) { if (v !== 'home' && v !== 'briefing' && (S.view === 'home' || S.view === 'briefing')) { try { history.pushState({ v }, ''); } catch { /* */ } } S.view = v; Object.assign(S, extra || {}); render(); window.scrollTo(0, 0); }
 function render() {
-  const app = $app(); app.replaceChildren(header());
-  const views = { briefing: viewBriefing, home: viewHome, inbox: viewInbox, dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
+  const app = $app();
+  if (!S.viewPass) { app.replaceChildren(); viewLock(app); return; } // nothing else renders until the passphrase decrypted the data
+  app.replaceChildren(header());
+  const views = { briefing: viewBriefing, home: viewHome, inbox: viewInbox, balances: viewBalances, dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
   (views[S.view] || viewHome)(app);
   app.append(nav());
 }
 
 function nav() {
   const b = (v, ico, label) => h('button', { class: 'navbtn' + (S.view === v ? ' on' : ''), onclick: () => go(v, { result: null }) }, h('span', {}, ico), label);
-  return h('nav', { class: 'bottom' }, b('briefing', '📰', 'Briefing'), b('inbox', '📥', 'Proposals'), b('dash', '📈', 'Dashboard'), b('positions', '📊', 'Positions'), b('settings', '⚙️', 'Settings'));
+  return h('nav', { class: 'bottom' }, b('briefing', '📰', 'Briefing'), b('inbox', '📥', 'Proposals'), b('balances', '💰', 'Balances'), b('dash', '📈', 'Dashboard'), b('positions', '📊', 'Positions'), b('settings', '⚙️', 'Settings'));
 }
 window.addEventListener('popstate', () => { if (S.view !== 'briefing') go('briefing', { result: null }); });
 
-// ---------------------------------------------------------------- briefing (briefing.json next to the page, written by briefing.py)
+// ---------------------------------------------------------------- private data: every published file is *.enc.json (passphrase vault)
+const DATA_FILES = { briefing: 'briefing.enc.json', proposals: 'proposals.enc.json', balances: 'balances.enc.json' };
+const VP_KEY = 'bobby_viewpass_v1'; // optional "remember on this device": the passphrase encrypted with a PIN (same PBKDF2/AES-GCM as the keystore)
+async function fetchSealed(name) {
+  const r = await fetch('./' + name + '?t=' + Date.now(), { cache: 'no-store' });
+  if (r.status === 404) return undefined;
+  if (!r.ok) throw new Error(name + ': HTTP ' + r.status);
+  return r.json();
+}
+// Fetch + decrypt everything. Throws 'Wrong passphrase' if any published file does not open with it.
+async function loadVault(pass) {
+  const out = {}; let found = 0;
+  for (const [k, f] of Object.entries(DATA_FILES)) {
+    const env = await fetchSealed(f);
+    if (env === undefined) { out[k] = null; continue; }
+    found++; out[k] = await openJson(env, pass);
+  }
+  if (!found) throw new Error('Nothing published yet (no encrypted data files on the site).');
+  return out;
+}
+async function refreshData() { S.data = await loadVault(S.viewPass); return S.data; }
+async function unlockWith(pass) {
+  const busy = showBusy('Decrypting…');
+  try { S.data = await loadVault(pass); S.viewPass = pass; } finally { busy(); }
+  render();
+  if (S.pendingTok) { const t = S.pendingTok; S.pendingTok = null; openProposal(t); }
+}
+function lockApp() { S.viewPass = null; S.data = null; lockNow(); S.view = 'briefing'; render(); }
+function viewLock(app) {
+  const pass = h('input', { type: 'password', id: 'viewpass', autocomplete: 'current-password', placeholder: 'Passphrase' });
+  const remember = h('input', { type: 'checkbox', id: 'remember' });
+  const err = h('div', { class: 'alert block hidden', id: 'lockerr' });
+  const fail = (e) => { err.textContent = e.message === 'Wrong passphrase' ? 'Wrong passphrase.' : e.message; err.classList.remove('hidden'); haptic('error'); };
+  const go1 = async () => {
+    const v = pass.value; if (!v) return;
+    try {
+      await unlockWith(v);
+      if (remember.checked) {
+        const pin = await askPin('Choose a PIN to remember the passphrase on this device');
+        if (pin) { await (await KS.secureBackend()).set(VP_KEY, await KS.encryptSecrets({ p: v }, pin)); toast('Passphrase remembered (PIN-encrypted)'); }
+      }
+    } catch (e) { fail(e); }
+  };
+  pass.addEventListener('keydown', (e) => { if (e.key === 'Enter') go1(); });
+  const pinBtn = h('button', { class: 'btn ghost hidden', id: 'pinunlock', onclick: async () => {
+    const pin = await askPin('PIN'); if (!pin) return;
+    try { const blob = await (await KS.secureBackend()).get(VP_KEY); await unlockWith((await KS.decryptSecrets(blob, pin)).p); } catch (e) { fail(e); }
+  } }, 'Unlock with PIN');
+  KS.secureBackend().then((b) => b.get(VP_KEY)).then((x) => { if (x) pinBtn.classList.remove('hidden'); }).catch(() => {});
+  app.append(h('section', { class: 'card lock' }, h('h2', {}, '🔒 Bobby Trade'),
+    h('p', { class: 'muted' }, 'This app is private. Enter the passphrase to decrypt it.'), pass,
+    h('label', { class: 'toggle small' }, remember, ' Remember on this device (encrypted with a PIN)'),
+    h('button', { class: 'btn primary big', id: 'unlock', onclick: go1 }, 'Unlock'), pinBtn, err));
+  setTimeout(() => pass.focus(), 50);
+}
+
+// ---------------------------------------------------------------- balances (balances.enc.json, written by balances.py)
+const pct = (x) => (x == null ? '—' : (x >= 0 ? '+' : '') + (x * 100).toFixed(2) + '%');
+const sgn2 = (x) => (x == null ? '—' : Number(x) === 0 ? '$0.00' : (x < 0 ? '-$' : '+$') + Math.abs(Number(x)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+function sparkline(points, w = 300, hgt = 48) {
+  const NS = 'http://www.w3.org/2000/svg', svg = document.createElementNS(NS, 'svg');
+  svg.setAttribute('viewBox', `0 0 ${w} ${hgt}`); svg.setAttribute('class', 'spark'); svg.setAttribute('preserveAspectRatio', 'none');
+  const v = points.filter((x) => Number.isFinite(x));
+  if (v.length < 2) return svg;
+  const lo = Math.min(...v), hi = Math.max(...v), span = hi - lo || 1;
+  const d = v.map((y, i) => `${i ? 'L' : 'M'}${((i / (v.length - 1)) * w).toFixed(1)},${(hgt - 3 - ((y - lo) / span) * (hgt - 6)).toFixed(1)}`).join(' ');
+  const path = document.createElementNS(NS, 'path');
+  path.setAttribute('d', d); path.setAttribute('fill', 'none'); path.setAttribute('stroke-width', '2');
+  path.setAttribute('stroke', v[v.length - 1] >= v[0] ? '#3ecf8e' : '#ff6b6b'); svg.append(path);
+  return svg;
+}
+function viewBalances(app) {
+  const j = S.data && S.data.balances;
+  const card = h('section', { class: 'card' }, h('h2', {}, '💰 Balances'),
+    h('div', { class: 'muted small' }, j && j.generated ? `${berlinTime(j.generated)} (Berlin time)${j.network && j.network !== 'mainnet' ? ' · ' + j.network : ''}` : 'Not published yet'));
+  app.append(card);
+  if (!j) { card.append(h('p', { class: 'muted' }, 'No balances yet. Run tools/publish_balances.sh on the box.')); return; }
+  const cls = (x) => (x == null ? '' : x >= 0 ? 'green' : 'redtxt');
+  const row = (name, r, tot) => (r.status === 'ok' || tot
+    ? h('tr', { class: tot ? 'total' : '' }, h('th', {}, name), h('td', {}, usd0(r.start)), h('td', {}, usd0(r.current)), h('td', {}, sgn2(r.netDeposits)),
+      h('td', { class: cls(r.pnl) }, sgn2(r.pnl)), h('td', { class: cls(r.pnl) }, pct(r.pnlPct)))
+    : h('tr', { class: 'muted' }, h('th', {}, name), h('td', { colspan: '5' }, r.status === 'error' ? 'error: ' + (r.error || '') : r.status)));
+  const rows = (j.platforms || []).map((r) => row(String(r.name || r.id).replace(/^[^A-Za-z]+/, ''), r));
+  if (j.total) rows.push(row('Total', j.total, true));
+  card.append(h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'baltable' },
+    h('thead', {}, h('tr', {}, ...['', 'Start', 'Now', 'Net dep.', 'PnL', '%'].map((t) => h('th', {}, t)))), h('tbody', {}, ...rows))));
+  const notes = (j.platforms || []).filter((r) => r.status === 'ok').map((r) => `${r.name}: since ${berlinTime(r.startT)}${r.startOverride ? ' (manual start)' : ''}; deposits: ${r.ndSource}`);
+  if (notes.length) card.append(h('ul', { class: 'muted small' }, ...notes.map((n) => h('li', {}, n))));
+  const hist = j.history || [];
+  const hc = h('section', { class: 'card' }, h('h2', {}, 'History'));
+  app.append(hc);
+  if (hist.length >= 2) hc.append(h('div', { class: 'muted small' }, 'Total PnL'), sparkline(hist.map((x) => x.total && x.total.pnl)));
+  hc.append(h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'histtable' }, h('thead', {}, h('tr', {}, h('th', {}, 'Berlin time'), h('th', {}, 'Balance'), h('th', {}, 'PnL'))),
+    h('tbody', {}, ...hist.slice(-30).reverse().map((x) => h('tr', {}, h('td', {}, berlinTime(x.t)), h('td', {}, usd0(x.total && x.total.eq)),
+      h('td', { class: cls(x.total && x.total.pnl) }, sgn2(x.total && x.total.pnl))))))));
+  app.append(h('button', { class: 'btn ghost', onclick: async () => { try { await refreshData(); render(); } catch (e) { toast(e.message, 'err'); } } }, 'Refresh'));
+}
+
+// ---------------------------------------------------------------- briefing (briefing.enc.json, written by briefing.py)
 const berlinTime = (t) => new Date(t * 1000).toLocaleString('en-GB', { timeZone: 'Europe/Berlin', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 const usd0 = (x) => (x == null ? '—' : '$' + Number(x).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 1000 ? 0 : 2, minimumFractionDigits: Math.abs(x) >= 1000 ? 0 : 2 }));
 const signedUsd = (x) => (x == null ? '' : (x < 0 ? '-$' : '+$') + Math.abs(Number(x)).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 2 }));
@@ -348,26 +450,27 @@ function viewBriefing(app) {
   const box = h('section', { class: 'card' }, h('div', { class: 'spin' }), ' Loading briefing…');
   app.append(box);
   (async () => {
-    let j = null;
-    try { const r = await fetch('./briefing.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch { /* */ }
+    let j = S.data && S.data.briefing;
+    if (S.refreshBriefing) { S.refreshBriefing = false; try { j = (await refreshData()).briefing; } catch (e) { toast(e.message, 'err'); } }
     const plats = (j && j.platforms) || [];
     const head = h('div', { class: 'card' }, h('h2', {}, '📰 Briefing'), h('div', { class: 'muted small' },
       j && j.generated ? `${berlinTime(j.generated)} (Berlin time)${j.network && j.network !== 'mainnet' ? ' · ' + j.network : ''}` : 'Not published yet'));
     if (!plats.length) {
-      head.append(h('p', { class: 'muted' }, 'No briefing yet. Run briefing.py, then commit and push public/briefing.json.'));
+      head.append(h('p', { class: 'muted' }, 'No briefing yet. Run briefing.py, then commit and push public/briefing.enc.json.'));
+      head.append(h('button', { class: 'btn ghost', onclick: () => { S.refreshBriefing = true; render(); } }, 'Refresh'));
       box.replaceWith(head); return;
     }
-    const frag = [head, ...plats.map(briefingCard), h('button', { class: 'btn ghost', onclick: () => render() }, 'Refresh')];
+    const frag = [head, ...plats.map(briefingCard), h('button', { class: 'btn ghost', onclick: () => { S.refreshBriefing = true; render(); } }, 'Refresh')];
     box.replaceWith(...frag);
   })();
 }
 
-// ---------------------------------------------------------------- proposals inbox (proposals.json next to the page)
+// ---------------------------------------------------------------- proposals inbox (proposals.enc.json next to the page)
 const STATUS = { done: ['✅', 'executed'], expired: ['⌛', 'expired'], pending: ['•', 'to review'] };
 async function fetchInbox() {
-  const r = await fetch('./proposals.json?t=' + Date.now(), { cache: 'no-store' });
-  if (!r.ok) throw new Error('proposals.json not found (HTTP ' + r.status + ')');
-  return r.json();
+  const j = (await refreshData()).proposals;
+  if (!j) throw new Error('No proposals published yet.');
+  return j;
 }
 function viewInbox(app) {
   const box = h('section', { class: 'card' }, h('div', { class: 'spin' }), ' Loading proposals…');
@@ -446,7 +549,8 @@ function viewHome(app) {
       h('button', { class: 'btn tile', onclick: () => go('positions') }, '📊', h('span', {}, 'Positions & orders')),
       h('button', { class: 'btn tile', onclick: () => go('log') }, '🧾', h('span', {}, 'Journal')),
       h('button', { class: 'btn tile', onclick: () => go('settings') }, '⚙️', h('span', {}, 'Settings')),
-      h('button', { class: 'btn tile', onclick: () => { lockNow(); render(); toast('Keys locked'); } }, '🔒', h('span', {}, 'Lock'))),
+      h('button', { class: 'btn tile', onclick: () => { lockNow(); render(); toast('Keys locked'); } }, '🔒', h('span', {}, 'Lock keys')),
+      h('button', { class: 'btn tile', onclick: async () => { try { await (await KS.secureBackend()).del(VP_KEY); } catch { /* */ } toast('Remembered passphrase forgotten'); } }, '🧹', h('span', {}, 'Forget passphrase'))),
     h('p', { class: 'muted small' }, 'Orders are signed on this device and sent from your connection. Nothing is sent until you tap “Approve”.'));
 }
 
@@ -805,10 +909,10 @@ function viewSettings(app) {
 
 // ---------------------------------------------------------------- boot
 async function boot() {
-  await loadSettings();
+  await loadSettings(); // device-local settings only; nothing is shown before the passphrase unlocks
   render();
   const tok = extractToken(LAUNCH_URL);
-  if (tok) { try { history.replaceState(null, '', location.pathname); } catch { /* */ } openProposal(tok); }
+  if (tok) { try { history.replaceState(null, '', location.pathname); } catch { /* */ } S.pendingTok = tok; } // opened after unlock
 }
 document.addEventListener('visibilitychange', () => { if (document.hidden) { /* keep timer */ } });
 boot();

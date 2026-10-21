@@ -2,13 +2,23 @@
 import json, sys, tempfile, time
 from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
+import os
+os.environ.pop("BOBBY_VIEW_PASSPHRASE", None)
 import send_batch as SB
+import vaultpy
 
 tmp = Path(tempfile.mkdtemp())
 SB.STATE = tmp / "batches.json"
-SB.INBOX = tmp / "proposals.json"
+SB.INBOX = tmp / "proposals.enc.json"
+# no passphrase -> refuses before writing anything (the inbox is published)
+try:
+    SB.cmd_send([{"id": "x", "pf": "arcus", "m": "TSLA-USD", "sd": "long", "sz": 1, "lev": 1, "et": "limit", "px": 1, "sl": 0.9}]); raise AssertionError("published without passphrase")
+except SystemExit as e:
+    assert "BOBBY_VIEW_PASSPHRASE" in str(e)
+assert not SB.INBOX.exists() and not SB.STATE.exists()
+os.environ["BOBBY_VIEW_PASSPHRASE"] = "test-pass-" + "x" * 8
 assert not hasattr(SB, "tg") and "TELEGRAM" not in Path(SB.__file__).read_text()
-inbox = lambda: json.loads(SB.INBOX.read_text())
+inbox = lambda: vaultpy.read_sealed(SB.INBOX)  # file on disk is ciphertext only
 
 now = time.time()
 ar0 = {"sizes": {"NVDA-USD": -10.0}, "orders": [{"id": "old1", "m": "NVDA-USD", "side": "buy", "px": 107.1, "trig": 102.0, "kind": "STOP_LOSS"}]}

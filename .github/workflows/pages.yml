@@ -1,4 +1,4 @@
-# Build the web app and publish dist/ (index.html, manifest, icons, proposals.json) to GitHub Pages.
+# Build the web app and publish dist/ (index.html, manifest, icons, robots.txt, encrypted *.enc.json data) to GitHub Pages.
 # Runs on every push to the web-app branch, or manually from the Actions tab.
 name: Deploy web app to GitHub Pages
 on:
@@ -24,7 +24,7 @@ jobs:
       - run: npm ci
       - run: npm run build
       - name: Check dist
-        run: test -f dist/index.html && test -f dist/proposals.json && test -f dist/manifest.webmanifest
+        run: test -f dist/index.html && test -f dist/proposals.enc.json && test ! -e dist/proposals.json && test ! -e dist/briefing.json && test -f dist/robots.txt && test -f dist/manifest.webmanifest
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

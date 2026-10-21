@@ -1,0 +1,1 @@
+{"v": 1, "alg": "AES-256-GCM", "kdf": "PBKDF2-SHA256", "it": 600000, "aad": "bobby-balances-v1", "salt": "AhAUMvBUaQRZk0Epweso8Q==", "iv": "JNivR70FKlPMt9hF", "ct": "fL+DQ0oB8MLWzJa1iPx1kIgE0qnqM5ix4FDkb31+8KNppaQxzUKdtqjdXe9y+hk3DItQw7d5LRd5bPWlJVI="}

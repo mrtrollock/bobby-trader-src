@@ -105,7 +105,7 @@ async function status(sinceMs, only) {
     try {
       const st = await C.accountState(pf, cfg, net, { sinceMs: sinceMs ?? Date.now() - 86400e3 });
       const strip = (x) => { const { raw, ...rest } = x; return rest; };
-      out.platforms[pf] = { equity: st.equity, free: st.free, weeklyLoss: st.weeklyLoss,
+      out.platforms[pf] = { equity: st.equity, free: st.free, weeklyLoss: st.weeklyLoss, ...(st.deposit != null ? { deposit: st.deposit } : {}),
         positions: st.positions.map((p) => ({ ...strip(p), sl: st.orders.filter((o) => o.market === p.market && o.kind === 'SL').map((o) => o.trig),
           tp: st.orders.filter((o) => o.market === p.market && o.kind === 'TP').map((o) => o.trig) })),
         ...(pf === 'qfex' ? { limits: { weeklyLossCap: cfg.qfex.weeklyLossCap, weeklyRemaining: Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss),
