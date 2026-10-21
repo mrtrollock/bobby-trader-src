@@ -291,3 +291,36 @@ together with mds.qfex.com 503s). While the loop runs, such a failure no longer 
   nothing is sent, one INFO line, and Balances/briefing show "waiting for margin on EntropyIO". It is re-checked on
   every guard read and Entropy becomes active by itself once margin appears. Entropy entries still come only from the
   proposal queue (low-OI picks + liquidity gate, post-only, 1x isolated, SL + TP attached).
+
+## Entropy volume mode (AUTOTRADER_ENTROPY_VOLUME=1)
+
+`autotrader/hlvolume.js`, modeled on the QFEX volume mode, runs after the guard on every loop tick, on the Bobby
+subaccount only (every request via `hlSign`, `vaultAddress` = the verified subaccount), and only while the Entropy
+margin gate is active (it idles with "waiting for margin on EntropyIO" until then and starts by itself).
+
+- Markets: the low-OI Entropy picks that pass the liquidity gate (`src/lowoi.js`, refreshed every 10 min), lowest OI
+  first; per tick a spread check (`ENTROPY_VOL_MAX_SPREAD_PCT`, 0.1 %) and notional <= 25 % of the book depth.
+- Entry: post-only (Alo) at the touch, 1x..3x ISOLATED (`ENTROPY_VOL_LEVERAGE`, default 3), SL (0.4 %) and a backup TP
+  (3 x TP) attached on the same order (`normalTpsl`, active from the fill); then a reduce-only Alo maker exit at +TP
+  (0.1 %, never below 2 x maker fee + 0.04 %). Held > 30 min -> exit re-quoted at the touch. Stale entries re-quoted
+  (3/min); an exit placed < 45 s ago that vanished while the position still shows -> wait (duplicate-exit guard);
+  leftover reduce-only SL/TP triggers on a flat market are cancelled.
+- Limits before every entry: worst loss at the stop incl. maker fee, taker stop fee and 0.2 % stop slippage <= min($3,
+  1 % of equity capped at $300); week/day realised loss + open worst case <= $50 / $20 (reached -> halted until next
+  Monday / 00:00 UTC, alert); margin <= free; isolated liquidation distance >= 3 x stop distance; max 2 markets;
+  cooldown 30-120 s after a round trip. `autotrader/STOP` halts everything; `STOP_VOLUME` or `STOP_ENTROPY` pause new
+  entries (exits still managed).
+- Fees: io maker ~0.0246 %, taker ~0.0298 % (measured on the master's io fills); Entropy cashback is not counted.
+- Report: `node tools/entropy_vol_report.mjs <fromISO> <toISO> ...` (subaccount io fills: round trips, volume, fees, PnL,
+  loss per volume in bp, projected month).
+
+| Variable | Default |
+| --- | --- |
+| `AUTOTRADER_ENTROPY_VOLUME` | off (`1` = on) |
+| `ENTROPY_VOL_TP_PCT` / `ENTROPY_VOL_SL_PCT` | 0.001 / 0.004 |
+| `ENTROPY_VOL_MAX_HOLD_S` | 1800 (>= 300) |
+| `ENTROPY_VOL_LEVERAGE` / `ENTROPY_VOL_MAX_MARKETS` | 3 (1..3) / 2 (1..2) |
+| `ENTROPY_VOL_COOLDOWN_S` | 30-120 |
+| `ENTROPY_VOL_MAKER_FEE`, `ENTROPY_VOL_TAKER_FEE`, `ENTROPY_VOL_STOP_SLIPPAGE` | 0.00025, 0.0003, 0.002 |
+| `ENTROPY_VOL_MAX_SPREAD_PCT`, `ENTROPY_VOL_MAX_DEPTH_FRAC`, `ENTROPY_VOL_STALE_PCT`, `ENTROPY_VOL_MARKETS` | 0.001, 0.25, 0.001, picks |
+

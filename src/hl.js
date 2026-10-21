@@ -121,11 +121,11 @@ export function assetId(coin, universe, perpDexs) {
 // ---------------------------------------------------------------- trade builders (pure)
 // meta: {asset, szDecimals}; returns list of actions to sign & send in order
 export function buildOpen({ asset, szDecimals, isBuy, sz, leverage, isCross = false, type, limitPx, markPx, tp, sl,
-  slippage = 0.02, tpslSlippage = 0.08, postOnly = false }) {
+  slippage = 0.02, tpslSlippage = 0.08, postOnly = false, cloid = null }) {
   const size = roundSz(sz, szDecimals);
   const entryPx = type === 'market' ? slippagePx(markPx, isBuy, slippage, szDecimals) : roundPx(Number(limitPx), szDecimals);
   const wires = [orderWire(asset, { isBuy, limitPx: entryPx, sz: size, reduceOnly: false,
-    orderType: { limit: { tif: type === 'market' ? 'Ioc' : (postOnly ? 'Alo' : 'Gtc') } } })];
+    orderType: { limit: { tif: type === 'market' ? 'Ioc' : (postOnly ? 'Alo' : 'Gtc') } }, ...(cloid ? { cloid } : {}) })];
   for (const [kind, trig] of [['tp', tp], ['sl', sl]]) {
     if (trig == null || trig === '') continue;
     const t = roundPx(Number(trig), szDecimals);
@@ -149,5 +149,10 @@ export function buildClose({ asset, szDecimals, szi, markPx, slippage = 0.02 }) 
   const isBuy = Number(szi) < 0;
   return orderAction([orderWire(asset, { isBuy, limitPx: slippagePx(markPx, isBuy, slippage, szDecimals), sz: roundSz(Math.abs(Number(szi)), szDecimals),
     reduceOnly: true, orderType: { limit: { tif: 'Ioc' } } })]);
+}
+// maker exit: reduce-only post-only (Alo) limit that closes `sz` of a position (volume mode)
+export function buildMakerExit({ asset, szDecimals, positionIsLong, sz, px, cloid = null }) {
+  return orderAction([orderWire(asset, { isBuy: !positionIsLong, limitPx: roundPx(Number(px), szDecimals), sz: roundSz(sz, szDecimals), reduceOnly: true,
+    orderType: { limit: { tif: 'Alo' } }, ...(cloid ? { cloid } : {}) })]);
 }
 export const buildCancel = (asset, oid) => cancelAction([{ a: asset, o: Number(oid) }]);

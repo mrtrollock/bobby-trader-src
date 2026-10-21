@@ -13,10 +13,11 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as C from './core.js';
 import * as V from './volume.js';
+import * as HV from './hlvolume.js';
 import * as L from '../src/lowoi.js';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
-const P = { queue: process.env.AUTOTRADER_QUEUE || join(DIR, 'queue.json'), stop: join(DIR, 'STOP'), stopVolume: join(DIR, 'STOP_VOLUME'), logs: join(DIR, 'logs'), state: join(DIR, 'state.json'), alert: join(DIR, 'ALERT') };
+const P = { queue: process.env.AUTOTRADER_QUEUE || join(DIR, 'queue.json'), stop: join(DIR, 'STOP'), stopVolume: join(DIR, 'STOP_VOLUME'), stopEntropy: join(DIR, 'STOP_ENTROPY'), logs: join(DIR, 'logs'), state: join(DIR, 'state.json'), alert: join(DIR, 'ALERT') };
 
 let SECRETS = [];
 const redact = (s) => { let t = String(s); for (const k of SECRETS) if (k) t = t.split(k).join('<redacted>').split(k.replace(/^0x/, '')).join('<redacted>'); return t; };
@@ -48,6 +49,7 @@ async function boot({ needKeys = true } = {}) {
   const cfg = C.loadConfig(process.env);
   SECRETS = C.secretsOf(cfg).concat([process.env.ARCUS_API_PRIVATE_KEY, process.env.ARCUS_API_KEY, process.env.HL_AGENT_PRIVATE_KEY].filter(Boolean).map((x) => String(x).trim()));
   for (const [pf, why] of Object.entries(cfg.disabled || {})) log('WARN', `${pf}: ${why}`);
+  cfg.hlVol = HV.loadHlVolumeConfig(process.env);
   const net = C.realNet(cfg);
   if (needKeys) {
     if (!cfg.arcus && !cfg.hl && !cfg.qfex) throw new Error('no keys in env (ARCUS_API_PRIVATE_KEY, HL_AGENT_PRIVATE_KEY and/or QFEX_API_PUBLIC_KEY + QFEX_API_SECRET_KEY)');
@@ -113,7 +115,7 @@ async function runGuard(cfg, net, state, { readOnly = false } = {}) {
 // Bobby-owned Arcus markets live in state.json (state.guard.__arcusOwn); cfg.arcusOwn points at that object.
 const bindOwn = (cfg, state) => { state.guard ||= {}; state.guard.__arcusOwn ||= {}; cfg.arcusOwn = state.guard.__arcusOwn; };
 // autotrader/entropy_status.json (balances.py + briefing.py): Entropy state for the Bobby subaccount; no keys/addresses
-let lastEntropyState = null;
+let lastEntropyState = null, hlVolErr = null;
 function writeEntropyStatus(o) { try { writeFileSync(join(DIR, 'entropy_status.json'), JSON.stringify({ t: new Date().toISOString(), ...o })); } catch { /* best effort */ } }
 function entropyGate(st) {
   const m = C.entropyMarginStatus(st);
@@ -150,15 +152,39 @@ async function once(ctx, { degraded = false } = {}) {
     catch (e) { log('ERROR', 'volume tick failed: ' + e.message); volume = { enabled: true, error: e.message }; }
     saveState(state);
   }
+  // Entropy volume mode (AUTOTRADER_ENTROPY_VOLUME=1): subaccount only, idles until the margin gate is active
+  let hlVolume = null;
+  if (cfg.hlVol && cfg.hlVol.enabled && cfg.hl) {
+    if (!em || em.state !== 'active') hlVolume = { enabled: true, idle: (em && em.reason) || 'waiting for the Entropy state read' };
+    else {
+      state.hlVolume ||= {};
+      const guardOk = !guard.some((g) => g.pf === 'entropy' && ['unknown', 'close', 'attach'].includes(g.kind));
+      const gq = C.lastGuardRead.entropy, idle = guard.filter((g) => g.pf === 'entropy').every((g) => ['ok', 'grace', 'foreign', 'recovered'].includes(g.kind));
+      let reuse = gq && idle && !out.length && Date.now() - gq.at < 15e3 ? gq.st : null;
+      const accountState = async (pf, c, n, o) => { if (pf === 'entropy' && reuse) { const st = reuse; reuse = null; return st; } return C.accountState(pf, c, n, o); };
+      try {
+        hlVolume = await HV.hlVolumeTick(cfg, net, state.hlVolume, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal, alert, accountState, env: process.env,
+          canEnter: guardOk && !existsSync(P.stopVolume) && !existsSync(P.stopEntropy) });
+        hlVolErr = null;
+      } catch (e) { const msg = redact(e.message); if (msg !== hlVolErr) log('ERROR', 'entropy volume tick failed: ' + msg); hlVolErr = msg; hlVolume = { enabled: true, error: msg }; }
+      saveState(state);
+    }
+  }
   // hot = re-check soon: an entry is resting (it may fill at any moment) or a position is inside its grace period
   out.hot = guard.some((g) => g.kind === 'grace' || g.resting > 0) || out.some((r) => r.status === 'placed');
   // a failed QFEX read this tick (guard could not read, or the volume tick hit a transient error) -> backoff + paused entries
   const gErr = guard.find((g) => g.pf === 'qfex' && g.kind === 'unknown');
   const readError = gErr ? new Error(gErr.error || 'QFEX guard read failed') : volume && volume.error && C.isTransientError(volume.error) ? new Error(volume.error) : null;
   if (readError && !gErr) readError.partial = true; // the guard's read worked this tick
-  return Object.assign(out, { guard, volume, readError, tickMs: volume ? cfg.qfexVol.tickS * 1000 : null });
+  return Object.assign(out, { guard, volume, hlVolume, readError, tickMs: volume ? cfg.qfexVol.tickS * 1000 : null });
 }
 
+function hlVolumeStatus() {
+  let vc; try { vc = HV.loadHlVolumeConfig(process.env); } catch (e) { return { error: e.message }; }
+  const vs = loadState().hlVolume || {};
+  return { enabled: vc.enabled, leverage: vc.leverage, maxMarkets: vc.maxMarkets, tpPct: HV.tpPctFor(vc), slPct: vc.slPct, maxHoldS: vc.maxHoldS, halted: vs.halted || null, stats: vs.stats || null,
+    active: Object.entries(vs.markets || {}).filter(([, m]) => m.phase !== 'idle').map(([k, m]) => ({ market: k, phase: m.phase })) };
+}
 function volumeStatus(cfg) {
   const vc = cfg.qfexVol; if (!vc) return null;
   const vs = loadState().volume || {};
@@ -181,6 +207,7 @@ async function status(sinceMs, only) {
           return { ...strip(p), sl, tp, protected: sl.length > 0 && tp.length > 0 }; }),
         ...(pf === 'arcus' ? { weeklyLossAccount: st.weeklyLossAccount, bobbyMarkets: st.bobbyMarkets, bobbyWeekFills: st.bobbyWeekFills } : {}),
         ...(pf === 'qfex' ? { volume: st.volume, volumeMode: volumeStatus(cfg) } : {}),
+        ...(pf === 'entropy' ? { volumeMode: hlVolumeStatus() } : {}),
         dailyLoss: st.dailyLoss,
         // weekly + daily caps, usage, per-trade max and halt (same functions the decisions use)
         limits: C.limitsState(pf, cfg.caps, st, Date.now(), { halted: pf === 'qfex' ? (loadState().volume || {}).halted : null }),

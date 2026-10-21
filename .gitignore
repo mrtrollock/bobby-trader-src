@@ -29,5 +29,6 @@ autotrader/entropy_status.json
 points_ledger.json
 points_manual.json
 autotrader/STOP_VOLUME
+autotrader/STOP_ENTROPY
 # airdrop valuation research inputs (private; published only inside the encrypted balances file)
 valuation_inputs.json
