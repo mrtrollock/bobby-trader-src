@@ -15,12 +15,12 @@ test('SL loss / TP gain include fees on both sides', () => {
 test('oversized SL is caught: 80 @50 SL 52 = ~-164$ incl. fees (>=100 -> red, 2nd confirm)', () => {
   const r = computeRisk({ isLong: false, size: 80, leverage: 10, mark: 50, type: 'market', feeRate: 0.00045, mmf: 0.05, maxLev: 20, sl: 52 });
   assert.ok(r.slLoss > 150 && r.slLoss < 165, String(r.slLoss));
-  assert.ok(r.warns.some((w) => w.includes('Perte au SL')));
+  assert.ok(r.warns.some((w) => w.includes('Loss at SL')));
   assert.ok(r.needsSecondConfirm);
 });
 test('exactly $100 counts as over the limit', () => {
   const r = computeRisk({ isLong: true, size: 10, leverage: 2, mark: 100, type: 'market', feeRate: 0, mmf: 0.01, sl: 90 });
-  near(r.slLoss, 100); assert.ok(r.warns.some((w) => w.includes('Perte au SL')));
+  near(r.slLoss, 100); assert.ok(r.warns.some((w) => w.includes('Loss at SL')));
 });
 test('leverage above market max and SL on the wrong side are hard blocks', () => {
   const r = computeRisk({ isLong: true, size: 1, leverage: 10, mark: 100, type: 'market', feeRate: 0, mmf: 0.05, maxLev: 6, sl: 101 });
@@ -28,8 +28,8 @@ test('leverage above market max and SL on the wrong side are hard blocks', () =>
 });
 test('expired proposal and >1% move are red warnings', () => {
   const r = computeRisk({ isLong: true, size: 1, leverage: 2, mark: 102, ref: 100, type: 'market', feeRate: 0, mmf: 0.05, sl: 95, expiry: 1000, now: 2000 });
-  assert.ok(r.warns.some((w) => w.includes('expirée')));
-  assert.ok(r.warns.some((w) => w.includes('bougé')));
+  assert.ok(r.warns.some((w) => w.includes('expired')));
+  assert.ok(r.warns.some((w) => w.includes('moved')));
   const ok = computeRisk({ isLong: true, size: 1, leverage: 2, mark: 100.9, ref: 100, type: 'market', feeRate: 0, mmf: 0.05, sl: 95, expiry: 3000, now: 2000 });
   assert.equal(ok.warns.length, 0);
 });
@@ -45,7 +45,7 @@ test('isolated liquidation estimate', () => {
 });
 test('margin above free collateral warns', () => {
   const r = computeRisk({ isLong: true, size: 10, leverage: 2, mark: 100, type: 'market', feeRate: 0, mmf: 0.05, sl: 99, freeCollateral: 300 });
-  assert.ok(r.warns.some((w) => w.includes('collatéral')));
+  assert.ok(r.warns.some((w) => w.includes('collateral')));
 });
 test('tpsl on existing position: SL moved past entry to lock profit is valid (checked vs mark)', () => {
   // synthetic long 20 @100, mark 103, new SL 100.1 (just past entry)
@@ -67,5 +67,5 @@ test('tpsl on existing position: SL moved past entry to lock profit is valid (ch
 });
 test('open orders keep the entry-side check', () => {
   const r = computeRisk({ isLong: true, size: 1, leverage: 5, mark: 100, type: 'limit', limitPx: 90, feeRate: 0, mmf: 0.05, sl: 95 });
-  assert.ok(r.blocks.some((b) => b.includes('prix d’entrée')));
+  assert.ok(r.blocks.some((b) => b.includes('entry price')));
 });

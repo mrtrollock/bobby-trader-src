@@ -33,7 +33,7 @@ export async function market(base, name, f) {
   const meta = await perpMeta(base, f);
   const u = (meta.universe || []).find((x) => String(x.name).toUpperCase() === String(name).toUpperCase()
     || String(x.name).toUpperCase() === String(name).toUpperCase() + '-USDC' || String(x.index) === String(name));
-  if (!u) throw new Error('Marché TxFlow inconnu: ' + name);
+  if (!u) throw new Error('Unknown TxFlow market: ' + name);
   return u;
 }
 export const assetCtx = (base, index, f) => info(base, { type: 'activeAssetCtx', coin: String(index) }, f);
@@ -114,7 +114,7 @@ export function orderAction({ asset, isBuy, px, sz, postOnly = true, reduceOnly 
 }
 export function signAgentAction(action, nonce, agentPriv, net) {
   assertTradeOnly('action', action);
-  if (action.type === 'approveAgent') throw new Error('approveAgent est signé par le wallet principal, jamais par l’agent');
+  if (action.type === 'approveAgent') throw new Error('approveAgent is signed by the main wallet, never by the agent');
   return { action, signature: sign(agentSigningHash(action, nonce, net), agentPriv), nonce, vaultAddress: null, signatureChainId: null };
 }
 // One-time approval of the bot's agent, to be signed by the user's OWN wallet (EIP-1193 eth_signTypedData_v4).
@@ -136,7 +136,7 @@ export function approveAgentStructHash(msg) {
 export const approveAgentSigningHash = (msg, net, chainIdOverride) => digest(domainSeparator(net, chainIdOverride), approveAgentStructHash(msg));
 
 export async function sendAgentAction(base, envelope, { dryRun = true, fetchFn = fetch } = {}) {
-  if (!TXFLOW_AGENT_ENABLED) throw new Error('Signature agent TxFlow désactivée (whitelist mainnet requise)');
+  if (!TXFLOW_AGENT_ENABLED) throw new Error('TxFlow agent signing is disabled (mainnet whitelist required)');
   if (dryRun) return { dry: true, envelope };
   assertTradeOnly('action', envelope.action);
   const r = await fetchFn(base + '/exchange', { method: 'POST', headers: { 'Content-Type': 'application/json', 'x-api-version': API_VERSION_HEADER }, body: JSON.stringify(envelope) });

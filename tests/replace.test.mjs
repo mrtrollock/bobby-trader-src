@@ -82,13 +82,13 @@ test('replace: if the old legs never go away, the old SL is still there -> failu
   assert.equal(r.ok, false); assert.equal(r.critical, null); assert.deepEqual(r.restore, { tp: '95.5', sl: '102' });
   assert.ok(e.book().some((o) => o.orderId === 'n-sl'));
 });
-test('replace: placement hard-fails after cancel -> critical "SANS stop-loss" + restore values', async () => {
+test('replace: placement hard-fails after cancel -> critical "NO stop-loss" + restore values', async () => {
   const e = engine();
   const send0 = e.send;
   e.send = async (r) => (r.kind === 'place' ? { ok: false, status: 400, error: 'HTTP 400 bad trigger' } : send0(r));
   const plan = A.planTpslReplace(e.book(), 28, { stopLoss: '101' });
   const r = await runTpslReplace({ plan, m: NVDA, marketName: 'NVDA-USD', ...e, ...fast });
-  assert.equal(r.ok, false); assert.match(r.critical, /SANS stop-loss/); assert.deepEqual(r.restore, { tp: '95.5', sl: '102' });
+  assert.equal(r.ok, false); assert.match(r.critical, /NO stop-loss/); assert.deepEqual(r.restore, { tp: '95.5', sl: '102' });
 });
 test('replace: entry-linked SL cancelled only after the new SL is live', async () => {
   const e = engine();

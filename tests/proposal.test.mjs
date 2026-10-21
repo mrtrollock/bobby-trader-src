@@ -21,8 +21,8 @@ test('make_proposal.py URL decodes in JS (incl. Telegram appended params) and co
   const tok = extractToken(url);
   const parts = tok.split('.');
   const flipped = parts[1].slice(0, 10) + (parts[1][10] === 'A' ? 'B' : 'A') + parts[1].slice(11);
-  assert.throws(() => decodeProposal(`v1.${flipped}.${parts[2]}`), /corrompue/);
-  assert.throws(() => decodeProposal(`v1.${parts[1].slice(0, -4)}.${parts[2]}`), /corrompue/);
+  assert.throws(() => decodeProposal(`v1.${flipped}.${parts[2]}`), /Corrupted/);
+  assert.throws(() => decodeProposal(`v1.${parts[1].slice(0, -4)}.${parts[2]}`), /Corrupted/);
 });
 test('validation rejects bad proposals', () => {
   assert.throws(() => decodeProposal(encodeProposal({ ...trade, pf: 'binance' })));
@@ -36,6 +36,6 @@ test('keystore: PBKDF2(600k)+AES-GCM round trip, wrong PIN fails, no plaintext i
   assert.ok(!blob.includes('aaaa') && !blob.includes('bbbb'));
   assert.equal(JSON.parse(blob).it, 600000);
   assert.deepEqual(await decryptSecrets(blob, '123456'), secret);
-  await assert.rejects(decryptSecrets(blob, '654321'), /PIN incorrect/);
+  await assert.rejects(decryptSecrets(blob, '654321'), /Wrong PIN/);
   await assert.rejects(encryptSecrets(secret, '1', 1000));
 });

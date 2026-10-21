@@ -15,7 +15,7 @@ export const canonical = (o) => pyJson(o, true);
 export function keyFromHex(hex) {
   let raw = String(hex || '').trim();
   if (raw.startsWith('0x')) raw = raw.slice(2);
-  if (!/^[0-9a-fA-F]{64}$/.test(raw)) throw new Error('Clé Arcus invalide (64 caractères hex attendus)');
+  if (!/^[0-9a-fA-F]{64}$/.test(raw)) throw new Error('Invalid Arcus key (64 hex characters expected)');
   return hexToBytes(raw.toLowerCase());
 }
 export const apiKeyOf = (priv) => bytesToHex(ed25519.getPublicKey(priv));

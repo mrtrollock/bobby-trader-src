@@ -53,21 +53,21 @@ await page.goto(ORIGIN + '/index.html', { waitUntil: 'networkidle0' });
 await confirmAll();
 const noTelegram = await page.evaluate(() => !window.Telegram && ![...document.scripts].some((s) => /telegram/.test(s.src)));
 const manifest = await page.evaluate(async () => (await fetch(document.querySelector('link[rel=manifest]').href)).json());
-await click('Réglages');
+await click('Settings');
 await page.evaluate(() => { const l = [...document.querySelectorAll('label.toggle')].find((x) => x.textContent.includes('Testnet')); l.querySelector('input').click(); });
 await sleep(500);
 const arcusKey = randomBytes(32).toString('hex'), hlKey = '0x' + randomBytes(32).toString('hex');
-await typeIn('input[placeholder^="Clé privée Ed25519"]', arcusKey);
-await typeIn('input[placeholder^="Clé privée API wallet"]', hlKey);
-await typeIn('input[placeholder^="Adresse principale"]', '0x' + randomBytes(20).toString('hex'));
+await typeIn('input[placeholder^="Arcus Ed25519 private key"]', arcusKey);
+await typeIn('input[placeholder^="HL API wallet private key"]', hlKey);
+await typeIn('input[placeholder^="Main address"]', '0x' + randomBytes(20).toString('hex'));
 await typeIn('input[placeholder^="PIN"]', PIN);
-await typeIn('input[placeholder^="Confirme"]', PIN);
-await click('Enregistrer (chiffré)');
+await typeIn('input[placeholder^="Confirm"]', PIN);
+await click('Save (encrypted)');
 await sleep(2500);
 const stored = await page.evaluate(() => new Promise((res) => { const q = indexedDB.open('tgtrade'); q.onsuccess = () => { const g = q.result.transaction('kv').objectStore('kv').get('tgtrade_ks_v1'); g.onsuccess = () => res(g.result); }; }));
 const ksOk = !!stored && !stored.includes(arcusKey) && !stored.includes(hlKey.slice(2)) && JSON.parse(stored).it === 600000;
 const dryDefault = await page.evaluate(() => document.body.innerText.includes('DRY RUN'));
-await page.click('.brand'); await sleep(300); await click('Verrouiller');
+await page.click('.brand'); await sleep(300); await click('Lock');
 
 const now = Math.floor(Date.now() / 1000);
 const solPx = r2(solMark * 0.99, 2), solSl = r2(solPx * 0.99, 2), solSz = r2(2 / (solPx - solSl), 2);
@@ -84,14 +84,14 @@ const toks = Object.fromEntries(Object.entries(trades).map(([k, t]) => [k, tok(t
 // inbox as send_batch.py would publish it (written directly: send_batch's baselines read mainnet, which e2e never touches)
 writeFileSync('dist/proposals.json', JSON.stringify({ v: 1, updated: now, batches: [
   { id: 'b1', group: 'entropy', title: '🤖 Hyperliquid (testnet)', created: now, closed: false, proposals: [
-    { id: 'e2e-hl', pf: 'hl', line: `🟢 LONG SOL ${solSz} · 1× · limite ${solPx}`, token: toks.hl, exp: now + 3600, status: 'pending' },
-    { id: 'old', pf: 'hl', line: 'ancienne', token: toks.hl, exp: now - 10, status: 'pending' }] },
-  { id: 'b2', group: 'txflow', title: '🌊 TxFlow (manuel)', created: now, closed: false, proposals: [
+    { id: 'e2e-hl', pf: 'hl', line: `🟢 LONG SOL ${solSz} · 1× · limit ${solPx}`, token: toks.hl, exp: now + 3600, status: 'pending' },
+    { id: 'old', pf: 'hl', line: 'old proposal', token: toks.hl, exp: now - 10, status: 'pending' }] },
+  { id: 'b2', group: 'txflow', title: '🌊 TxFlow (manual)', created: now, closed: false, proposals: [
     { id: 'e2e-tx', pf: 'txflow', line: `🟢 LONG ${btc.name} ${btcSz}`, token: toks.tx, exp: now + 3600, status: 'pending' }] }] }));
 
 async function openToken(t, approve = true) {
   await page.goto('about:blank'); await page.goto(`${ORIGIN}/index.html#p=${t}`, { waitUntil: 'networkidle0' }); await confirmAll();
-  await page.waitForFunction(() => document.body.innerText.includes('Contrôle en direct') || document.querySelector('.alert.block'), { timeout: 25000 });
+  await page.waitForFunction(() => document.body.innerText.includes('Live check') || document.querySelector('.alert.block'), { timeout: 25000 });
   await sleep(300);
   const screen = await page.evaluate(() => document.body.innerText);
   const blocks = await page.$$eval('.alert.block', (xs) => xs.map((x) => x.textContent));
@@ -99,8 +99,8 @@ async function openToken(t, approve = true) {
   const disabled = await page.$eval('.btn.approve', (b) => b.disabled).catch(() => null);
   let after = screen;
   if (approve && disabled === false) {
-    await click('Approuver');
-    if (await page.$('.pin')) { await page.type('.pin', PIN); await click('Valider'); }
+    await click('Approve');
+    if (await page.$('.pin')) { await page.type('.pin', PIN); await click('Confirm', '.modal button'); }
     await page.waitForFunction(() => document.body.innerText.includes('DRY RUN') && document.querySelector('pre'), { timeout: 25000 });
     after = await page.evaluate(() => document.body.innerText);
   }
@@ -110,18 +110,18 @@ const hl = await openToken(toks.hl);
 const ar = await openToken(toks.ar);
 const bad = await openToken(toks.bad, false);
 const tx = await openToken(toks.tx, false);
-const txCard = { conforme: tx.screen.includes('Conforme à la politique'), link: await page.$eval('a.btn', (a) => a.href).catch(() => null) };
+const txCard = { conforme: tx.screen.includes('Policy compliant'), link: await page.$eval('a.btn', (a) => a.href).catch(() => null) };
 
 await page.goto(ORIGIN + '/index.html', { waitUntil: 'networkidle0' });
-await click('Propositions', 'nav button');
+await click('Proposals', 'nav button');
 await page.waitForFunction(() => document.body.innerText.includes('LONG SOL'), { timeout: 10000 });
 const inbox = await page.evaluate(() => document.body.innerText);
 await page.screenshot({ path: 'tests/e2e_inbox.png' });
-await click('Ouvrir', 'button');
-await page.waitForFunction(() => document.body.innerText.includes('Contrôle en direct') || document.querySelector('.alert.block'), { timeout: 25000 });
+await click('Open', 'button');
+await page.waitForFunction(() => document.body.innerText.includes('Live check') || document.querySelector('.alert.block'), { timeout: 25000 });
 const fromInbox = await page.evaluate(() => document.body.innerText.includes('e2e-hl'));
-await click('Tableau', 'nav button');
-await page.waitForFunction(() => document.body.innerText.includes('Perte réalisée cette semaine'), { timeout: 25000 });
+await click('Dashboard', 'nav button');
+await page.waitForFunction(() => document.body.innerText.includes('Realized loss this week'), { timeout: 25000 });
 const dash = await page.evaluate(() => document.body.innerText);
 await page.screenshot({ path: 'tests/e2e_dash.png' });
 await page.click('.brand'); await sleep(300); await click('Journal');
@@ -132,11 +132,11 @@ writeFileSync('dist/proposals.json', inboxBackup);
 const payloadTif = (txt, re) => re.test(txt);
 const res = {
   noTelegram, manifestName: manifest.name, ksOk, dryDefault,
-  hl_postOnly_Alo: payloadTif(hl.after, /"tif":\s*"Alo"/), hl_blocks: hl.blocks, hl_dry: hl.after.includes('DRY RUN — non envoyé'),
-  ar_postOnly_ALO: payloadTif(ar.after, /"timeInForce":\s*"ALO"/), ar_blocks: ar.blocks, ar_dry: ar.after.includes('DRY RUN — non envoyé'),
+  hl_postOnly_Alo: payloadTif(hl.after, /"tif":\s*"Alo"/), hl_blocks: hl.blocks, hl_dry: hl.after.includes('DRY RUN — not sent'),
+  ar_postOnly_ALO: payloadTif(ar.after, /"timeInForce":\s*"ALO"/), ar_blocks: ar.blocks, ar_dry: ar.after.includes('DRY RUN — not sent'),
   bad_blocks: bad.blocks, bad_approveDisabled: bad.approveDisabled,
   tx_blocks: tx.blocks, txCard,
-  inbox_hasLines: inbox.includes('LONG SOL') && inbox.includes('TxFlow') && inbox.includes('expiré'), fromInbox,
+  inbox_hasLines: inbox.includes('LONG SOL') && inbox.includes('TxFlow') && inbox.includes('expired'), fromInbox,
   dash: dash.slice(0, 900), journal,
   csp: logs.filter((l) => /Content Security|Refused|pageerror|BLOCKED/.test(l)),
   hosts: [...new Set(reqs.map((r) => { const [m, u] = r.split(' '); const x = new URL(u); return m + ' ' + x.origin + x.pathname; }))],
@@ -146,7 +146,7 @@ await browser.close(); srv.kill();
 const fail = [];
 if (!res.noTelegram) fail.push('telegram'); if (!res.ksOk) fail.push('keystore'); if (!res.dryDefault) fail.push('dry default');
 if (!res.hl_dry || !res.hl_postOnly_Alo) fail.push('hl dry-run post-only'); if (!res.ar_dry || !res.ar_postOnly_ALO) fail.push('arcus dry-run post-only');
-if (res.bad_approveDisabled !== true || !res.bad_blocks.some((b) => /maker/.test(b)) || !res.bad_blocks.some((b) => /levier 3×/.test(b))) fail.push('policy blocks');
+if (res.bad_approveDisabled !== true || !res.bad_blocks.some((b) => /maker/.test(b)) || !res.bad_blocks.some((b) => /leverage 3×/.test(b))) fail.push('policy blocks');
 if (!res.txCard.conforme || !String(res.txCard.link).startsWith('https://app.txflow.com')) fail.push('txflow card');
 if (!res.inbox_hasLines || !res.fromInbox) fail.push('inbox');
 if (res.csp.some((l) => /MAINNET|Refused|Content Security|pageerror/.test(l))) fail.push('csp/mainnet');

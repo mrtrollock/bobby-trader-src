@@ -24,7 +24,7 @@ export async function decryptSecrets(blob, pin) {
   try {
     const pt = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: unb64(o.iv), additionalData: te.encode(KS_KEY) }, key, unb64(o.ct));
     return JSON.parse(td.decode(pt));
-  } catch { throw new Error('PIN incorrect'); }
+  } catch { throw new Error('Wrong PIN'); }
 }
 
 // ---------------------------------------------------------------- backends
@@ -47,7 +47,7 @@ export async function deviceBackend() { return IDB; } // trade log + settings (n
 
 export async function hasKeystore() { return !!(await (await secureBackend()).get(KS_KEY)); }
 export async function saveKeystore(obj, pin) { const b = await secureBackend(); await b.set(KS_KEY, await encryptSecrets(obj, pin)); return b.name; }
-export async function loadKeystore(pin) { const blob = await (await secureBackend()).get(KS_KEY); if (!blob) throw new Error('Aucune clé enregistrée'); return decryptSecrets(blob, pin); }
+export async function loadKeystore(pin) { const blob = await (await secureBackend()).get(KS_KEY); if (!blob) throw new Error('No keys saved'); return decryptSecrets(blob, pin); }
 export async function wipeKeystore() {
   const b = await secureBackend(); await b.del(KS_KEY);
   try { await IDB.del(KS_KEY); } catch { /* ignore */ }

@@ -17,13 +17,13 @@ export function arcusRates(m, stats, table) {
   const disc = tier && num(tier.feeDiscountPpm) ? num(tier.feeDiscountPpm) / 1e6 : 0;
   let maker = num(m && (m.effectiveMakerFeePpm ?? m.baseMakerFeePpm));
   let taker = num(m && (m.effectiveTakerFeePpm ?? m.baseTakerFeePpm));
-  let source = 'marché';
+  let source = 'market';
   if ((maker == null || taker == null) && table && Array.isArray(table.tiers)) {
     const lvl = tier ? Number(tier.level) : 0;
     const row = table.tiers.find((t) => Number(t.level) === lvl) || table.tiers[0];
     if (row) { maker ??= num(row.maker_fee_ppm); taker ??= num(row.taker_fee_ppm); source = '/v1/feetiers'; }
   }
-  if (maker == null || taker == null) return { ...FALLBACK.arcus, source: 'défaut' };
+  if (maker == null || taker == null) return { ...FALLBACK.arcus, source: 'default' };
   const apply = (ppm) => (ppm > 0 ? ppm * (1 - disc) : ppm) / 1e6; // discount only on positive fees (rebates untouched)
   return { maker: apply(maker), taker: apply(taker), source };
 }
@@ -32,6 +32,6 @@ export function arcusRates(m, stats, table) {
 export function userFeesRates(body, fallback) {
   const d = body && body.data && typeof body.data === 'object' && !Array.isArray(body.data) ? body.data : body;
   const maker = num(d && d.userAddRate), taker = num(d && d.userCrossRate);
-  if (maker == null || taker == null || taker <= 0) return { ...fallback, source: 'défaut' };
+  if (maker == null || taker == null || taker <= 0) return { ...fallback, source: 'default' };
   return { maker, taker, source: 'userFees' };
 }

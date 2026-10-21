@@ -9,7 +9,7 @@
 
 Batches are written to an inbox file served next to the web app: public/proposals.json (copied into dist/ by
 build.mjs; dist/proposals.json is refreshed too when dist/ exists). The page groups trades per platform
-(🏹 Arcus / 🤖 Entropy / 🤖 Hyperliquid / 🌊 TxFlow) with an "Ouvrir" button per trade.
+(🏹 Arcus / 🤖 Entropy / 🤖 Hyperliquid / 🌊 TxFlow) with an "Open" button per trade.
 Publishing on GitHub Pages = commit + push that file (done by you, never by this script).
 
 Each trade may carry "line" (custom text); "btn" is accepted for compatibility and ignored.
@@ -173,24 +173,24 @@ def group_of(t):
         return t["pf"]
     return "entropy" if t["m"].startswith("io:") else "hl"
 
-TITLE = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "hl": "🤖 Hyperliquid", "txflow": "🌊 TxFlow (manuel)"}
+TITLE = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "hl": "🤖 Hyperliquid", "txflow": "🌊 TxFlow (manual)"}
 ORDER = ("arcus", "entropy", "hl", "txflow")
 
 def short(m):
     return m.split(":")[-1].replace("-USD", "")
 
 def fmt(x):
-    return f"{float(x):,.6g}".replace(",", " ")
+    return f"{float(x):,.6g}"
 
 def default_line(t):
     act = t.get("act", "open")
     if act == "cancel":
-        return f"❌ Annuler l’ordre {short(t['m'])} (oid {t.get('oid')})"
+        return f"❌ Cancel {short(t['m'])} order (oid {t.get('oid')})"
     if act == "tpsl":
         parts = [f"SL {fmt(t['sl'])}" if t.get("sl") is not None else None, f"TP {fmt(t['tp'])}" if t.get("tp") is not None else None]
         return f"🎯 TP/SL {short(t['m'])} : " + " · ".join(p for p in parts if p)
     side = "🟢 LONG" if t["sd"] == "long" else "🔴 SHORT"
-    entry = "market" if t["et"] == "market" else f"limite {fmt(t['px'])}"
+    entry = "market" if t["et"] == "market" else f"limit {fmt(t['px'])}"
     bits = [f"{side} {short(t['m'])} {fmt(t['sz'])} · {t['lev']}× · {entry}"]
     if t.get("sl") is not None:
         bits.append(f"SL {fmt(t['sl'])}")
@@ -318,9 +318,9 @@ def cmd_done(pid, dry=False):
 def test_trades():
     exp = int(time.time()) + 3600
     return [
-        {"id": "test-a1", "pf": "arcus", "m": "NVDA-USD", "act": "cancel", "oid": "test0000000000a1", "exp": exp, "n": "TEST, l’app doit bloquer (ordre introuvable)"},
-        {"id": "test-a2", "pf": "arcus", "m": "GLD-USD", "act": "cancel", "oid": "test0000000000a2", "exp": exp, "n": "TEST, rien ne sera envoyé"},
-        {"id": "test-e1", "pf": "hl", "m": "io:ANTH", "act": "cancel", "oid": 1, "exp": exp, "n": "TEST, l’app doit bloquer (ordre introuvable)"},
+        {"id": "test-a1", "pf": "arcus", "m": "NVDA-USD", "act": "cancel", "oid": "test0000000000a1", "exp": exp, "n": "TEST, the app must block this (order not found)"},
+        {"id": "test-a2", "pf": "arcus", "m": "GLD-USD", "act": "cancel", "oid": "test0000000000a2", "exp": exp, "n": "TEST, nothing will be sent"},
+        {"id": "test-e1", "pf": "hl", "m": "io:ANTH", "act": "cancel", "oid": 1, "exp": exp, "n": "TEST, the app must block this (order not found)"},
     ]
 
 def main():

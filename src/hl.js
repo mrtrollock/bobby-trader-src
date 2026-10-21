@@ -14,7 +14,7 @@ const strip0x = (h) => (h.startsWith('0x') ? h.slice(2) : h);
 
 export function keyFromHex(hex) {
   const raw = strip0x(String(hex || '').trim()).toLowerCase();
-  if (!/^[0-9a-f]{64}$/.test(raw)) throw new Error('Clé Hyperliquid invalide (64 caractères hex attendus)');
+  if (!/^[0-9a-f]{64}$/.test(raw)) throw new Error('Invalid Hyperliquid key (64 hex characters expected)');
   return hexToBytes(raw);
 }
 export function addressOf(priv) {
@@ -92,7 +92,7 @@ export function signL1Action(priv, action, vaultAddress, nonce, expiresAfter, is
 // Body exactly as exchange.py _post_action builds it
 export function exchangeRequest(priv, action, nonce, { isMainnet = true, vaultAddress = null, expiresAfter = null } = {}) {
   assertTradeOnly('action', action);
-  if (vaultAddress != null) throw new Error('Trading via vault interdit par la politique');
+  if (vaultAddress != null) throw new Error('Trading via a vault is forbidden by policy');
   const signature = signL1Action(priv, action, vaultAddress, nonce, expiresAfter, isMainnet);
   return { method: 'POST', path: '/exchange', body: JSON.stringify({ action, nonce, signature, vaultAddress, expiresAfter }),
     headers: { 'Content-Type': 'application/json' } };
@@ -104,7 +104,7 @@ export function dexOf(coin) { const i = coin.indexOf(':'); return i > 0 ? coin.s
 export function assetId(coin, universe, perpDexs) {
   const dex = dexOf(coin);
   const idx = universe.findIndex((u) => u.name === coin);
-  if (idx < 0) throw new Error('Marché inconnu: ' + coin);
+  if (idx < 0) throw new Error('Unknown market: ' + coin);
   if (!dex) return idx;
   const di = perpDexs.findIndex((d) => d && d.name === dex);
   if (di < 1) throw new Error('Dex inconnu: ' + dex);
@@ -135,7 +135,7 @@ export function buildPositionTpsl({ asset, szDecimals, positionIsLong, tp, sl, t
     wires.push(orderWire(asset, { isBuy: !positionIsLong, limitPx: slippagePx(t, !positionIsLong, tpslSlippage, szDecimals), sz: 0,
       reduceOnly: true, orderType: { trigger: { triggerPx: t, isMarket: true, tpsl: kind } } }));
   }
-  if (!wires.length) throw new Error('TP ou SL requis');
+  if (!wires.length) throw new Error('TP or SL required');
   return orderAction(wires, 'positionTpsl');
 }
 export function buildClose({ asset, szDecimals, szi, markPx, slippage = 0.02 }) {

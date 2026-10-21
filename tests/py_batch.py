@@ -37,7 +37,7 @@ trades = [
 sent = SB.cmd_send(trades)
 assert [s["group"] for s in sent] == ["arcus", "entropy", "txflow"], sent
 j = inbox()
-assert [b["title"] for b in j["batches"]] == ["🏹 Arcus", "🤖 Entropy", "🌊 TxFlow (manuel)"], j
+assert [b["title"] for b in j["batches"]] == ["🏹 Arcus", "🤖 Entropy", "🌊 TxFlow (manual)"], j
 p0 = j["batches"][0]["proposals"][0]
 assert p0["token"].startswith("v1.") and p0["status"] == "pending" and "LONG TSLA" in p0["line"]
 assert "baseline" not in json.dumps(j), "baselines must stay local"

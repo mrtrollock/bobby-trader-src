@@ -1,8 +1,8 @@
 {
  "name": "Bobby Trade",
  "short_name": "Bobby",
- "description": "Propositions de trades approuvées par PIN, signées sur l’appareil (Arcus, Entropy/Hyperliquid, TxFlow manuel).",
- "lang": "fr",
+ "description": "PIN-approved trade proposals, signed on your device (Arcus, Entropy/Hyperliquid, TxFlow manual mode).",
+ "lang": "en",
  "start_url": "./",
  "scope": "./",
  "display": "standalone",

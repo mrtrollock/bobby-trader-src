@@ -29,7 +29,7 @@ export async function arcusMarket(base, name) {
   const ms = (await arcusGet(base, '/v1/markets')).markets;
   const m = ms.find((x) => x.marketDisplayName.toUpperCase() === name.toUpperCase() || String(x.marketId) === String(name)
     || x.marketDisplayName.toUpperCase() === (name.toUpperCase() + '-USD'));
-  if (!m) throw new Error('Marché Arcus inconnu: ' + name);
+  if (!m) throw new Error('Unknown Arcus market: ' + name);
   return m;
 }
 export async function arcusClockOffsetMs(base) {
@@ -54,7 +54,7 @@ export async function hlMarket(base, coin) {
   const [meta, ctxs] = await hlInfo(base, dex ? { type: 'metaAndAssetCtxs', dex } : { type: 'metaAndAssetCtxs' });
   const perpDexs = dex ? await hlInfo(base, { type: 'perpDexs' }) : [null];
   const idx = meta.universe.findIndex((u) => u.name === coin);
-  if (idx < 0) throw new Error('Marché HL inconnu: ' + coin);
+  if (idx < 0) throw new Error('Unknown HL market: ' + coin);
   const u = meta.universe[idx], c = ctxs[idx];
   return { coin, dex, asset: H.assetId(coin, meta.universe, perpDexs), szDecimals: u.szDecimals, maxLeverage: u.maxLeverage,
     onlyIsolated: !!u.onlyIsolated, markPx: Number(c.markPx), midPx: Number(c.midPx || c.markPx), isDelisted: !!u.isDelisted };

@@ -27,12 +27,12 @@ test('approveAgent struct/signing hash match the docs; typed data uses agent nam
 });
 test('agent stub: feature flag OFF, post-only orders, no funds/vault/approve via agent', async () => {
   assert.equal(T.TXFLOW_AGENT_ENABLED, false);
-  await assert.rejects(T.sendAgentAction(T.TESTNET, {}, { dryRun: true }), /désactivée/);
+  await assert.rejects(T.sendAgentAction(T.TESTNET, {}, { dryRun: true }), /disabled/);
   assert.equal(T.orderAction({ asset: 1, isBuy: true, px: '60000.0', sz: '0.001' }).orders[0].t.limit.tif, 'Alo');
   const k = hexToBytes('ab'.repeat(32));
-  assert.throws(() => T.signAgentAction({ type: 'withdraw3', amount: '1' }, 1, k, T.NETWORKS.testnet), /interdite/);
-  assert.throws(() => T.signAgentAction({ type: 'tokenSend' }, 1, k, T.NETWORKS.testnet), /interdite/);
-  assert.throws(() => T.signAgentAction({ type: 'approveAgent' }, 1, k, T.NETWORKS.testnet), /wallet principal/);
+  assert.throws(() => T.signAgentAction({ type: 'withdraw3', amount: '1' }, 1, k, T.NETWORKS.testnet), /forbidden/);
+  assert.throws(() => T.signAgentAction({ type: 'tokenSend' }, 1, k, T.NETWORKS.testnet), /forbidden/);
+  assert.throws(() => T.signAgentAction({ type: 'approveAgent' }, 1, k, T.NETWORKS.testnet), /main wallet/);
 });
 test('info reads: POST /info with the version header; errors surface; fills follow hasMore', async () => {
   const calls = [];
@@ -57,10 +57,10 @@ test('weekly activity (epoch) and manual execution check', () => {
 });
 test('live fee parsing with fallbacks (Arcus market/tier table, HL & TxFlow userFees)', () => {
   assert.deepEqual(F.arcusRates({ effectiveMakerFeePpm: 0, effectiveTakerFeePpm: 225 }, { tradingFeeTier: { level: 0, feeDiscountPpm: 50000 } }),
-    { maker: 0, taker: 225 * 0.95 / 1e6, source: 'marché' });
+    { maker: 0, taker: 225 * 0.95 / 1e6, source: 'market' });
   assert.equal(F.arcusRates({}, { tradingFeeTier: { level: 1 } }, { tiers: [{ level: 0, maker_fee_ppm: 200, taker_fee_ppm: 500 }, { level: 1, maker_fee_ppm: 150, taker_fee_ppm: 450 }] }).taker, 450 / 1e6);
-  assert.equal(F.arcusRates({}, null, null).source, 'défaut');
+  assert.equal(F.arcusRates({}, null, null).source, 'default');
   assert.deepEqual(F.userFeesRates({ userAddRate: '0.00015', userCrossRate: '0.00045' }, F.FALLBACK.hl_main), { maker: 0.00015, taker: 0.00045, source: 'userFees' });
   assert.equal(F.userFeesRates({ success: true, data: { userAddRate: '0.0001', userCrossRate: '0.0004' } }, F.FALLBACK.txflow).taker, 0.0004);
-  assert.equal(F.userFeesRates({}, F.FALLBACK.txflow).source, 'défaut');
+  assert.equal(F.userFeesRates({}, F.FALLBACK.txflow).source, 'default');
 });

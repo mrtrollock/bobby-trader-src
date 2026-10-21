@@ -21,26 +21,26 @@ test('a compliant post-only 1x trade with ~$2.5 at risk passes', () => {
   assert.deepEqual(c.blocks, []); assert.equal(c.maxLoss, 3);
 });
 test('market entry, leverage > 1x and missing SL are hard blocks', () => {
-  for (const [p, re] of [[{ ...ok, et: 'market', ref: 400 }, /maker/], [{ ...ok, lev: 2 }, /levier 2×/], [{ ...ok, sl: undefined }, /stop-loss obligatoire/]]) {
+  for (const [p, re] of [[{ ...ok, et: 'market', ref: 400 }, /maker/], [{ ...ok, lev: 2 }, /leverage 2×/], [{ ...ok, sl: undefined }, /stop-loss required/]]) {
     const c = checkPolicy(p, risk(p), {}); assert.ok(c.blocks.some((b) => re.test(b)), JSON.stringify(c.blocks));
   }
 });
 test('loss at SL above 1 % of platform capital is blocked; capital and % are configurable', () => {
   const p = { ...ok, sz: 1, sl: 394 }; // ~$4 + fees
-  assert.ok(checkPolicy(p, risk(p), {}).blocks.some((b) => /perte au SL/.test(b)));
+  assert.ok(checkPolicy(p, risk(p), {}).blocks.some((b) => /loss at SL/.test(b)));
   const pol = { ...POLICY, capital: { ...POLICY.capital, arcus: 1000 } }; // 1 % of 1000 = $10
   assert.deepEqual(checkPolicy(p, risk(p), { policy: pol }).blocks, []);
   assert.ok(checkPolicy(p, risk(p), { policy: { ...pol, maxLossPct: 0.002 } }).blocks.length === 1);
 });
 test('weekly cap: blocked once used >= cap, and when this trade could cross it; cap is configurable', () => {
   const r = risk(ok);
-  assert.ok(checkPolicy(ok, r, { weeklyLossUsed: 50 }).blocks.some((b) => /plafond de perte hebdo atteint/.test(b)));
-  assert.ok(checkPolicy(ok, r, { weeklyLossUsed: 48.5 }).blocks.some((b) => /dépasser le plafond hebdo/.test(b)));
+  assert.ok(checkPolicy(ok, r, { weeklyLossUsed: 50 }).blocks.some((b) => /weekly loss cap reached/.test(b)));
+  assert.ok(checkPolicy(ok, r, { weeklyLossUsed: 48.5 }).blocks.some((b) => /exceed the weekly cap/.test(b)));
   assert.deepEqual(checkPolicy(ok, r, { weeklyLossUsed: 40 }).blocks, []);
   assert.deepEqual(checkPolicy(ok, r, { weeklyLossUsed: 50, policy: { ...POLICY, weeklyLossCap: 100 } }).blocks, []);
 });
 test('margin above free collateral is a block; cancels are never blocked by policy', () => {
-  assert.ok(checkPolicy(ok, risk(ok), { freeCollateral: 100 }).blocks.some((b) => /collatéral libre/.test(b)));
+  assert.ok(checkPolicy(ok, risk(ok), { freeCollateral: 100 }).blocks.some((b) => /free collateral/.test(b)));
   assert.deepEqual(checkPolicy({ ...ok, act: 'cancel', oid: '1' }, null, { weeklyLossUsed: 999 }).blocks, []);
 });
 test('maker entry fee is used for the entry leg, taker for the stop', () => {
@@ -62,11 +62,11 @@ test('realized loss: fees subtracted unless already included; gains count as 0; 
 });
 test('funds/vault actions are refused by every signer path', () => {
   for (const type of ['withdraw3', 'usdSend', 'vaultTransfer', 'tokenSend', 'spotSend', 'usdClassTransfer'])
-    assert.throws(() => assertTradeOnly('action', { type }), /interdite/);
+    assert.throws(() => assertTradeOnly('action', { type }), /forbidden/);
   const priv = H.keyFromHex(randHex());
-  assert.throws(() => H.exchangeRequest(priv, { type: 'withdraw3', amount: '1' }, 1), /interdite/);
+  assert.throws(() => H.exchangeRequest(priv, { type: 'withdraw3', amount: '1' }, 1), /forbidden/);
   assert.throws(() => H.exchangeRequest(priv, H.buildCancel(1, 1), 1, { vaultAddress: '0x' + '11'.repeat(20) }), /vault/);
-  assert.throws(() => assertTradeOnly('arcus', { path: '/v1/withdraw' }), /interdite/);
+  assert.throws(() => assertTradeOnly('arcus', { path: '/v1/withdraw' }), /forbidden/);
   assert.doesNotThrow(() => assertTradeOnly('arcus', { path: '/v1/placeOrder' }));
 });
 test('post-only: Hyperliquid Alo and Arcus ALO when requested; defaults unchanged', () => {

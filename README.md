@@ -3,7 +3,7 @@
 A small **web app (PWA, add to home screen)** that turns AI-written trade proposals into **PIN-approved orders, signed on
 the user's own device**, on [Arcus](https://docs.arcus.xyz) and on Hyperliquid, including HIP-3 dexes such as
 **Entropy** (`io:` markets), plus a **TxFlow manual mode** (no signing: the order is placed in app.txflow.com and
-checked from public data). Works the same on a computer and a phone. The app UI is in French.
+checked from public data). Works the same on a computer and a phone. The app UI is in English.
 
 The AI assistant never holds trading keys and never places orders. It can only *propose*. The human reviews each
 proposal in the app, the app re-checks it against live market data and the risk policy, and only a PIN unlock on the
@@ -16,7 +16,7 @@ Built with **Grok Bot**.
 ```
  AI assistant ──► send_batch.py send trades.json ──► public/proposals.json  (inbox, served next to index.html)
                                                                │
-                                     user opens 📥 Propositions in the web app, taps "Ouvrir"
+                                     user opens 📥 Proposals in the web app, taps "Open"
                                                                ▼
                 Web app (single static index.html, strict hash-based CSP, no Telegram)
                   1. decode + validate proposal (corruption check)
@@ -28,7 +28,7 @@ Built with **Grok Bot**.
                  send_batch.py check ──► reads public account state, marks each trade done / expired in proposals.json
 ```
 
-### Risk policy (`src/risk.js` `POLICY`, editable in Réglages) — hard blocks, the approve button stays disabled
+### Risk policy (`src/risk.js` `POLICY`, editable in Settings) — hard blocks, the approve button stays disabled
 - **Maker only**: new positions must be **post-only limit** entries (Arcus `ALO`, Hyperliquid / TxFlow `Alo`); a limit
   that would cross the book is blocked. Market entries are refused (closing a position stays possible).
 - **Max leverage 1×** (isolated).
@@ -58,7 +58,7 @@ HIP-3 dexes (Entropy) set their own fees: the configured fallback is used. Hardc
 
 ### TxFlow (`src/txflow.js`)
 - **Manual mode (default)**: the proposal card lists market, side, post-only limit, size, leverage, SL/TP, expiry and
-  opens app.txflow.com; "Vérifier l’exécution" reads `clearinghouseState` + `frontendOpenOrders` (public `POST /info`)
+  opens app.txflow.com; "Check execution" reads `clearinghouseState` + `frontendOpenOrders` (public `POST /info`)
   and flags a position without a stop. The dashboard shows the points-epoch activity (Mon→Mon UTC): fills, volume, fees,
   active days, maker share (`userFills`, `tradeSide`).
 - **Agent signing stub, feature-flagged OFF** (`TXFLOW_AGENT_ENABLED = false`): post-only order builder, agent EIP-712

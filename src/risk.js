@@ -28,22 +28,22 @@ export function computeRisk(p) {
   const liq = liqPrice({ isLong, entry, leverage, mmf });
   const moved = ref ? Math.abs(mark - ref) / ref : null;
   const blocks = [], warns = [];
-  if (!(size > 0)) blocks.push('Taille invalide');
-  if (maxLev && leverage > maxLev) blocks.push(`Levier ${leverage}× > max du marché (${maxLev}×)`);
+  if (!(size > 0)) blocks.push('Invalid size');
+  if (maxLev && leverage > maxLev) blocks.push(`Leverage ${leverage}× > market max (${maxLev}×)`);
   if (isTpsl) {
     const m = Number(mark);
-    if (sl && (isLong ? sl >= m : sl <= m)) blocks.push('SL du mauvais côté du prix actuel (déjà franchi)');
-    if (tp && (isLong ? tp <= m : tp >= m)) blocks.push('TP du mauvais côté du prix actuel (déjà franchi)');
+    if (sl && (isLong ? sl >= m : sl <= m)) blocks.push('SL on the wrong side of the current price (already crossed)');
+    if (tp && (isLong ? tp <= m : tp >= m)) blocks.push('TP on the wrong side of the current price (already crossed)');
   } else {
-    if (sl && (isLong ? sl >= entry : sl <= entry)) blocks.push('SL du mauvais côté du prix d’entrée');
-    if (tp && (isLong ? tp <= entry : tp >= entry)) blocks.push('TP du mauvais côté du prix d’entrée');
+    if (sl && (isLong ? sl >= entry : sl <= entry)) blocks.push('SL on the wrong side of the entry price');
+    if (tp && (isLong ? tp <= entry : tp >= entry)) blocks.push('TP on the wrong side of the entry price');
   }
-  if (!sl) warns.push('Aucun stop-loss');
-  if (slLoss != null && slLoss >= maxLoss) warns.push(`Perte au SL ${slLoss.toFixed(2)} $ ≥ ${maxLoss} $`);
-  if (sl && liq && (isLong ? sl <= liq : sl >= liq)) warns.push('SL au-delà du prix de liquidation estimé');
-  if (expiry && now > expiry) warns.push('Proposition expirée');
-  if (moved != null && moved > maxMove) warns.push(`Le prix a bougé de ${(moved * 100).toFixed(2)} % depuis la proposition`);
-  if (freeCollateral != null && margin > freeCollateral * 1.001) warns.push(`Marge ${margin.toFixed(2)} $ > collatéral libre ${freeCollateral.toFixed(2)} $`);
+  if (!sl) warns.push('No stop-loss');
+  if (slLoss != null && slLoss >= maxLoss) warns.push(`Loss at SL $${slLoss.toFixed(2)} ≥ $${maxLoss}`);
+  if (sl && liq && (isLong ? sl <= liq : sl >= liq)) warns.push('SL beyond the estimated liquidation price');
+  if (expiry && now > expiry) warns.push('Proposal expired');
+  if (moved != null && moved > maxMove) warns.push(`Price moved ${(moved * 100).toFixed(2)}% since the proposal`);
+  if (freeCollateral != null && margin > freeCollateral * 1.001) warns.push(`Margin $${margin.toFixed(2)} > free collateral $${freeCollateral.toFixed(2)}`);
   return { entry, notional, margin, entryFee, slLoss, slLocked, slPnl, tpGain, liq, moved, blocks, warns, needsSecondConfirm: warns.length > 0 };
 }
 
@@ -92,21 +92,21 @@ export function checkPolicy(p, r, { policy = POLICY, weeklyLossUsed = 0, freeCol
   const used = Number(weeklyLossUsed) || 0;
   if (act === 'cancel') return { blocks, warns, maxLoss, used }; // cancelling only reduces risk
   if (act === 'open') {
-    if (policy.makerOnly && p.et !== 'limit') blocks.push('Politique : entrée maker uniquement (ordre limite post-only), pas de market');
-    if (policy.maxLeverage && Number(p.lev) > Number(policy.maxLeverage)) blocks.push(`Politique : levier ${p.lev}× > ${policy.maxLeverage}× max`);
-    if (policy.requireStopLoss && (p.sl == null || p.sl === '')) blocks.push('Politique : stop-loss obligatoire');
+    if (policy.makerOnly && p.et !== 'limit') blocks.push('Policy: maker-only entries (post-only limit order), no market orders');
+    if (policy.maxLeverage && Number(p.lev) > Number(policy.maxLeverage)) blocks.push(`Policy: leverage ${p.lev}× > ${policy.maxLeverage}× max`);
+    if (policy.requireStopLoss && (p.sl == null || p.sl === '')) blocks.push('Policy: stop-loss required');
     if (maxLoss != null && r && r.slLoss != null && r.slLoss > maxLoss + 1e-9)
-      blocks.push(`Politique : perte au SL ${r.slLoss.toFixed(2)} $ > ${maxLoss.toFixed(2)} $ (${(policy.maxLossPct * 100).toFixed(1)} % de ${cap} $)`);
+      blocks.push(`Policy: loss at SL $${r.slLoss.toFixed(2)} > $${maxLoss.toFixed(2)} (${(policy.maxLossPct * 100).toFixed(1)}% of $${cap})`);
     if (policy.weeklyLossCap != null) {
-      if (used >= policy.weeklyLossCap) blocks.push(`Politique : plafond de perte hebdo atteint (${used.toFixed(2)} / ${policy.weeklyLossCap} $) — reprise lundi 00:00 UTC`);
+      if (used >= policy.weeklyLossCap) blocks.push(`Policy: weekly loss cap reached ($${used.toFixed(2)} / $${policy.weeklyLossCap}), trading resumes Monday 00:00 UTC`);
       else if (r && r.slLoss != null && used + r.slLoss > policy.weeklyLossCap + 1e-9)
-        blocks.push(`Politique : ce trade peut dépasser le plafond hebdo (${used.toFixed(2)} + ${r.slLoss.toFixed(2)} > ${policy.weeklyLossCap} $)`);
+        blocks.push(`Policy: this trade could exceed the weekly cap ($${used.toFixed(2)} + $${r.slLoss.toFixed(2)} > $${policy.weeklyLossCap})`);
     }
     const free = freeCollateral ?? null;
-    if (policy.marginAboveFreeBlocks && free != null && r && r.margin > free * 1.001) blocks.push('Politique : marge supérieure au collatéral libre');
+    if (policy.marginAboveFreeBlocks && free != null && r && r.margin > free * 1.001) blocks.push('Policy: margin above free collateral');
   }
   if (act === 'tpsl' && policy.requireStopLoss && (p.sl == null || p.sl === '') && r && r.keepsStop === false)
-    blocks.push('Politique : la position resterait sans stop-loss');
+    blocks.push('Policy: the position would be left without a stop-loss');
   return { blocks, warns, maxLoss, used };
 }
 
@@ -115,6 +115,6 @@ export const FORBIDDEN_ACTIONS = new Set(['withdraw', 'withdraw3', 'usdSend', 's
   'subAccountTransfer', 'sendAsset', 'approveBuilderFee', 'createVault', 'cDeposit', 'cWithdraw', 'perpDexClassTransfer']);
 export const FORBIDDEN_ARCUS_PATHS = [/\/v1\/withdraw/i, /\/v1\/transfer/i, /\/v1\/deposit/i, /vault/i];
 export function assertTradeOnly(kind, x) {
-  if (kind === 'action') { if (x && FORBIDDEN_ACTIONS.has(x.type)) throw new Error('Action interdite par la politique : ' + x.type); return; }
-  if (kind === 'arcus') { if (FORBIDDEN_ARCUS_PATHS.some((re) => re.test(String(x && x.path)))) throw new Error('Requête Arcus interdite : ' + x.path); }
+  if (kind === 'action') { if (x && FORBIDDEN_ACTIONS.has(x.type)) throw new Error('Action forbidden by policy: ' + x.type); return; }
+  if (kind === 'arcus') { if (FORBIDDEN_ARCUS_PATHS.some((re) => re.test(String(x && x.path)))) throw new Error('Arcus request forbidden: ' + x.path); }
 }

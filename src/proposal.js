@@ -32,32 +32,32 @@ export function extractToken(input) {
 const NUM = ['sz', 'lev', 'px', 'ref', 'sl', 'tp', 'exp'];
 export function decodeProposal(token) {
   const parts = token.split('.');
-  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error('Format de proposition inconnu');
+  if (parts.length !== 3 || parts[0] !== 'v1') throw new Error('Unknown proposal format');
   const bytes = b64urlDecode(parts[1]);
-  if (shortHash(bytes) !== parts[2]) throw new Error('Proposition corrompue (empreinte invalide)');
+  if (shortHash(bytes) !== parts[2]) throw new Error('Corrupted proposal (invalid checksum)');
   const p = JSON.parse(td.decode(bytes));
   return validateProposal(p);
 }
 
 export function validateProposal(p) {
-  const err = (m) => { throw new Error('Proposition invalide: ' + m); };
+  const err = (m) => { throw new Error('Invalid proposal: ' + m); };
   if (p.v !== 1) err('version');
   if (!p.id || typeof p.id !== 'string') err('id');
-  if (!['arcus', 'hl', 'txflow'].includes(p.pf)) err('plateforme');
-  if (!p.m || typeof p.m !== 'string') err('marché');
+  if (!['arcus', 'hl', 'txflow'].includes(p.pf)) err('platform');
+  if (!p.m || typeof p.m !== 'string') err('market');
   const act = p.act || 'open';
   if (!['open', 'tpsl', 'cancel'].includes(act)) err('action');
-  if (act === 'cancel' && (p.oid == null || String(p.oid) === '')) err('oid requis');
+  if (act === 'cancel' && (p.oid == null || String(p.oid) === '')) err('oid required');
   for (const k of NUM) if (p[k] != null && !Number.isFinite(Number(p[k]))) err(k);
   if (act === 'open') {
-    if (!['long', 'short'].includes(p.sd)) err('sens (long|short)');
-    if (!(Number(p.sz) > 0)) err('taille');
-    if (!(Number(p.lev) >= 1) || !Number.isInteger(Number(p.lev))) err('levier');
-    if (!['market', 'limit'].includes(p.et)) err('type d’entrée');
-    if (p.et === 'limit' && !(Number(p.px) > 0)) err('prix limite');
+    if (!['long', 'short'].includes(p.sd)) err('side (long|short)');
+    if (!(Number(p.sz) > 0)) err('size');
+    if (!(Number(p.lev) >= 1) || !Number.isInteger(Number(p.lev))) err('leverage');
+    if (!['market', 'limit'].includes(p.et)) err('entry type');
+    if (p.et === 'limit' && !(Number(p.px) > 0)) err('limit price');
   }
-  if (act === 'tpsl' && p.sl == null && p.tp == null) err('TP ou SL requis');
-  if (p.pf === 'txflow' && act === 'tpsl') err('TP/SL TxFlow : à régler dans l’app TxFlow');
-  if (p.exp != null && !(Number(p.exp) > 1e9)) err('expiration');
+  if (act === 'tpsl' && p.sl == null && p.tp == null) err('TP or SL required');
+  if (p.pf === 'txflow' && act === 'tpsl') err('TxFlow TP/SL: set it in the TxFlow app');
+  if (p.exp != null && !(Number(p.exp) > 1e9)) err('expiry');
   return { ...p, act };
 }
