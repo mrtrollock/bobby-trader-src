@@ -32,6 +32,9 @@ export function loadVolumeConfig(env = process.env) {
     maxMarkets: numEnv(env, 'QFEX_VOL_MAX_MARKETS', 3),
     markets: String(env.QFEX_VOL_MARKETS || 'auto').toUpperCase() === 'AUTO' ? 'auto' : String(env.QFEX_VOL_MARKETS).split(',').map((s) => Q.normSymbol(s)).filter(Boolean),
     tpPct: numEnv(env, 'QFEX_VOL_TP_PCT', 0.001),
+    // fee floor for the take-profit: per market TP = max(QFEX_VOL_TP_PCT, 2 x maker fee + this). With 0.02 % maker a
+    // 0.04 % TP would net zero, so those markets keep 0.08 %; 0-maker markets (CL) can use the tighter TP.
+    tpNetMinPct: numEnv(env, 'QFEX_VOL_TP_NET_MIN_PCT', 0.0004),
     slPct: numEnv(env, 'QFEX_VOL_SL_PCT', 0.004),
     tpBackupMult: numEnv(env, 'QFEX_VOL_TP_BACKUP_MULT', 3),
     notionalUsd: env.QFEX_VOL_NOTIONAL_USD ? Number(env.QFEX_VOL_NOTIONAL_USD) : null,
@@ -109,6 +112,7 @@ export function entryRisk({ isLong, px, qty, slPct, ref, fee, lev, equity, free,
 // ---------------------------------------------------------------- pure decision step (unit-tested)
 // input: { vc, st (qfex accountState), refs {SYM: ref}, fees {SYM: row}, quotes {SYM: {mark,bid,ask}}, vstate, now, rng,
 //          canEnter (guard healthy + not killed), limits {perTrade, weeklyCap} }
+export const tpPctFor = (vc, maker) => Math.max(vc.tpPct, 2 * Math.abs(maker || 0) + (vc.tpNetMinPct ?? 0));
 // returns { actions[], notes[] } and mutates vstate (phases, cooldowns, requote budget, halts, round trips).
 export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Math.random, canEnter = true, limits }) {
   const actions = [], notes = []; vstate.markets ||= {}; vstate.stats ||= { roundTrips: 0, stopsOrOther: 0 };
@@ -120,6 +124,8 @@ export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Ma
   else if (!vstate.halted && st.dailyLoss >= dailyCap) vstate.halted = { reason: `daily loss $${st.dailyLoss.toFixed(2)} >= daily stop $${dailyCap.toFixed(2)}`, until: Math.floor(now / 86400e3) * 86400e3 + 86400e3, at: now, scope: 'daily' };
   if (vstate.halted && vstate.halted.at === now) actions.push({ kind: 'halt', ...vstate.halted });
   const byMarket = (s) => ({ pos: st.positions.find((p) => up(p.market) === s), orders: st.orders.filter((o) => up(o.market) === s) });
+  const makerOf = (s) => (refs[s] ? Q.rates(up(refs[s].product_category), fees[s]).maker : 0) || 0;
+  const tpFor = (s) => tpPctFor(vc, makerOf(s));
   const requoteOk = (m) => { m.requotes = (m.requotes || []).filter((t) => now - t < 60e3); return m.requotes.length < vc.requotesPerMin; };
   let openRisk = 0, pendingMargin = 0, active = 0;
   const markets = new Set([...Object.keys(ms), ...st.orders.filter((o) => isVolEntry(o) || isVolExit(o) || isVolStop(o)).map((o) => up(o.market))]);
@@ -135,7 +141,7 @@ export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Ma
       if (ref && pos.size < Number(ref.min_quantity)) { if (!exits.length) actions.push({ kind: 'close', market: s, why: `position ${pos.size} below the minimum order size: close (taker)` }); continue; }
       if (!tick) { notes.push(`${s}: no refdata, exit not placed`); continue; }
       const held = now - (m.filledAt || now) > vc.maxHoldS * 1000;
-      let target = Q.snap(pos.entry * (1 + (isLong ? vc.tpPct : -vc.tpPct)), tick, isLong ? 'ceil' : 'floor');
+      let target = Q.snap(pos.entry * (1 + (isLong ? tpFor(s) : -tpFor(s))), tick, isLong ? 'ceil' : 'floor');
       if (held && q.bid != null && q.ask != null) target = isLong ? q.ask : q.bid; // re-quote at the touch (still maker)
       const step = Number(tick);
       let px = target;
@@ -162,7 +168,7 @@ export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Ma
       if (entries.length) { active += 1; } continue;
     }
     if (entries.length) {
-      const o = entries[0]; active += 1; m.phase = 'entry'; openRisk += m.risk || 0; pendingMargin += m.margin || 0;
+      const o = entries[0]; active += 1; m.phase = 'entry'; m.seenResting = true; openRisk += m.risk || 0; pendingMargin += m.margin || 0;
       const isLong = up(o.side) === 'BUY', touch = isLong ? q.bid : q.ask;
       if (!canEnter || vstate.halted || !(ref && inSession(ref, now))) { actions.push({ kind: 'cancel', market: s, id: o.id, why: vstate.halted ? 'halted: ' + vstate.halted.reason : !canEnter ? 'new exposure paused' : 'market session ending' }); m.cancelled = true; continue; }
       if (touch != null && o.px != null && Math.abs(touch - o.px) / o.px > vc.stalePct) {
@@ -173,8 +179,14 @@ export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Ma
     }
     if (m.phase === 'entry') { // entry gone, no position: cancelled by us (re-quote now) or filled + closed between ticks
       m.phase = 'idle'; m.risk = 0; m.margin = 0;
-      m.cooldownUntil = m.cancelled ? now : now + 1000 * (vc.cooldownS[0] + rng() * (vc.cooldownS[1] - vc.cooldownS[0]));
-      if (!m.cancelled) { vstate.stats.stopsOrOther += 1; notes.push(`${s}: entry vanished without a position (filled and closed between ticks?)`); }
+      // never seen resting = QFEX cancelled the post-only (ALO) entry on placement because it would have crossed:
+      // re-quote right away (counts against the per-market re-quote budget) instead of a full cooldown
+      const aloCross = !m.cancelled && m.seenResting === false;
+      if (aloCross && requoteOk(m)) { m.requotes.push(now); m.cooldownUntil = now; vstate.stats.aloRequotes = (vstate.stats.aloRequotes || 0) + 1; notes.push(`${s}: post-only entry cancelled on placement (would cross): re-quoting now`); }
+      else m.cooldownUntil = m.cancelled ? now : now + 1000 * (vc.cooldownS[0] + rng() * (vc.cooldownS[1] - vc.cooldownS[0]));
+      if (!m.cancelled && !aloCross) { vstate.stats.stopsOrOther += 1; notes.push(`${s}: entry vanished without a position (filled and closed between ticks?)`); }
+      if (aloCross) vstate.stats.aloCancels = (vstate.stats.aloCancels || 0) + 1;
+      m.seenResting = undefined;
     }
     m.cancelled = false;
   }
@@ -221,7 +233,7 @@ export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Ma
       if (q2 >= minQ && q2 < qty) { qty = q2; r = entryRisk({ isLong, px, qty, slPct: vc.slPct, ref, fee, lev, equity: st.equity, free: st.free, totalNotional: totalNotional + extraNotional, pendingMargin, limits: lim }); }
     }
     if (r.blocks.length) { notes.push(`${s}: no entry (${r.blocks.join('; ')})`); continue; }
-    const tp = Q.snap(px * (1 + (isLong ? 1 : -1) * vc.tpPct * vc.tpBackupMult), ref.tick_size, isLong ? 'floor' : 'ceil');
+    const tp = Q.snap(px * (1 + (isLong ? 1 : -1) * tpPctFor(vc, fee.maker || 0) * vc.tpBackupMult), ref.tick_size, isLong ? 'floor' : 'ceil');
     actions.push({ kind: 'enter', market: s, side: isLong ? 'long' : 'short', qty, px, sl: r.sl, tp, lev, risk: { worstLoss: +r.worstLoss.toFixed(4), notional: +r.notional.toFixed(2),
       margin: +r.margin.toFixed(2), slDist: +r.slDist.toFixed(5), liqDist: +r.liqDist.toFixed(4), maker: fee.maker, stopRate: r.stopRate } });
     m.pending = { risk: r.worstLoss, margin: r.margin, side: isLong ? 'long' : 'short' };
@@ -275,7 +287,7 @@ export async function volumeTick(cfg, net, vstate, io) {
     const res = await net.qfex.send(reqs); const ok = res.length > 0 && res.every((x) => x.ok);
     const err = res.map((x) => x.error).filter(Boolean).join(' | ');
     if (a.kind === 'enter') {
-      if (ok) Object.assign(m, { phase: 'entry', since: now, lastSide: a.side, risk: a.risk.worstLoss, margin: a.risk.margin, cancelled: false });
+      if (ok) Object.assign(m, { phase: 'entry', since: now, lastSide: a.side, risk: a.risk.worstLoss, margin: a.risk.margin, cancelled: false, seenResting: false });
       else { m.blockedUntil = now + 10 * 60e3; io.alert({ pf: 'qfex', market: a.market, kind: 'volume-entry-failed', ok: false, reason: err }); }
       io.journal({ id: 'vol-' + a.market + '-' + now, decision: ok ? 'placed' : 'failed', volume: true, plan: { pf: 'qfex', market: a.market, side: a.side, size: a.qty, px: a.px, sl: a.sl, tp: a.tp },
         risk: a.risk, lev: a.lev, results: res.map(({ label, status, ok: o, error }) => ({ label, status, ok: o, error })), mode: 'live' });

@@ -121,7 +121,11 @@ async function once(ctx, { degraded = false } = {}) {
   if (cfg.qfexVol && cfg.qfexVol.enabled) {
     state.volume ||= {};
     const guardOk = !guard.some((g) => g.pf === 'qfex' && ['unknown', 'close', 'attach'].includes(g.kind));
-    try { volume = await V.volumeTick(cfg, net, state.volume, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal, alert, guardOk, pauseEntries: degraded || existsSync(P.stopVolume), accountState: C.accountState }); }
+    // reuse the guard's read of this tick when it is fresh and the guard changed nothing (fewer QFEX requests)
+    const gq = C.lastGuardRead.qfex, idle = guard.filter((g) => g.pf === 'qfex').every((g) => ['ok', 'grace', 'foreign', 'recovered'].includes(g.kind));
+    let reuse = gq && idle && !out.length && Date.now() - gq.at < 15e3 ? gq.st : null;
+    const accountState = async (pf, c, n, o) => { if (pf === 'qfex' && reuse && !(o && o.sinceMs != null)) { const st = reuse; reuse = null; return st; } return C.accountState(pf, c, n, o); };
+    try { volume = await V.volumeTick(cfg, net, state.volume, { live: cfg.live, kill: C.killReason(cfg, existsSync(P.stop)), log, journal, alert, guardOk, pauseEntries: degraded || existsSync(P.stopVolume), accountState }); }
     catch (e) { log('ERROR', 'volume tick failed: ' + e.message); volume = { enabled: true, error: e.message }; }
     saveState(state);
   }

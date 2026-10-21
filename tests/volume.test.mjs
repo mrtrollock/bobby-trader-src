@@ -214,3 +214,31 @@ test('volume stats: day / week / month volume, fees and PnL; goal progress', () 
   assert.equal(v.week.fees, 0.02); assert.equal(v.week.pnl, 0.08);
   assert.equal(v.monthPct, +(100 * 1198 / 300000).toFixed(2));
 });
+
+test('TP fee floor: 0.04 % TP only where maker is 0; 0.02 %-maker markets keep 0.08 % (net of both maker fees)', () => {
+  const vc = VC({ QFEX_VOL_TP_PCT: '0.0004' });
+  assert.equal(V.tpPctFor(vc, 0), 0.0004);
+  assert.ok(Math.abs(V.tpPctFor(vc, 0.0002) - 0.0008) < 1e-12);
+  assert.equal(V.tpPctFor(VC({ QFEX_VOL_TP_PCT: '0.0008' }), 0.0002), 0.0008); // previous setting unchanged
+  const mk = (s, entry) => ({ markets: { [s]: { phase: 'pos', filledAt: T0 - 30e3, requotes: [] } } });
+  const exitPx = (s, entry, q) => V.decideVolume({ vc, st: ST({ positions: [{ market: s, side: 'long', size: s === 'CL-USD' ? 1 : 0.004, entry, mark: entry }] }), refs: REFS, fees: FEES,
+    quotes: { [s]: q }, vstate: mk(s), now: T0, rng: rng0, limits: LIM }).actions.find((a) => a.kind === 'exit').px;
+  assert.equal(exitPx('CL-USD', 98, { bid: 97.99, ask: 98.01 }), 98.04);        // 98 x 1.0004 = 98.0392 -> 98.04
+  assert.equal(exitPx('US100-USD', 25000, { bid: 24999, ask: 25001 }), 25020); // 25000 x 1.0008
+});
+
+test('a post-only entry QFEX cancels on placement (never seen resting) is re-quoted at once, within the 3/min budget', () => {
+  const vs = { markets: { 'CL-USD': { phase: 'entry', since: T0 - 20e3, seenResting: false, requotes: [] } }, stats: { roundTrips: 0, stopsOrOther: 0 } };
+  const vc = VC({ QFEX_VOL_MARKETS: 'CL' });
+  const r = V.decideVolume({ vc, st: ST(), refs: REFS, fees: FEES, quotes: QUOTES, vstate: vs, now: T0, rng: rng0, limits: LIM });
+  assert.equal(r.actions[0].kind, 'enter'); assert.equal(r.actions[0].market, 'CL-USD');
+  assert.equal(vs.stats.aloRequotes, 1); assert.equal(vs.stats.stopsOrOther, 0);
+  // budget exhausted -> normal cooldown
+  Object.assign(vs.markets['CL-USD'], { phase: 'entry', seenResting: false, requotes: [T0 - 5e3, T0 - 4e3, T0 - 3e3] });
+  const r2 = V.decideVolume({ vc, st: ST(), refs: REFS, fees: FEES, quotes: QUOTES, vstate: vs, now: T0, rng: rng0, limits: LIM });
+  assert.equal(r2.actions.filter((a) => a.kind === 'enter').length, 0); assert.ok(vs.markets['CL-USD'].cooldownUntil > T0);
+  // an entry that WAS seen resting and then vanished keeps the full cooldown (it may have filled and closed)
+  Object.assign(vs.markets['CL-USD'], { phase: 'entry', seenResting: true, requotes: [], cooldownUntil: 0 });
+  const r3 = V.decideVolume({ vc, st: ST(), refs: REFS, fees: FEES, quotes: QUOTES, vstate: vs, now: T0, rng: rng0, limits: LIM });
+  assert.equal(r3.actions.filter((a) => a.kind === 'enter').length, 0); assert.equal(vs.stats.stopsOrOther, 1);
+});

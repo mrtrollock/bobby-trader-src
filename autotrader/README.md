@@ -257,3 +257,13 @@ together with mds.qfex.com 503s). While the loop runs, such a failure no longer 
   (all-accounts scope, foreign account accepted, ...) abort immediately.
 - every QFEX REST request times out after 15 s (`QFEX_HTTP_TIMEOUT_MS`), and a watchdog logs an ERROR + alert when no tick
   has completed for 5 minutes (repeated every 15 minutes while it lasts).
+
+## Volume-mode tuning (2026-10-21)
+
+- `QFEX_VOL_TP_PCT` is the gross take-profit, floored per market at `2 x maker fee + QFEX_VOL_TP_NET_MIN_PCT` (default
+  0.04 %): with `QFEX_VOL_TP_PCT=0.0004`, 0-maker CL uses 0.04 % while 0.02 %-maker markets (US100, US500, NATGAS,
+  SILVER, COPPER, GOLD) keep 0.08 %, because a 0.04 % TP there would net zero after two maker fees.
+- `QFEX_VOL_MAX_HOLD_S` (default 1800): after this the exit is re-quoted at the touch (still maker).
+- A post-only entry that QFEX cancels on placement (it would have crossed; never seen resting) is re-quoted at once,
+  within the per-market re-quote budget (`QFEX_VOL_REQUOTES_PER_MIN`, default 3), instead of a full cooldown.
+- The volume tick reuses the guard's QFEX read of the same iteration when the guard changed nothing (fewer requests).

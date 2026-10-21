@@ -765,11 +765,14 @@ export function releaseArcusOwnership(own, st, nowMs, settleMs = 5 * 60e3) {
 }
 export const GUARD_PFS = (cfg) => [cfg.arcus && 'arcus', cfg.hl && 'entropy', cfg.qfex && 'qfex'].filter(Boolean);
 // One guard tick. io = { live, kill, log, journal, alert, plans }. readOnly: decide and report, never send.
+// last successful guard read per platform (in memory only): the volume tick of the SAME loop iteration reuses it when the
+// guard changed nothing, halving the QFEX requests per tick (3 REST + 3 WebSocket connects per read)
+export const lastGuardRead = {};
 export async function guardTick(cfg, net, memo, io, { readOnly = false } = {}) {
   const report = [];
   for (const pf of GUARD_PFS(cfg)) {
     let st;
-    try { st = await accountState(pf, cfg, net); }
+    try { st = await accountState(pf, cfg, net); lastGuardRead[pf] = { st, at: net.now() }; }
     catch (e) {
       const k = pf + ':__read'; memo[k] = memo[k] || { first: net.now(), ticks: 0 }; memo[k].ticks += 1;
       io.log('WARN', `guard ${pf}: account read failed (${e.message}); the exchange-side stops are unaffected, re-checking next tick`);
