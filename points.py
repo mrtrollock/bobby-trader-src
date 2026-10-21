@@ -21,6 +21,11 @@ Schedules (primary sources, checked 2026-10-21):
                a final distribution follows the ongoing competition (date not published).
                docs.extended.exchange/extended-resources/points-program. Account data (volume/PnL/points) is only
                available with an API key (api.docs.extended.exchange), which we do not have or request -> manual.
+  risex        TRACKING ONLY (not farmed). Season 1 "Ignite": 200K points/week, weeks Monday 00:00 -> Sunday 23:59 UTC,
+               distributed Tuesdays 14:00 UTC (first drop Tue 28 Jul 2026 for Week 1 = 20-26 Jul); ends no later than Q2 2027.
+               docs.risechain.com/docs/risex/rewards/points; blog.risechain.com (Season 1 guide); GET api.rise.trade/v1/points/epoch/current
+               (public: "Week 14 (19-25 Oct UTC)", distribution_at Tue 27 Oct 14:00 UTC). Volume/fees/PnL per week from the public
+               trade history; wallet points need a wallet-signed JWT -> manual.
 
 Ledger (git-ignored, chmod 600) points_ledger.json: {"v": 1, "weeks": {pf: {"<window start unix>": row}}, "cov": {pf: unix}}.
 Manual entries (git-ignored) points_manual.json, see points_manual.example.json: per platform "equity" (balance for
@@ -33,8 +38,8 @@ from zoneinfo import ZoneInfo
 
 UTC, ET = timezone.utc, ZoneInfo("America/New_York")
 DAY = 86400
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended", "risex": "⚡ RiseX"}
 VARIATIONAL_NEXT_DROP = "https://omni.variational.io/api/points/next_drop_ts"
 HISTORY_KEEP = 60
 # Where the points numbers come from. Checked 2026-10-21: no documented API exposes a user's points on any platform, so
@@ -46,6 +51,7 @@ POINTS_SRC = {
     "variational": "manual: Variational documents no points API; the Omni points page needs a signed-in session",
     "qfex": "manual: the QFEX API (api.qfex.com/openapi.yaml) has no points or season endpoint (only referral rewards); Season 0 points are not published yet",
     "extended": "manual: Extended's points (GET /api/v1/user/rewards/earned) and account volume/PnL are only readable with an Extended API key, which Bobby does not have and does not request (tracking only)",
+    "risex": "manual: RiseX documents wallet points endpoints (GET /v1/points/..., developer.rise.trade) but they need a JWT from a wallet-signed login; Bobby has no RiseX signer and does not request one (tracking only). Points are shown on rise.trade/points",
     "entropy": "rebates, not points: Entropy pays USDC/HYPE fee rebates every 2 weeks (claimable on the Entropy profile, no API); enter them as \"rebates\" by week",
 }
 KEEP = ("points", "pointsSrc", "rebates", "rebatesSrc")  # survive a recompute of the week from fills
@@ -115,6 +121,20 @@ SCHED = {
         "sources": [["Extended docs: Points Program", "https://docs.extended.exchange/extended-resources/points-program"],
                     ["Extended API docs: Points (authenticated)", "https://api.docs.extended.exchange/#points"]],
         "unverified": ["exact epoch boundary time (dates only on the points page)", "final distribution date"],
+    },
+    "risex": {
+        "kind": "points", "tracking": True, "program": "Season 1 \u201cIgnite\u201d · 200K points / week", "unit": "Week",
+        "boundary": lambda k: _utc_midnight(date(2026, 10, 19) + timedelta(days=7 * k)),
+        "number": lambda k: k + 14, "drop": lambda s, e: e + DAY + 14 * 3600, "dropExact": True,
+        "rule": "Points are distributed every Tuesday 14:00 UTC (16:00 Berlin now, 15:00 from 25 Oct) for the week Monday 00:00 \u2192 Sunday 23:59 UTC. The weekly model and weightings change and are not published; counted: volume (maker and taker), total costs (fees, slippage, negative markouts), open interest and hold time, trading sophistication (wash-style flow scores lower), referrals (+10% of referees' points)",
+        "window": "Monday 00:00 UTC \u2192 Monday 00:00 UTC (02:00/01:00 Berlin); official: Week 14 = 19\u201325 Oct UTC",
+        "endsBy": int(datetime(2027, 7, 1, tzinfo=UTC).timestamp()), "endsNote": "Season 1 ends no later than Q2 2027 (tied to product milestones)",
+        "sources": [["RISE docs: RISEx Points", "https://docs.risechain.com/docs/risex/rewards/points"],
+                    ["RISE blog: Season 1 Ignite guide", "https://blog.risechain.com/rise-points-season-1-ignite-everything-you-need-to-know/"],
+                    ["RiseX API: current points epoch (public)", "https://api.rise.trade/v1/points/epoch/current"],
+                    ["RiseX API docs", "https://developer.rise.trade/reference/general-information"],
+                    ["@risextrade on X (weekly drop posts)", "https://x.com/risextrade"]],
+        "unverified": [],
     },
     "qfex": {
         "kind": "not announced", "program": "Season 0 announced · schedule not announced", "unit": "Week",
@@ -484,6 +504,20 @@ def collect_live(B, testnet, ledger, readings, now_ts, scrub_secrets):
         act["qfex"] = {"fills": q["fills"], "fundings": [], "from": int(q["fillsFrom"]), "src": "QFEX fills (autotrader)"}
     elif isinstance(q.get("volume"), dict) and isinstance(q["volume"].get("week"), dict):
         act["qfex"] = {"week": q["volume"]["week"], "src": "QFEX autotrader week totals"}
+    rx_addr = os.environ.get("BOBBY_RISEX_ADDRESS", "") or os.environ.get("BOBBY_ACCOUNT_ADDRESS", "")
+    if rx_addr:
+        import risex as RX
+        def rx():
+            a = RX.activity(B, testnet, rx_addr, since_for("risex", ledger, now_ts, window("risex", -6)["start"]), now_ts)
+            a["note"] = "Tracking only · not farmed: volume / fees / PnL from the public RiseX trade history (your own trading); points entered by hand"
+            try:
+                nd, _ = RX.next_drop(B, testnet)
+                if nd:
+                    a["apiNextDrop"] = nd
+            except Exception:  # noqa: BLE001 - the schedule fallback still gives the Tuesday 14:00 UTC drop
+                pass
+            return a
+        guard("risex", rx)
     if os.environ.get("BOBBY_VARIATIONAL_ADDRESS"):
         try:
             act["variational"] = {"connected": False, "apiNextDrop": variational_next_drop(),

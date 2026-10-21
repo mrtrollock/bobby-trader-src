@@ -37,3 +37,8 @@ test('flows.py + positions.py + Arcus deposits: all-time deposits, attribution, 
   assert.equal(r.status, 0, r.stderr);
   assert.equal(JSON.parse(r.stdout.trim().split('\n').pop()).ok, true);
 });
+test('risex.py: RiseX tracking (equity, deposits/withdrawals, positions + TP/SL, points week, tracking pill) (offline)', () => {
+  const r = spawnSync('python3', [join(ROOT, 'tests/py_risex.py')], { encoding: 'utf8', env: cleanEnv() });
+  assert.equal(r.status, 0, r.stderr);
+  assert.equal(JSON.parse(r.stdout.trim().split('\n').pop()).ok, true);
+});

@@ -11,6 +11,7 @@ subaccount (BOBBY_HL_ADDRESS): userAbstraction + main dex + io (+ BOBBY_HL_DEXES
 (best effort), TxFlow clearinghouseState (BOBBY_TXFLOW_ADDRESS), QFEX through `node autotrader/cli.js status --pf qfex`
 (QFEX key in the env; `deposit` tracks net transfers in/out of the account). A platform without data shows
 "not connected yet".
+RiseX (tracking only, not traded) from the public RiseX API (risex.py, BOBBY_RISEX_ADDRESS or BOBBY_ACCOUNT_ADDRESS).
 Variational (no public per-address API) comes from points_manual.json; points weeks (volume / fees / PnL per points week,
 countdown schedule) are built by points.py and published inside the same encrypted file under "points".
 
@@ -29,10 +30,12 @@ import limits as LM
 import flows as FL
 import positions as POS
 import vaultpy
+import risex as RX
 
 HERE = Path(__file__).parent
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational"}
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational")  # variational: manual (points_manual.json), no public per-address API
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "risex": "⚡ RiseX"}
+# variational: manual (points_manual.json), no public per-address API; risex: tracking only (public API, not traded by Bobby)
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "risex")
 f = lambda x: None if x in (None, "") else float(x)
 
 
@@ -130,7 +133,8 @@ def read_live(testnet, start):
     tx_addr = os.environ.get("BOBBY_TXFLOW_ADDRESS", "") or addr
     dexes = ["" if d.strip() == "main" else d.strip() for d in (os.environ.get("BOBBY_HL_DEXES") or "io").split(",") if d.strip()]
     qkey = bool(os.environ.get("QFEX_API_PUBLIC_KEY") and os.environ.get("QFEX_API_SECRET_KEY"))
-    secrets = [addr, hl_addr, tx_addr] + [os.environ.get(k, "") for k in ("QFEX_ACCOUNT_ID", "QFEX_API_PUBLIC_KEY", "QFEX_API_SECRET_KEY")]
+    rx_addr = os.environ.get("BOBBY_RISEX_ADDRESS", "") or addr
+    secrets = [addr, hl_addr, tx_addr, rx_addr] + [os.environ.get(k, "") for k in ("QFEX_ACCOUNT_ID", "QFEX_API_PUBLIC_KEY", "QFEX_API_SECRET_KEY")]
 
     def arcus():
         a = B._get(ep["arcus"] + "/v1/account", {"address": addr, "accountIndex": int(os.environ.get("ARCUS_ACCOUNT_INDEX", "0") or 0)})
@@ -187,8 +191,11 @@ def read_live(testnet, start):
         return {"equity": f(q.get("equity")), "deposit": f(q.get("deposit")), "positions": positions_of(q), "volume": q.get("volume"),
                 "fills": q.get("fills"), "fillsFrom": since, "limits": q.get("limits")}
 
+    def risex():  # tracking only: public RiseX API by address (no key)
+        return RX.read(B, testnet, rx_addr)
+
     out = {}
-    for pf, ok, fn in (("arcus", addr, arcus), ("entropy", hl_addr, entropy), ("txflow", tx_addr, txflow), ("qfex", qkey, qfex)):
+    for pf, ok, fn in (("arcus", addr, arcus), ("entropy", hl_addr, entropy), ("txflow", tx_addr, txflow), ("qfex", qkey, qfex), ("risex", rx_addr, risex)):
         if not ok:
             out[pf] = {"status": "not connected yet"}
             continue
@@ -319,7 +326,8 @@ def main(argv=None):
         doc["positions"] = [{"pf": pf, **p} for pf in ORDER for p in ((readings.get(pf) or {}).get("positions") or [])]
         pdoc = POS.from_mock(readings, now_ts)
     else:
-        pdoc = POS.collect(B, a.testnet, now_ts, secrets, txflow_positions=(readings.get("txflow") or {}).get("positions"))
+        pdoc = POS.collect(B, a.testnet, now_ts, secrets, txflow_positions=(readings.get("txflow") or {}).get("positions"),
+                           risex_positions=(readings.get("risex") or {}).get("positions"))
         doc["positions"] = pdoc["positions"]
     doc["positionsMeta"], doc["bobby"], doc["orders"] = pdoc["platforms"], pdoc["bobby"], pdoc["orders"]
     doc["volume"] = volume_line((readings.get("qfex") or {}).get("volume"))

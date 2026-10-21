@@ -5,11 +5,12 @@ Pure functions (tested) + small public readers. Unknown values stay None and car
   Entropy:    Hyperliquid userNonFundingLedgerUpdates of the Bobby subaccount from the beginning (its own view)
   TxFlow:     TxFlow userNonFundingLedgerUpdates from the beginning (bridge deposits/withdrawals, transfers, vault moves)
   QFEX:       balance `deposit` (net deposited; separate totals are not exposed to a single-account key)
+  RiseX:      public transfer history (deposits / withdrawals summed from the beginning; tracking only, not traded)
   Variational / Extended: manual (points_manual.json "<pf>": {"flows": {"deposits", "withdrawals"}}) or not tracked
 """
 STABLES = ("USDC", "USDT0", "USDT", "USDH", "USDE")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "🟣 Extended"}
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "🟣 Extended", "risex": "⚡ RiseX"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex")
 _f = lambda x: float(x or 0)
 
 
@@ -111,9 +112,9 @@ def build(readings, manual):
         if pf == "arcus":
             rows.append(row(pf, eq, {"net": r.get("deposit"), "src": "Arcus netDeposits (public account API)"} if r.get("deposit") is not None else None,
                             reason=None if r.get("deposit") is not None else "not read", note="net only: Arcus does not publish separate deposit / withdrawal totals"))
-        elif pf in ("entropy", "txflow"):
+        elif pf in ("entropy", "txflow", "risex"):
             at = r.get("allTime")
-            rows.append(row(pf, eq, at, reason=None if at else (r.get("allTimeError") or "ledger not read")))
+            rows.append(row(pf, eq, at, reason=None if at else (r.get("allTimeError") or ("not read: " + str(r.get("status") or "no data") if pf == "risex" else "ledger not read"))))
         elif pf == "qfex":
             d = r.get("deposit")
             rows.append(row(pf, eq, {"net": round(float(d), 2), "src": "QFEX balance deposit field"} if d is not None else None,

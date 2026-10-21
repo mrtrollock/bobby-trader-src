@@ -5,8 +5,8 @@ const usd = (x) => (num(x) == null ? '—' : (x < 0 ? '-$' : '$') + Math.abs(x).
 const sgn = (x) => (num(x) == null ? '—' : Number(x) === 0 ? '$0.00' : (x < 0 ? '-$' : '+$') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const cls = (x) => (num(x) == null ? '' : x >= 0 ? 'green' : 'redtxt');
 export const berlin = (t) => (t ? new Date(t * 1000).toLocaleString('en-GB', { timeZone: 'Europe/Berlin', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
-const PF = { qfex: '📈 QFEX', entropy: '🤖 Entropy', arcus: '🏹 Arcus', txflow: '🌊 TxFlow', variational: '🌀 Variational', extended: '🟣 Extended' };
-const ORDER = ['qfex', 'entropy', 'arcus', 'txflow', 'variational', 'extended'];
+const PF = { qfex: '📈 QFEX', entropy: '🤖 Entropy', arcus: '🏹 Arcus', txflow: '🌊 TxFlow', variational: '🌀 Variational', extended: '🟣 Extended', risex: '⚡ RiseX' };
+const ORDER = ['qfex', 'entropy', 'arcus', 'txflow', 'variational', 'extended', 'risex'];
 
 // The newest positions document: positions.enc.json (every ~5 min) or the copy inside balances.enc.json.
 export function latestPositions(data) {
@@ -48,6 +48,7 @@ export function publishedPositions(h, doc) {
   for (const pf of ORDER) {
     const meta = (doc.platforms || {})[pf] || {}, mine = pos.filter((p) => p.pf === pf), ords = oo.filter((o) => o.pf === pf);
     const card = h('section', { class: 'card', id: 'pos-' + pf }, h('h2', {}, PF[pf], ' ', h('span', { class: 'badge' }, mine.length ? `${mine.length} open` : meta.status === 'ok' ? 'flat' : meta.status || 'no data')));
+    if (pf === 'risex') card.append(h('div', { class: 'small' }, h('span', { class: 'badge warn' }, 'tracking only · not farmed'), h('span', { class: 'muted' }, ' your own trades, read from the public RiseX API')));
     if (meta.status === 'error') card.append(h('div', { class: 'alert warn' }, 'Could not read: ' + (meta.error || 'error')));
     else if (meta.status === 'manual' || meta.status === 'not connected') card.append(h('p', { class: 'muted small' }, meta.note || meta.status));
     else if (!mine.length) card.append(h('p', { class: 'muted small' }, 'No open positions.'));
