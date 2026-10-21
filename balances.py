@@ -84,7 +84,7 @@ def read_live(testnet, start):
 
     def qfex():
         q = B.fetch_qfex(testnet, int(time.time() * 1000))
-        return {"equity": f(q.get("equity")), "deposit": f(q.get("deposit"))}
+        return {"equity": f(q.get("equity")), "deposit": f(q.get("deposit")), "positions": positions_of(q)}
 
     out = {}
     for pf, ok, fn in (("arcus", addr, arcus), ("entropy", hl_addr, entropy), ("txflow", tx_addr, txflow), ("qfex", qkey, qfex)):
@@ -138,6 +138,17 @@ def update(ledger, readings, starts, now_ts):
     return {"v": 1, "generated": now_ts, "tz": "Europe/Berlin", "platforms": rows, "total": tot, "history": ledger["snapshots"][-200:]}
 
 
+def positions_of(q):
+    """Open QFEX positions from the autotrader status (market, side, size, entry, mark, uPnL, SL/TP triggers, protected)."""
+    out = []
+    for p in q.get("positions") or []:
+        num = lambda x: None if x is None else float(x)
+        sl, tp = [float(x) for x in p.get("sl") or [] if x is not None], [float(x) for x in p.get("tp") or [] if x is not None]
+        out.append({"market": str(p.get("market")), "side": p.get("side"), "size": num(p.get("size")), "entry": num(p.get("entry")), "mark": num(p.get("mark")),
+                    "upnl": num(p.get("upnl")), "sl": sl, "tp": tp, "protected": bool(p.get("protected", bool(sl) and bool(tp)))})
+    return out
+
+
 def read_alerts(path, keep=5):
     """autotrader/ALERT (written by the protection guard): count + latest entries, shown at the top of the Balances tab."""
     rows = []
@@ -172,6 +183,7 @@ def main(argv=None):
     doc = update(ledger, readings, starts, now_ts)
     doc["network"] = "mock" if a.mock else ("testnet" if a.testnet else "mainnet")
     doc["alerts"] = read_alerts(Path(a.alerts))
+    doc["positions"] = [{"pf": pf, **p} for pf in ORDER for p in ((readings.get(pf) or {}).get("positions") or [])]
     text = json.dumps(doc)
     if any(s and s.lower() in text.lower() for s in secrets):
         raise SystemExit("refusing to write: an address or key would be included")

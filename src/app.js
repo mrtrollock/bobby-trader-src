@@ -421,6 +421,15 @@ function viewBalances(app) {
     h('thead', {}, h('tr', {}, ...['', 'Start', 'Now', 'Net dep.', 'PnL', '%'].map((t) => h('th', {}, t)))), h('tbody', {}, ...rows))));
   const notes = (j.platforms || []).filter((r) => r.status === 'ok').map((r) => `${r.name}: since ${berlinTime(r.startT)}${r.startOverride ? ' (manual start)' : ''}; deposits: ${r.ndSource}`);
   if (notes.length) card.append(h('ul', { class: 'muted small' }, ...notes.map((n) => h('li', {}, n))));
+  const pos = j.positions || [];
+  const pc = h('section', { class: 'card' }, h('h2', {}, 'Open positions'));
+  app.append(pc);
+  if (!pos.length) pc.append(h('p', { class: 'muted', id: 'nopos' }, 'No open positions (QFEX, as of this update).'));
+  else pc.append(h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'postable' },
+    h('thead', {}, h('tr', {}, ...['Market', 'Side', 'Size', 'Entry', 'Mark', 'uPnL', 'SL', 'TP', ''].map((t) => h('th', {}, t)))),
+    h('tbody', {}, ...pos.map((x) => h('tr', {}, h('th', {}, `${String(x.pf || '').toUpperCase()} ${String(x.market).replace(/-USD$/, '')}`), h('td', {}, x.side), h('td', {}, fmtPx(x.size)),
+      h('td', {}, fmtPx(x.entry)), h('td', {}, fmtPx(x.mark)), h('td', { class: cls(x.upnl) }, sgn2(x.upnl)), h('td', {}, pxList(x.sl)), h('td', {}, pxList(x.tp)),
+      h('td', { class: isProtected(x) ? 'green' : 'redtxt' }, isProtected(x) ? '🛡 protected' : '⚠️ NOT protected')))))));
   const hist = j.history || [];
   const hc = h('section', { class: 'card' }, h('h2', {}, 'History'));
   app.append(hc);
@@ -435,6 +444,9 @@ function viewBalances(app) {
 const berlinTime = (t) => new Date(t * 1000).toLocaleString('en-GB', { timeZone: 'Europe/Berlin', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
 const usd0 = (x) => (x == null ? '—' : '$' + Number(x).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 1000 ? 0 : 2, minimumFractionDigits: Math.abs(x) >= 1000 ? 0 : 2 }));
 const signedUsd = (x) => (x == null ? '' : (x < 0 ? '-$' : '+$') + Math.abs(Number(x)).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 2 }));
+const pxList = (a) => ((a || []).length ? a.map(fmtPx).join(' / ') : '—');
+const isProtected = (i) => (i.protected != null ? i.protected : (i.sl || []).length > 0 && (i.tp || []).length > 0);
+const posFacts = (i) => `size ${fmtPx(i.size)} · entry ${fmtPx(i.entry)} · mark ${fmtPx(i.mark)} · SL ${pxList(i.sl)} · TP ${pxList(i.tp)} · ${isProtected(i) ? '🛡 protected' : '⚠️ NOT protected'}`;
 function briefingCard(p) {
   const card = h('section', { class: 'card brief' }, h('h2', {}, `${p.emoji || ''} ${p.name || p.id}`));
   if (p.needsKey) { card.append(h('div', { class: 'alert warn' }, 'QFEX needs an API key: account data is private, so the briefing reads it through the autotrader on the box (QFEX_API_PUBLIC_KEY / QFEX_API_SECRET_KEY).')); return card; }
@@ -444,8 +456,9 @@ function briefingCard(p) {
     ch != null ? h('span', { class: 'dot ' + (ch >= 0 ? 'up' : 'down') }, ' ● ') : null,
     ch != null ? h('span', { class: ch >= 0 ? 'green' : 'redtxt' }, (ch >= 0 ? '+' : '') + (ch * 100).toFixed(1) + '% ' + (p.changeLabel || '')) : null));
   if (p.summary) card.append(h('p', { class: 'summary' }, p.summary));
-  if ((p.items || []).length) card.append(h('ul', { class: 'bullets' }, ...p.items.map((i) => h('li', {},
-    h('b', {}, `${i.sym} ${i.side} `), h('b', { class: Number(i.upnl) < 0 ? 'redtxt' : 'green' }, signedUsd(i.upnl)), ': ' + (i.comment || i.auto || '')))));
+  if ((p.items || []).length) card.append(h('ul', { class: 'bullets' }, ...p.items.map((i) => h('li', { class: 'posline' },
+    h('b', {}, `${i.sym} ${i.side} `), h('b', { class: Number(i.upnl) < 0 ? 'redtxt' : 'green' }, signedUsd(i.upnl)), ': ' + (i.comment || i.auto || ''),
+    h('div', { class: 'muted small' }, posFacts(i))))));
   if (p.detail) card.append(h('p', { class: 'detail' }, /^one detail/i.test(p.detail) ? p.detail : 'One detail: ' + p.detail));
   return card;
 }

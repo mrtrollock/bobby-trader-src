@@ -340,7 +340,7 @@ def build_platform(pid, n, base, nightly, now_ts, comments):
         elif sl is None:
             notes.append(f"{p['sym']} has no stop-loss.")
         items.append({"sym": p["sym"], "market": p["m"], "side": p["side"], "size": p["size"], "entry": p["entry"], "mark": p["mark"],
-                      "upnl": p["upnl"], "sl": sls, "tp": tps, "slActive": sl, "slInProfit": in_profit,
+                      "upnl": p["upnl"], "sl": sls, "tp": tps, "protected": bool(sls) and bool(tps), "slActive": sl, "slInProfit": in_profit,
                       "slDistPct": None if dist is None else round(dist * 100, 2), "equityUnderlying": p["m"] in n["equityMarkets"],
                       "auto": auto, "comment": pcom.get(p["sym"]) or pcom.get(p["m"].upper())})
     for m, os_ in by_m.items():
