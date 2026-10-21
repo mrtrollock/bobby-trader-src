@@ -3,6 +3,8 @@
   "variational": {
     "equity": 250.0,
     "note": "from omni.variational.io portfolio",
+    "weekPnl": -3.2, "dayPnl": -1.0,
+    "_capsHelp": "weekPnl = PnL since Monday 00:00 UTC, dayPnl = since 00:00 UTC (incl. fees): measured against the $50/week manual reference cap on the Balances tab",
     "weeks": { "45": { "volume": 12000, "pnl": -3.2, "fees": 0, "points": 12.5 } }
   },
   "txflow": { "weeks": { "1": { "points": 210.4 } } },

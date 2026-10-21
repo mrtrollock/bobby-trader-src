@@ -149,11 +149,11 @@ async function status(sinceMs, only) {
         positions: st.positions.map((p) => { const sl = st.orders.filter((o) => o.market === p.market && o.kind === 'SL').map((o) => o.trig),
           tp = st.orders.filter((o) => o.market === p.market && o.kind === 'TP').map((o) => o.trig);
           return { ...strip(p), sl, tp, protected: sl.length > 0 && tp.length > 0 }; }),
-        ...(pf === 'arcus' ? { weeklyLossAccount: st.weeklyLossAccount, bobbyMarkets: st.bobbyMarkets, bobbyWeekFills: st.bobbyWeekFills,
-          limits: { weeklyLossCap: 50, weeklyRemaining: Math.max(0, 50 - st.weeklyLoss) } } : {}),
-        ...(pf === 'qfex' ? { volume: st.volume, dailyLoss: st.dailyLoss, volumeMode: volumeStatus(cfg) } : {}),
-        ...(pf === 'qfex' ? { limits: { weeklyLossCap: cfg.qfex.weeklyLossCap, weeklyRemaining: Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss),
-          maxTradeLoss: Math.min(cfg.qfex.maxTradeLossUsd, 0.05 * st.equity, Math.max(0, cfg.qfex.weeklyLossCap - st.weeklyLoss)) } } : {}),
+        ...(pf === 'arcus' ? { weeklyLossAccount: st.weeklyLossAccount, bobbyMarkets: st.bobbyMarkets, bobbyWeekFills: st.bobbyWeekFills } : {}),
+        ...(pf === 'qfex' ? { volume: st.volume, volumeMode: volumeStatus(cfg) } : {}),
+        dailyLoss: st.dailyLoss,
+        // weekly + daily caps, usage, per-trade max and halt (same functions the decisions use)
+        limits: C.limitsState(pf, cfg.caps, st, Date.now(), { halted: pf === 'qfex' ? (loadState().volume || {}).halted : null }),
         openOrders: st.orders.map(strip), fills: st.fills, ...(st.stopsKnown !== undefined ? { stopsKnown: st.stopsKnown } : {}) };
     } catch (e) { out.platforms[pf] = { error: redact(e.message) }; }
   }
@@ -206,6 +206,12 @@ async function main(argv) {
     case 'picks': { // public market data only; never loads or uses a key
       const pfs = flag('--pf') ? [flag('--pf')] : ['arcus', 'entropy', 'txflow'];
       console.log(JSON.stringify(await L.picks({ env: process.env, platforms: pfs, testnet: process.env.AUTOTRADER_NETWORK === 'testnet' }), null, 1)); return; }
+    case 'limits': { // key-less: configured caps + on/off switches (booleans only; no key or address is printed)
+      const e = process.env;
+      console.log(JSON.stringify({ caps: C.lossCaps(e), week: 'Monday 00:00 UTC', day: '00:00 UTC', switches: { enabled: e.AUTOTRADER_ENABLED === '1', live: e.AUTOTRADER_LIVE === '1',
+        arcus: e.AUTOTRADER_ARCUS === '1' && !!e.ARCUS_API_PRIVATE_KEY, entropy: !!e.HL_AGENT_PRIVATE_KEY, qfex: !!(e.QFEX_API_PUBLIC_KEY && e.QFEX_API_SECRET_KEY), qfexVolume: e.QFEX_VOLUME_MODE === '1' } }));
+      return;
+    }
     case 'loop': return loop();
     case 'cancel': return reduceCmd('cancel', rest[0], rest[1], rest[2]);
     case 'close': return reduceCmd('close', rest[0], rest[1]);

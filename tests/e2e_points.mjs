@@ -22,7 +22,9 @@ const now = Math.floor(Date.now() / 1000), H = 3600e3, nowMs = now * 1000;
 const bt = mkdtempSync(join(tmpdir(), 'pts-'));
 const fills = [{ time: nowMs - 2 * H, px: '100', sz: '2', fee: '0.04', closedPnl: '0', tradeSide: 'Maker' }, { time: nowMs - H, px: '110', sz: '2', fee: '0.1', closedPnl: '20', tradeSide: 'Taker' },
   { time: nowMs - 9 * 24 * H, px: '50', sz: '1', fee: '0.5', closedPnl: '-3', tradeSide: 'Taker' }];
-writeFileSync(join(bt, 'm.json'), JSON.stringify({ qfex: { equity: 100, deposit: 100, volume: { day: {}, week: { volume: 71500, fees: 1.5, pnl: -2.25, trades: 300 }, month: { volume: 71500 }, goal: 300000 } },
+const dayEnd = (Math.floor(now / 86400) + 1) * 86400 * 1000;
+writeFileSync(join(bt, 'm.json'), JSON.stringify({ switches: { enabled: true, qfex: true },
+  qfex: { equity: 100, deposit: 100, limits: { weeklyCap: 30, weeklyUsed: 12.5, weeklyRemaining: 17.5, dailyCap: 12, dailyUsed: 12.2, dailyRemaining: 0, maxTradeLoss: 0, halted: { scope: 'daily', until: dayEnd, reason: 'daily loss cap reached' } }, volume: { day: {}, week: { volume: 71500, fees: 1.5, pnl: -2.25, trades: 300 }, month: { volume: 71500 }, goal: 300000 } },
   txflow: { equity: 518.7, activity: { fills, fundings: [], from: now - 30 * 86400 } } }));
 writeFileSync(join(bt, 'points_manual.json'), JSON.stringify({ variational: { equity: 250, weeks: {} } }));
 const pyEnv = { ...process.env, BOBBY_VIEW_PASSPHRASE: PASS, BOBBY_ACCOUNT_ADDRESS: '', BOBBY_HL_ADDRESS: '', BOBBY_TXFLOW_ADDRESS: '', BOBBY_VARIATIONAL_ADDRESS: '', QFEX_API_PUBLIC_KEY: '', QFEX_API_SECRET_KEY: '', QFEX_ACCOUNT_ID: '' };
@@ -42,7 +44,7 @@ try {
   page.on('request', (r) => { if (r.url().startsWith(ORIGIN)) return r.continue(); outside.push(r.url()); r.abort(); });
   await page.goto(ORIGIN + '/index.html', { waitUntil: 'networkidle0' });
   const raw = await page.evaluate(async () => (await fetch('./balances.enc.json')).text());
-  if (/Epoch|Variational|TxFlow|points/i.test(raw) || Object.keys(JSON.parse(raw)).sort().join() !== 'aad,alg,ct,it,iv,kdf,salt,v') fail.push('served file not an opaque envelope');
+  if (/Epoch|Variational|TxFlow|points|weeklyCap|halted/i.test(raw) || Object.keys(JSON.parse(raw)).sort().join() !== 'aad,alg,ct,it,iv,kdf,salt,v') fail.push('served file not an opaque envelope');
   await page.type('#viewpass', PASS); await page.click('#unlock');
   await page.waitForSelector('nav.bottom', { timeout: 20000 });
   const navOk = await page.evaluate(() => { const b = [...document.querySelectorAll('nav button')]; const p = b.find((x) => x.textContent.includes('Points')); if (p) p.click(); return { n: b.length, fits: b.every((x) => x.getBoundingClientRect().right <= window.innerWidth + 1) }; });
@@ -65,6 +67,21 @@ try {
   if (!a.hist.some((x) => /-\$3\.50 \$0\.50/.test(x))) fail.push('txflow history');
   const cards = a.cards.join(' ');
   if (!/Season 1 · 250K points \/ week/.test(cards) || !/Next points drop/.test(cards) || !/Epoch ends/.test(cards) || !/every 2 weeks \(date not published\)/.test(cards) || !/Points drop not announced/.test(cards)) fail.push('cards');
+  // Balances tab: loss caps card
+  await page.evaluate(() => [...document.querySelectorAll('nav button')].find((x) => x.textContent.includes('Balances')).click());
+  await page.waitForSelector('#limitscard', { timeout: 10000 });
+  const lim = await page.evaluate(() => Object.fromEntries([...document.querySelectorAll('#limitscard .lim')].map((e) => [e.id, { t: e.innerText.replace(/\s+/g, ' '), bars: [...e.querySelectorAll('.bar .fill')].map((f) => f.className + ' ' + f.style.width) }])));
+  const head = await page.evaluate(() => document.querySelector('#limitscard').innerText.replace(/\s+/g, ' ').slice(0, 200));
+  await page.evaluate(() => document.querySelector('#limitscard').scrollIntoView());
+  await page.screenshot({ path: 'tests/e2e_limits.png', fullPage: true });
+  console.log(JSON.stringify({ head, lim }, null, 1));
+  if (Object.keys(lim).join() !== 'lim-arcus,lim-entropy,lim-txflow,lim-qfex,lim-variational') fail.push('limits rows');
+  const q = lim['lim-qfex'] || { t: '', bars: [] };
+  if (!/Halted until \w{3} \d+ \w{3}, 0[12]:00 \(daily cap\)/.test(q.t) || !/\$12\.50 used of \$30 · \$17\.50 left/.test(q.t) || !/\$12\.20 used of \$12 · \$0\.00 left/.test(q.t) || q.bars.join() !== 'fill 42%,fill red 100%') fail.push('qfex caps');
+  if (!/Not connected/.test(lim['lim-arcus'].t) || !/Weekly: — used of \$50/.test(lim['lim-arcus'].t) || !/Daily: — used of \$20/.test(lim['lim-arcus'].t) || !/Not connected/.test(lim['lim-entropy'].t)) fail.push('arcus/entropy caps');
+  if (!/manual/.test(lim['lim-txflow'].t) || !/\$0\.00 used of \$50 · \$50\.00 left/.test(lim['lim-txflow'].t) || !/not set \(manual trading\)/.test(lim['lim-txflow'].t)) fail.push('txflow caps');
+  if (!/manual/.test(lim['lim-variational'].t) || !/no data/.test(lim['lim-variational'].t)) fail.push('variational caps');
+  if (!/Week resets Monday 00:00 UTC/.test(head)) fail.push('reset note');
   if (outside.length || logs.length) fail.push('outside requests / page errors');
 } finally { await browser.close(); srv.kill(); restore(); }
 if (fail.length) { console.error('E2E POINTS FAIL: ' + fail.join(', ')); process.exit(1); }

@@ -10,6 +10,7 @@ import * as KS from './keystore.js';
 import { runTpslReplace, legLabel } from './replace.js';
 import { openJson } from './vault.js';
 import { viewPoints } from './points.js';
+import { limitsCard } from './limits.js';
 
 const LAUNCH_URL = window.__LAUNCH_URL || location.href;
 const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.02, feeArcus: FEES.arcus, feeIo: FEES.hl_io,
@@ -426,6 +427,7 @@ function viewBalances(app) {
     h('thead', {}, h('tr', {}, ...['', 'Start', 'Now', 'Net dep.', 'PnL', '%'].map((t) => h('th', {}, t)))), h('tbody', {}, ...rows))));
   const notes = (j.platforms || []).filter((r) => r.status === 'ok').map((r) => `${r.name}: since ${berlinTime(r.startT)}${r.startOverride ? ' (manual start)' : ''}; deposits: ${r.ndSource}`);
   if (notes.length) card.append(h('ul', { class: 'muted small' }, ...notes.map((n) => h('li', {}, n))));
+  app.append(limitsCard(h, j));
   const pos = j.positions || [];
   const pc = h('section', { class: 'card' }, h('h2', {}, 'Open positions'));
   app.append(pc);

@@ -24,6 +24,7 @@ from pathlib import Path
 
 import briefing as B
 import points as PT
+import limits as LM
 import vaultpy
 
 HERE = Path(__file__).parent
@@ -122,7 +123,7 @@ def read_live(testnet, start):
         since = PT.qfex_since(int(time.time()))
         q = B.fetch_qfex(testnet, since * 1000)
         return {"equity": f(q.get("equity")), "deposit": f(q.get("deposit")), "positions": positions_of(q), "volume": q.get("volume"),
-                "fills": q.get("fills"), "fillsFrom": since}
+                "fills": q.get("fills"), "fillsFrom": since, "limits": q.get("limits")}
 
     out = {}
     for pf, ok, fn in (("arcus", addr, arcus), ("entropy", hl_addr, entropy), ("txflow", tx_addr, txflow), ("qfex", qkey, qfex)):
@@ -240,6 +241,9 @@ def main(argv=None):
     activity = PT.mock_activity(readings) if a.mock else PT.collect_live(B, a.testnet, pledger, readings, now_ts, secrets)
     doc = update(ledger, readings, starts, now_ts)
     doc["points"] = PT.update(pledger, activity, manual, now_ts)
+    # weekly + daily loss caps per platform (limits.py; usage from the autotrader's own accounting)
+    caps, statuses = LM.collect_mock(readings) if a.mock else LM.collect_live(readings, lambda t: B.scrub(t, secrets))
+    doc["limits"] = LM.build(caps, statuses, activity, manual, now_ts)
     doc["network"] = "mock" if a.mock else ("testnet" if a.testnet else "mainnet")
     doc["alerts"] = read_alerts(Path(a.alerts))
     doc["positions"] = [{"pf": pf, **p} for pf in ORDER for p in ((readings.get(pf) or {}).get("positions") or [])]

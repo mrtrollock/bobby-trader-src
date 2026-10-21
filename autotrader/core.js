@@ -69,7 +69,62 @@ export function loadConfig(env = process.env) {
   cfg.bases.qfex = Q.bases(testnet);
   // volume mode: OFF unless QFEX_VOLUME_MODE=1 (and still needs AUTOTRADER_ENABLED=1 + AUTOTRADER_LIVE=1 to send anything)
   cfg.qfexVol = cfg.qfex ? loadVolumeConfig(env) : null;
+  cfg.caps = lossCaps(env);
   return cfg;
+}
+
+// ---------------------------------------------------------------- loss caps per platform (key-less: env + policy only)
+// Weekly cap from Monday 00:00 UTC, daily cap from 00:00 UTC, both on realized losses incl. fees (Arcus: Bobby's own fills only).
+// Daily cap default = DAILY_LOSS_FRAC x weekly (same rule as the QFEX volume mode): AUTOTRADER_DAILY_LOSS_FRAC, or absolute
+// ARCUS_DAILY_LOSS_CAP_USD / HL_DAILY_LOSS_CAP_USD. QFEX: QFEX_VOL_DAILY_LOSS_FRAC (default 0.4) x QFEX weekly cap.
+export const DAILY_LOSS_FRAC = 0.4;
+export function lossCaps(env = process.env) {
+  const num = (k, d) => (env[k] != null && String(env[k]).trim() !== '' ? Number(env[k]) : d);
+  const frac = num('AUTOTRADER_DAILY_LOSS_FRAC', DAILY_LOSS_FRAC);
+  if (!(frac > 0 && frac <= 1)) throw new Error('AUTOTRADER_DAILY_LOSS_FRAC must be in (0, 1]');
+  const auto = (dailyKey, capKey, capDefault) => {
+    const weekly = POLICY.weeklyLossCap, daily = num(dailyKey, +(frac * weekly).toFixed(2));
+    if (!(daily > 0 && daily <= weekly)) throw new Error(`${dailyKey} must be > 0 and <= the weekly cap ($${weekly})`);
+    return { weekly, daily, dailyRule: env[dailyKey] ? `${dailyKey}` : `${Math.round(frac * 100)}% of the weekly cap`,
+      maxTradePct: POLICY.maxLossPct, capital: num(capKey, capDefault), mode: 'auto' };
+  };
+  const qWeekly = num('QFEX_WEEKLY_LOSS_CAP_USD', POLICY.perPlatform.qfex.weeklyLossCap), qFrac = num('QFEX_VOL_DAILY_LOSS_FRAC', DAILY_LOSS_FRAC);
+  return {
+    arcus: auto('ARCUS_DAILY_LOSS_CAP_USD', 'ARCUS_CAPITAL_USD', POLICY.capital.arcus),
+    entropy: auto('HL_DAILY_LOSS_CAP_USD', 'HL_CAPITAL_USD', POLICY.capital.hl),
+    qfex: { weekly: qWeekly, daily: +(qFrac * qWeekly).toFixed(2), dailyRule: `${Math.round(qFrac * 100)}% of the weekly cap`,
+      maxTradeUsd: num('QFEX_MAX_TRADE_LOSS_USD', POLICY.perPlatform.qfex.maxTradeLossUsd), maxLossEquityPct: POLICY.perPlatform.qfex.maxLossEquityPct, mode: 'auto' },
+    // traded by hand: the standing $50/platform policy, shown as a reference only (Bobby never trades these)
+    txflow: { weekly: POLICY.weeklyLossCap, daily: null, dailyRule: 'not set (manual trading)', maxTradePct: POLICY.maxLossPct, capital: POLICY.capital.txflow, mode: 'manual' },
+    variational: { weekly: POLICY.weeklyLossCap, daily: null, dailyRule: 'not set (manual trading)', maxTradePct: POLICY.maxLossPct, capital: POLICY.capital.txflow, mode: 'manual' },
+  };
+}
+// Usage vs caps for one platform from an accountState() result (st.weeklyLoss / st.dailyLoss). halted: optional persisted
+// halt (QFEX volume mode). Times are unix ms; the week resets Monday 00:00 UTC, the day at 00:00 UTC.
+export function limitsState(pf, caps, st, now, { halted = null } = {}) {
+  const c = caps && caps[pf]; if (!c) return null;
+  const wu = Math.max(0, Number(st.weeklyLoss) || 0), du = Math.max(0, Number(st.dailyLoss) || 0);
+  const ws = weekStartUtc(now), ds = dayStartUtc(now);
+  const wr = Math.max(0, c.weekly - wu), dr = c.daily != null ? Math.max(0, c.daily - du) : null;
+  const eq = Math.max(0, Number(st.equity) || 0);
+  const perTrade = pf === 'qfex' ? Math.min(c.maxTradeUsd, c.maxLossEquityPct * eq) : c.maxTradePct * Math.min(eq, c.capital || Infinity);
+  const r2 = (x) => (x == null ? null : +Number(x).toFixed(2));
+  let h = null;
+  if (wu >= c.weekly) h = { scope: 'weekly', until: ws + 7 * 86400e3, reason: 'weekly loss cap reached' };
+  else if (c.daily != null && du >= c.daily) h = { scope: 'daily', until: ds + 86400e3, reason: 'daily loss cap reached' };
+  if (!h && halted && halted.until > now) h = { scope: halted.scope || 'halt', until: halted.until, reason: halted.reason || 'halted' };
+  return { mode: c.mode, weeklyCap: c.weekly, weeklyUsed: r2(wu), weeklyRemaining: r2(wr), dailyCap: c.daily, dailyUsed: r2(du), dailyRemaining: r2(dr), dailyRule: c.dailyRule,
+    maxTradeLoss: r2(Math.min(perTrade, wr, dr ?? Infinity)), maxTradeRule: pf === 'qfex' ? `$${c.maxTradeUsd} max, ≤ ${c.maxLossEquityPct * 100}% of equity` : `${c.maxTradePct * 100}% of equity (capital capped at $${c.capital})`,
+    halted: h, weekFrom: ws, dayFrom: ds };
+}
+// Daily cap check for a new entry (all automated platforms): blocks once the day's realized loss reached the cap, or when
+// this trade's loss at SL could push it over. Returns block reasons.
+export function dailyCapBlocks(pf, caps, st, slLoss, now) {
+  const L = limitsState(pf, caps, st, now);
+  if (!L || L.dailyCap == null) return [];
+  if (L.dailyUsed >= L.dailyCap) return [`Policy: daily loss cap reached ($${L.dailyUsed.toFixed(2)} / $${L.dailyCap}), new entries resume 00:00 UTC`];
+  if (slLoss != null && L.dailyUsed + slLoss > L.dailyCap + 1e-9) return [`Policy: this trade could exceed the daily cap ($${L.dailyUsed.toFixed(2)} + $${Number(slLoss).toFixed(2)} > $${L.dailyCap})`];
+  return [];
 }
 // Exchange reply kept in the journal (non-identifying fields only; ids of users/accounts are dropped, the log is redacted too).
 export const echoOf = (body) => (body && typeof body === 'object' ? Object.fromEntries(Object.entries(body).filter(([k]) => !/user|account|address|api_key|signature/i.test(k))
@@ -316,6 +371,7 @@ export async function accountState(pf, cfg, net, { sinceMs } = {}) {
     const att = attributeArcusFills(week, st.orders, cfg.arcusOwn);
     st.bobbyMarkets = [...att.markets];
     st.weeklyLoss = realizedLoss(att.bobby, ws0, Infinity, { feeIncluded: true });
+    st.dailyLoss = realizedLoss(att.bobby, dayStartUtc(net.now()), Infinity, { feeIncluded: true });
     st.weeklyLossAccount = realizedLoss(week, ws0, Infinity, { feeIncluded: true });
     st.bobbyWeekFills = att.bobby.length;
     const ownedNow = new Set([...Object.keys(cfg.arcusOwn || {}).map(up), ...st.orders.filter((o) => isBobbyCid(o.clientId)).map((o) => up(o.market))]);
@@ -346,7 +402,7 @@ export async function accountState(pf, cfg, net, { sinceMs } = {}) {
     equity = sp.total + positions.reduce((a, x) => a + (Number(x.upnl) || 0), 0); free = Math.max(0, sp.total - sp.hold); }
   const week = await hlFillsSince(net, user, weekStartUtc(net.now()), cfg.dexes);
   const fills = sinceMs != null ? await hlFillsSince(net, user, sinceMs, cfg.dexes) : undefined;
-  return { pf, equity, free, positions, orders, weeklyLoss: realizedLoss(week, weekStartUtc(net.now())), fills };
+  return { pf, equity, free, positions, orders, weeklyLoss: realizedLoss(week, weekStartUtc(net.now())), dailyLoss: realizedLoss(week, dayStartUtc(net.now())), fills };
 }
 
 async function qfexRef(net, sym) {
@@ -417,6 +473,7 @@ export async function evaluate(q, cfg, net, stCache = {}) {
   const pol = { ...basePol, capital: { ...POLICY.capital, [POL_PF[p.pf]]: usable } };
   const cp = checkPolicy({ ...p, pf: POL_PF[p.pf] }, r, { policy: pol, weeklyLossUsed: st.weeklyLoss, freeCollateral: st.free });
   reasons.push(...cp.blocks);
+  reasons.push(...dailyCapBlocks(p.pf, cfg.caps || lossCaps({}), st, r.slLoss, nowS * 1000));
   if (!(st.equity > 0)) reasons.push('no equity on this platform');
   if (r.moved != null && r.moved > MAX_DRIFT && !reasons.some((x) => /moved/.test(x))) reasons.push(`Price moved ${(r.moved * 100).toFixed(2)}% since the proposal`);
   if (!(c.mark > 0)) reasons.push('no live mark price');
