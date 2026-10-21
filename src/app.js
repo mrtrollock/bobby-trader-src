@@ -473,7 +473,7 @@ const LOWOI_NAMES = { arcus: '🏹 Arcus', entropy: '🤖 Entropy', txflow: '�
 function lowOiCard(lo) {
   if (!lo) return null;
   const card = h('section', { class: 'card', id: 'lowoi' }, h('h2', {}, '🔎 Low-OI picks'),
-    h('div', { class: 'muted small' }, (lo.t ? berlinTime(lo.t / 1000) + ' (Berlin time) · ' : '') + 'lowest open interest first, only markets whose spread and depth keep a stopped-out trade within the ~$3 cap'));
+    h('div', { class: 'muted small' }, (lo.t ? berlinTime(lo.t / 1000) + ' (Berlin time) · ' : '') + 'lowest open interest (OI) first. Only markets whose spread and depth (±0.5% of mid) keep a stopped-out trade within the ~$3 cap; Max loss = worst-case stop loss'));
   if (lo.error) { card.append(h('div', { class: 'alert warn' }, 'Could not read market data: ' + lo.error)); return card; }
   for (const pf of ['arcus', 'entropy', 'txflow']) {
     const x = (lo.platforms || {})[pf]; if (!x) continue;
@@ -481,7 +481,7 @@ function lowOiCard(lo) {
     if (x.error) { card.append(h('div', { class: 'alert warn' }, 'Unavailable: ' + x.error)); continue; }
     if (!(x.picks || []).length) { card.append(h('p', { class: 'muted small' }, 'No market passes the liquidity rules right now.')); continue; }
     card.append(h('div', { class: 'scroll' }, h('table', { class: 'bal lowoi' },
-      h('thead', {}, h('tr', {}, h('th', {}, 'Market'), h('th', {}, 'Open interest'), h('th', {}, 'Spread'), h('th', {}, 'Depth ±0.5%'), h('th', {}, 'Worst stop loss'))),
+      h('thead', {}, h('tr', {}, h('th', {}, 'Market'), h('th', {}, 'OI'), h('th', {}, 'Spread'), h('th', {}, 'Depth'), h('th', {}, 'Max loss'))),
       h('tbody', {}, ...x.picks.map((m) => h('tr', {}, h('td', {}, m.market), h('td', {}, usd0(m.oiUsd)),
         h('td', {}, m.spread != null ? (m.spread * 100).toFixed(3) + '%' : '—'), h('td', {}, usd0(m.depthUsd)), h('td', {}, usd0(m.worstLossUsd))))))));
     card.append(h('div', { class: 'muted small' }, `${x.eligible} of ${x.scanned} markets pass`));
