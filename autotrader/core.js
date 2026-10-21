@@ -366,8 +366,13 @@ async function qfexState(cfg, net, { sinceMs } = {}) {
   }
   if (!ws) throw new Error('QFEX: trade WebSocket read failed after retries (' + (lastErr && lastErr.message) + ')');
   // mark price per position (public MDS); fallback entry + uPnL / size
+  // all marks over ONE public MDS connection (was one connection per position: fewer handshakes, see the 403 incident)
+  let marks = null;
+  if (positions.length > 1 && net.qfex.quotes) { try { marks = await net.qfex.quotes(positions.map((p) => p.market)); } catch { marks = null; } }
   for (const p of positions) {
-    try { p.mark = (await net.qfex.quote(p.market)).mark; } catch { /* fallback below */ }
+    const mq = marks && marks[String(p.market).toUpperCase()];
+    if (mq && mq.mark != null) p.mark = mq.mark;
+    else { try { p.mark = (await net.qfex.quote(p.market)).mark; } catch { /* fallback below */ } }
     if (p.mark == null && p.size > 0 && Number.isFinite(p.entry)) p.mark = p.entry + (p.side === 'long' ? p.upnl / p.size : -p.upnl / p.size);
   }
   const orders = Q.mergeOrders(ws.orders, ws.stops);
