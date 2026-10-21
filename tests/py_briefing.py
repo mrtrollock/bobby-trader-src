@@ -67,12 +67,23 @@ B.main(["--mock", str(FX / "briefing_mock.json"), "--snapshots", str(snap), "--o
 d2 = vaultpy.read_sealed(out2)
 assert d2["platforms"][0]["changeLabel"] == "since last night"  # nightly snapshot still preferred
 
+# --- low-OI picks (non-mock runs): fetched via the autotrader's key-less `picks`, published only inside the envelope
+LOWOI = {"t": 1, "platforms": {"arcus": {"preferLowOi": True, "scanned": 3, "eligible": 2, "picks": [{"market": "W-USD", "oiUsd": 21000, "spread": 0.0014, "depthUsd": 170000}]},
+         "txflow": {"manual": True, "picks": []}, "entropy": {"error": "HTTP 500"}}}
+lo_calls = []
+B.fetch_low_oi = lambda testnet: lo_calls.append(testnet) or LOWOI
+assert "lowOi" not in d  # mock bundle without lowOi: nothing invented, nothing fetched
+
 # --- no address configured -> nothing fetched, empty briefing
 for k in ("BOBBY_ACCOUNT_ADDRESS",):
     os.environ[k] = ""
 out3 = tmp / "b3.enc.json"
 B.main(["--snapshots", str(tmp / "none.json"), "--out", str(out3), "--now", str(NOW)])
-assert vaultpy.read_sealed(out3)["platforms"] == []
+d3 = vaultpy.read_sealed(out3)
+assert d3["platforms"] == [] and d3["lowOi"]["platforms"]["arcus"]["picks"][0]["market"] == "W-USD" and lo_calls == [False]
+assert "W-USD" not in out3.read_text()  # ciphertext only
+os.environ["BOBBY_LOW_OI"] = "0"; B.main(["--snapshots", str(tmp / "none.json"), "--out", str(out3), "--now", str(NOW)])
+assert "lowOi" not in vaultpy.read_sealed(out3) and lo_calls == [False]; os.environ.pop("BOBBY_LOW_OI")
 # --- QFEX (private data via the autotrader's status; key never in the output)
 QK = {"QFEX_API_PUBLIC_KEY": "pk_test_public_abc", "QFEX_API_SECRET_KEY": "s3cr3t_" + "9" * 30, "QFEX_ACCOUNT_ID": "0b7c6a7e-1d2f-4c3b-9a8e-5f6d7c8b9a01"}
 qst = json.loads((FX / "briefing_qfex_status.json").read_text())

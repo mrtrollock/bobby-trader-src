@@ -89,21 +89,23 @@ assert B["variational"]["status"] == "ok" and B["variational"]["current"] == 250
 pp = {p["id"]: p for p in doc["points"]["platforms"]}
 assert pp["txflow"]["current"]["volume"] == 420.0 and pp["qfex"]["current"]["volume"] == 70000 and pp["variational"]["current"]["points"] == 12.5
 assert oct(os.stat(tmp / "points_ledger.json").st_mode)[-3:] == "600" and json.loads((tmp / "points_ledger.json").read_text())["weeks"]["txflow"]
-# Arcus /v1/fills reader (paged by createdAt) and Hyperliquid io-dex filter, with a fake HTTP layer
+# Arcus /v1/fills reader (from/to/createdAt in MICROseconds, newest first, paged backwards with `to`) and Hyperliquid io-dex filter, with a fake HTTP layer
 class FakeB:
     def __init__(self): self.calls = []
     def _get(self, url, q):
         self.calls.append((url, dict(q)))
-        if q["from"] == U(2026, 10, 14, 19) * 1000:
-            return {"fills": [{"id": i, "createdAt": U(2026, 10, 15) * 1000 + i, "price": "10", "size": "1", "fee": "0.01", "closedPnl": "0.5", "liquidity": "maker"} for i in range(1000)]}
-        return {"fills": [{"id": 999, "createdAt": U(2026, 10, 15) * 1000 + 999, "price": "10", "size": "1", "fee": "0.01", "closedPnl": "0.5"},
-                          {"id": 1000, "createdAt": U(2026, 10, 16), "price": "20", "size": "-1", "fee": "0.02", "closedPnl": "-1"}]}
+        assert q["from"] == U(2026, 10, 14, 19) * 1_000_000
+        if "to" not in q:
+            return {"fills": [{"id": i, "createdAt": U(2026, 10, 16) * 1_000_000 - i, "price": "10", "size": "1", "fee": "0.01", "closedPnl": "0.5", "liquidity": "maker"} for i in range(1000)]}
+        assert q["to"] == U(2026, 10, 16) * 1_000_000 - 999 - 1
+        return {"fills": [{"id": 999, "createdAt": U(2026, 10, 16) * 1_000_000 - 999, "price": "10", "size": "1", "fee": "0.01", "closedPnl": "0.5"},
+                          {"id": 1000, "createdAt": U(2026, 10, 15) * 1_000_000, "price": "20", "size": "-1", "fee": "0.02", "closedPnl": "-1"}]}
     def _post(self, url, body):
         return [{"coin": "io:NVDA", "time": U(2026, 10, 20) * 1000, "px": "180", "sz": "1", "fee": "0.05", "closedPnl": "2", "crossed": False},
                 {"coin": "BTC", "time": U(2026, 10, 20) * 1000, "px": "80000", "sz": "1", "fee": "9", "closedPnl": "0", "crossed": True}]
 fb = FakeB()
 aa = PT.arcus_activity(fb, "https://api.arcus.xyz", "0xabc", 0, U(2026, 10, 14, 19), NOW)
-assert len(aa["fills"]) == 1001 and aa["fills"][-1]["time"] == U(2026, 10, 16) * 1000 and fb.calls[0][1]["accountIndex"] == 0 and len(fb.calls) == 2
+assert len(aa["fills"]) == 1001 and aa["fills"][-1]["time"] == U(2026, 10, 15) * 1000 and fb.calls[0][1]["accountIndex"] == 0 and len(fb.calls) == 2
 ag = PT.aggregate(aa["fills"], [], U(2026, 10, 14, 19) * 1000, U(2026, 10, 21, 19) * 1000)
 assert ag["volume"] == 10020.0 and ag["trades"] == 1001 and ag["pnl"] == round(1000 * 0.5 - 1 - 10 - 0.02, 4) and ag["makerShare"] == round(10000 / 10020, 4), ag
 ha = PT.hl_activity(fb, "https://api.hyperliquid.xyz/info", "0xabc", ["io"], U(2026, 10, 19), NOW)

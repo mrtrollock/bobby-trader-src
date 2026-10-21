@@ -270,3 +270,12 @@ test('Arcus fills: from is sent in microseconds and µs createdAt is converted t
   assert.ok(calls.length && calls.every((q) => q.from > 1e15), JSON.stringify(calls));
   assert.ok(st.weeklyLoss >= 5 && st.weeklyLoss <= 5.1 + 1e-9, String(st.weeklyLoss));
 });
+
+test('Entropy on a unified Hyperliquid account: equity/free come from spot USDC (+ dex uPnL), other spot tokens ignored', async () => {
+  const cfg = cfgOf(), net = mockNet(cfg, { hlEquity: 0, hlFree: 0 });
+  const h = net.hlInfo; net.hlInfo = async (b) => b.type === 'userAbstraction' ? 'unifiedAccount'
+    : b.type === 'spotClearinghouseState' ? { balances: [{ coin: 'USDC', total: '300.19', hold: '10' }, { coin: 'HYPE', total: '221', hold: '0' }] } : h(b);
+  const st = await C.accountState('entropy', cfg, net, {});
+  assert.equal(st.equity, 300.19); assert.equal(st.free, 290.19);
+  const plain = await C.accountState('entropy', cfg, mockNet(cfg)); assert.equal(plain.equity, 300); // standard account unchanged
+});

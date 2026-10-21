@@ -55,6 +55,23 @@ def hl_flows(updates, addr, dexes):
     return net
 
 
+def hl_spot_usdc(B, url, user):
+    """Spot USDC of a Hyperliquid user + account mode (unifiedAccount / portfolioMargin hold perp collateral in spot)."""
+    try:
+        mode = B._post(url, {"type": "userAbstraction", "user": user})
+    except Exception:  # noqa: BLE001
+        mode = None
+    try:
+        sp = B._post(url, {"type": "spotClearinghouseState", "user": user}) or {}
+    except Exception:  # noqa: BLE001
+        return None
+    u = next((b for b in sp.get("balances") or [] if b.get("coin") == "USDC"), None)
+    if not u:
+        return None
+    return {"total": float(u.get("total") or 0), "hold": float(u.get("hold") or 0),
+            "unified": str(mode) in ("unifiedAccount", "portfolioMargin"), "mode": mode if isinstance(mode, str) else None}
+
+
 def read_live(testnet, start):
     """{pf: {"equity", "deposit"?, "flowsSince"?} | {"status": "..."}}; start = ledger starts (for flow windows)."""
     ep = B.ENDPOINTS[testnet]
@@ -70,11 +87,17 @@ def read_live(testnet, start):
         return {"equity": f(a.get("equity"))}
 
     def entropy():
-        eq = 0.0
+        eq, upnl = 0.0, 0.0
         for dex in dexes:
             st = B._post(ep["hl"], {"type": "clearinghouseState", "user": hl_addr, **({"dex": dex} if dex else {})})
             eq += float(((st or {}).get("marginSummary") or {}).get("accountValue") or 0)
-        out = {"equity": eq}
+            upnl += sum(float((ap.get("position") or {}).get("unrealizedPnl") or 0) for ap in (st or {}).get("assetPositions") or [])
+        # unified / portfolio-margin account: collateral is SPOT USDC (the dex clearinghouse shows ~$0) -> USDC + dex uPnL
+        sp = hl_spot_usdc(B, ep["hl"], hl_addr)
+        spot_used = bool(sp and (sp["unified"] or eq <= 0))
+        if spot_used:
+            eq = sp["total"] + upnl
+        out = {"equity": round(eq, 6), **({"collateral": "spot USDC"} if spot_used else {})}
         s0 = (start.get("entropy") or {}).get("t")
         if s0:
             ups = B._post(ep["hl"], {"type": "userNonFundingLedgerUpdates", "user": hl_addr, "startTime": int(s0 * 1000)})

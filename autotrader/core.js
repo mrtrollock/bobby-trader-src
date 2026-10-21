@@ -208,6 +208,14 @@ async function arcusFillsSince(net, addr, ai, fromMs) {
   return out.map((f) => ({ time: arcusMs(f.createdAt), closedPnl: f.closedPnl, fee: f.fee, m: f.marketDisplayName, px: f.price, sz: f.size, side: f.side }))
     .filter((f) => f.time >= fromMs);
 }
+export async function hlSpotUsdc(net, user) {
+  let mode = null, spot = null;
+  try { mode = await net.hlInfo({ type: 'userAbstraction', user }); } catch { /* older API */ }
+  try { spot = await net.hlInfo({ type: 'spotClearinghouseState', user }); } catch { return null; }
+  const u = ((spot && spot.balances) || []).find((b) => b.coin === 'USDC');
+  if (!u) return null;
+  return { total: Number(u.total || 0), hold: Number(u.hold || 0), unified: ['unifiedAccount', 'portfolioMargin'].includes(String(mode)), mode };
+}
 async function hlFillsSince(net, user, fromMs, dexes) {
   const rows = await net.hlInfo({ type: 'userFillsByTime', user, startTime: fromMs });
   const pre = dexes.map((d) => d + ':');
@@ -304,6 +312,11 @@ export async function accountState(pf, cfg, net, { sinceMs } = {}) {
         px: Number(o.limitPx), trig: o.isTrigger ? Number(o.triggerPx) : null, size: Number(o.sz), reduceOnly: !!o.reduceOnly, raw: o });
     }
   }
+  // Unified / portfolio-margin accounts keep the collateral as SPOT USDC (the dex clearinghouse then reports ~0):
+  // equity = spot USDC + unrealized PnL of the dex positions, free = USDC not on hold. Other spot tokens never count.
+  const sp = await hlSpotUsdc(net, user);
+  if (sp && (sp.unified || equity <= 0)) {
+    equity = sp.total + positions.reduce((a, x) => a + (Number(x.upnl) || 0), 0); free = Math.max(0, sp.total - sp.hold); }
   const week = await hlFillsSince(net, user, weekStartUtc(net.now()), cfg.dexes);
   const fills = sinceMs != null ? await hlFillsSince(net, user, sinceMs, cfg.dexes) : undefined;
   return { pf, equity, free, positions, orders, weeklyLoss: realizedLoss(week, weekStartUtc(net.now())), fills };

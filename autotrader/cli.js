@@ -4,6 +4,7 @@
 //   node autotrader/cli.js status [--since UNIX_MS] [--pf qfex]  # JSON: equity, positions, open orders, SL/TP, fills
 //   node autotrader/cli.js once                       # process autotrader/queue.json once
 //   node autotrader/cli.js loop                       # process every AUTOTRADER_INTERVAL_S (60) seconds (+ protection guard, + volume mode if QFEX_VOLUME_MODE=1)
+//   node autotrader/cli.js picks [--pf arcus]         # READ-ONLY, no keys: lowest-OI markets that pass the liquidity gate (JSON)
 //   node autotrader/cli.js guard                      # READ-ONLY: is every open position protected (SL + TP)? never sends
 //   node autotrader/cli.js cancel <arcus|entropy|qfex> <market> <orderId>
 //   node autotrader/cli.js close  <arcus|entropy|qfex> <market>
@@ -12,6 +13,7 @@ import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 import * as C from './core.js';
 import * as V from './volume.js';
+import * as L from '../src/lowoi.js';
 
 const DIR = dirname(fileURLToPath(import.meta.url));
 const P = { queue: process.env.AUTOTRADER_QUEUE || join(DIR, 'queue.json'), stop: join(DIR, 'STOP'), stopVolume: join(DIR, 'STOP_VOLUME'), logs: join(DIR, 'logs'), state: join(DIR, 'state.json'), alert: join(DIR, 'ALERT') };
@@ -193,10 +195,13 @@ async function main(argv) {
       const cfg = C.loadConfig(process.env); SECRETS = C.secretsOf(cfg);
       const rep = await runGuard(cfg, C.realNet(cfg), { guard: JSON.parse(JSON.stringify(loadState().guard || {})) }, { readOnly: true });
       console.log(JSON.stringify(rep, null, 1)); return; }
+    case 'picks': { // public market data only; never loads or uses a key
+      const pfs = flag('--pf') ? [flag('--pf')] : ['arcus', 'entropy', 'txflow'];
+      console.log(JSON.stringify(await L.picks({ env: process.env, platforms: pfs, testnet: process.env.AUTOTRADER_NETWORK === 'testnet' }), null, 1)); return; }
     case 'loop': return loop();
     case 'cancel': return reduceCmd('cancel', rest[0], rest[1], rest[2]);
     case 'close': return reduceCmd('close', rest[0], rest[1]);
-    default: console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 9).join('\n')); process.exitCode = cmd ? 1 : 0;
+    default: console.log(readFileSync(fileURLToPath(import.meta.url), 'utf8').split('\n').slice(1, 10).join('\n')); process.exitCode = cmd ? 1 : 0;
   }
 }
 if (process.argv[1] && fileURLToPath(import.meta.url) === process.argv[1]) {

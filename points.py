@@ -298,24 +298,26 @@ def hl_activity(B, url, addr, dexes, since_s, now_s):
 
 def arcus_activity(B, base, addr, account_index, since_s, now_s):
     """Arcus GET /v1/fills (public by address + accountIndex), paged forward by createdAt."""
-    fills, frm = [], since_s * 1000
+    # from/to/createdAt are epoch MICROseconds (mainnet rejects ms with 400); newest first -> page backwards with `to`
+    fills, frm, to = [], int(since_s) * 1_000_000, None
     for _ in range(100):
-        r = B._get(base + "/v1/fills", {"address": addr, "accountIndex": account_index, "from": frm, "limit": 1000}) or {}
-        rows = r.get("fills") or []
+        q = {"address": addr, "accountIndex": account_index, "from": frm, "limit": 1000, **({"to": to} if to is not None else {})}
+        rows = (B._get(base + "/v1/fills", q) or {}).get("fills") or []
         fills += rows
         if len(rows) < 1000:
             break
-        ts = [int(float(x.get("createdAt") or 0)) for x in rows]
-        nxt = max(ts) + 1
-        if nxt <= frm:
+        oldest = min(int(float(x.get("createdAt") or 0)) for x in rows)
+        if to is not None and oldest - 1 >= to:
             break
-        frm = nxt
-    ms = lambda t: int(float(t or 0)) * (1000 if float(t or 0) < 1e12 else 1)
+        to = oldest - 1
+    def ms(t):
+        t = float(t or 0)
+        return int(t / 1000 if t > 1e14 else t if t > 1e11 else t * 1000)
     maker = lambda f: (f.get("liquidity") or f.get("role") or "").lower() == "maker" if (f.get("liquidity") or f.get("role")) else (f.get("isMaker") if f.get("isMaker") is not None else None)
     keep = lambda f: {"time": ms(f.get("createdAt")), "px": f.get("price"), "sz": f.get("size"), "fee": f.get("fee"), "closedPnl": f.get("closedPnl"), "maker": maker(f)}
     seen, out = set(), []
     for f in fills:
-        k = f.get("id") or f.get("fillId") or (f.get("createdAt"), f.get("price"), f.get("size"), f.get("side"))
+        k = f.get("id") or f.get("tradeId") or f.get("fillId") or (f.get("createdAt"), f.get("price"), f.get("size"), f.get("side"))
         if k in seen:
             continue
         seen.add(k); out.append(keep(f))

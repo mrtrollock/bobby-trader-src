@@ -54,4 +54,29 @@ try:
     vaultpy.read_sealed(tmp / "b.enc.json", "wrong-passphrase"); raise AssertionError("wrong passphrase accepted")
 except Exception as e:  # noqa: BLE001
     assert "AssertionError" not in type(e).__name__
+# Entropy on a unified Hyperliquid account: io-dex clearinghouse shows $0, collateral is SPOT USDC (other tokens ignored)
+class FakeHL:
+    def __init__(self, mode, acct="0.0", upnl="0"):
+        self.mode, self.acct, self.upnl = mode, acct, upnl
+    def _post(self, url, body):
+        t = body["type"]
+        if t == "clearinghouseState":
+            return {"marginSummary": {"accountValue": self.acct}, "assetPositions": [{"position": {"coin": "io:X", "szi": "1", "unrealizedPnl": self.upnl}}] if self.upnl != "0" else []}
+        if t == "userAbstraction":
+            return self.mode
+        if t == "spotClearinghouseState":
+            return {"balances": [{"coin": "USDC", "total": "300.18717387", "hold": "0.0"}, {"coin": "HYPE", "total": "221.0", "hold": "0"}]}
+        raise AssertionError(t)
+    def _get(self, url, q): raise AssertionError("no GET expected")
+    def _tx(self, url, body): raise AssertionError("no TxFlow expected")
+    ENDPOINTS = BL.B.ENDPOINTS
+    scrub = staticmethod(BL.B.scrub)
+_realB = BL.B
+os.environ["BOBBY_HL_ADDRESS"] = "0x" + "cd" * 20
+for mode, acct, upnl, want in (("unifiedAccount", "0.0", "0", 300.18717387), ("unifiedAccount", "0.0", "-2.5", 297.68717387),
+                               ("default", "120.0", "0", 120.0), ("default", "0.0", "0", 300.18717387)):
+    BL.B = FakeHL(mode, acct, upnl)
+    live, _ = BL.read_live(False, {})
+    assert abs(live["entropy"]["equity"] - want) < 1e-6, (mode, acct, upnl, live["entropy"])
+BL.B = _realB; os.environ.pop("BOBBY_HL_ADDRESS")
 print(json.dumps({"ok": True, "envelope": json.loads(raw) | {"ct": "…"}}))

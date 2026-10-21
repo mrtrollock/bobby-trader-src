@@ -13,6 +13,8 @@ Reads PUBLIC account data only (no keys, nothing is signed or sent):
   Arcus    GET /v1/account, /v1/positions, /v1/openOrders, /v1/fills, /v1/markets  (address + accountIndex)
   Entropy  Hyperliquid POST /info clearinghouseState / frontendOpenOrders with dex "io", userFillsByTime
   TxFlow   POST /info perpMeta, clearinghouseState, frontendOpenOrders, userFills
+  Low-OI   `node autotrader/cli.js picks` (public market data, no keys): per platform the lowest-OI markets passing the
+           liquidity gate (src/lowoi.js) -> doc["lowOi"]; BOBBY_LOW_OI=0 turns it off
   QFEX     needs the API key (QFEX account data is private): read via `node autotrader/cli.js status --pf qfex`
            when QFEX_API_PUBLIC_KEY + QFEX_API_SECRET_KEY are in the environment; with BOBBY_QFEX=1 and no key the
            briefing shows a "needs a QFEX API key" card. The key never reaches this script's output.
@@ -27,7 +29,7 @@ latest snapshot taken 21:00-23:59 Europe/Berlin on an earlier day; otherwise the
 Comments file (optional, JSON): {"arcus": {"detail": "One-line note", "positions": {"TSLA": "I'm holding, ..."}}, ...}
 Keys: arcus | entropy | txflow | qfex. Symbols are short names (TSLA, ANTH, BTC). A human comment replaces the auto one.
 """
-import argparse, json, os, subprocess, sys, time, urllib.parse, urllib.request
+import argparse, json, os, re, subprocess, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -88,7 +90,7 @@ def _tx(url, body):
 def fetch_arcus(ep, addr, sub, since_ms):
     q = {"address": addr, "accountIndex": sub}
     return {"account": _get(ep + "/v1/account", q), "positions": _get(ep + "/v1/positions", q),
-            "openOrders": _get(ep + "/v1/openOrders", q), "fills": _get(ep + "/v1/fills", {**q, "from": since_ms, "limit": 500}),
+            "openOrders": _get(ep + "/v1/openOrders", q), "fills": _get(ep + "/v1/fills", {**q, "from": int(since_ms) * 1000, "limit": 500}),  # from/createdAt: epoch MICROseconds
             "markets": _get(ep + "/v1/markets")}
 
 def fetch_hl(ep, addr, dexes, since_ms):
@@ -97,6 +99,11 @@ def fetch_hl(ep, addr, dexes, since_ms):
         body = {"type": "clearinghouseState", "user": addr, **({"dex": dex} if dex else {})}
         out["dexes"][dex] = {"state": _post(ep, body), "openOrders": _post(ep, {**body, "type": "frontendOpenOrders"})}
     out["fills"] = _post(ep, {"type": "userFillsByTime", "user": addr, "startTime": since_ms})
+    try:  # unified / portfolio-margin accounts hold the perp collateral as spot USDC
+        out["mode"] = _post(ep, {"type": "userAbstraction", "user": addr})
+        out["spotUsdc"] = next((b for b in (_post(ep, {"type": "spotClearinghouseState", "user": addr}) or {}).get("balances") or [] if b.get("coin") == "USDC"), None)
+    except Exception:  # noqa: BLE001
+        pass
     return out
 
 def fetch_txflow(ep, addr, since_ms):
@@ -124,6 +131,11 @@ def short(m):
         m = m[: -len(suf)] if m.endswith(suf) else m
     return m
 
+def _arcus_s(t):
+    """Arcus createdAt -> unix seconds (mainnet sends microseconds; ms accepted too)."""
+    t = float(t or 0)
+    return t / 1e6 if t > 1e14 else t / 1000 if t > 1e11 else t
+
 def norm_arcus(raw):
     mk = raw.get("markets") or {}
     mk = mk.get("markets", mk) if isinstance(mk, dict) else mk
@@ -144,7 +156,7 @@ def norm_arcus(raw):
                "trig": f(o.get("triggerPrice")), "px": f(o.get("price")), "side": "buy" if str(o.get("side")).upper() == "BUY" else "sell",
                "position": bool(o.get("isPositionTPSL"))} for o in oo]
     fl = (raw.get("fills") or {}).get("fills", raw.get("fills")) or []
-    fills = [{"t": int(float(x.get("createdAt") or 0) / 1000), "m": str(x.get("marketDisplayName", "")).upper(), "side": str(x.get("side", "")).lower(),
+    fills = [{"t": int(_arcus_s(x.get("createdAt"))), "m": str(x.get("marketDisplayName", "")).upper(), "side": str(x.get("side", "")).lower(),
               "px": f(x.get("price")), "sz": f(x.get("size")), "pnl": f(x.get("closedPnl")), "kind": _kind(x.get("tpslType") or x.get("orderType"))} for x in fl]
     eq = {m for m, r in mk.items() if str(r.get("category", "")).upper() in ("EQUITIES", "ETF", "ETFS", "INDICES", "INDEX")}
     rth = {m: r.get("regularTradingHours") for m, r in mk.items() if r.get("regularTradingHours")}
@@ -184,6 +196,9 @@ def norm_hl(raw):
               "sz": f(x.get("sz")), "pnl": f(x.get("closedPnl")), "kind": "LIMIT", "dir": x.get("dir")}
              for x in raw.get("fills") or [] if not dexes or str(x.get("coin", "")).startswith(dexes)]
     eq = {p["m"] for p in positions + orders if short(p["m"]) in US_TICKERS}
+    usdc = raw.get("spotUsdc")
+    if usdc and (str(raw.get("mode")) in ("unifiedAccount", "portfolioMargin") or equity <= 0):
+        equity = float(usdc.get("total") or 0) + sum(float(p.get("upnl") or p.get("pnl") or 0) for p in positions)
     return {"equity": equity, "positions": positions, "orders": orders, "fills": fills, "equityMarkets": eq, "rth": {}}
 
 def norm_txflow(raw):
@@ -219,6 +234,16 @@ def fetch_qfex(testnet, since_ms):
     if q.get("error"):
         raise RuntimeError(q["error"])
     return q
+
+def fetch_low_oi(testnet):
+    """Lowest-OI markets that pass the liquidity gate (Arcus, Entropy io, TxFlow), from `node autotrader/cli.js picks`.
+    Public market data only: every key is removed from the child environment."""
+    env = {k: v for k, v in os.environ.items() if not re.search(r"KEY|SECRET|PRIVATE|PASSPHRASE|ACCOUNT_ID", k)}
+    env["AUTOTRADER_NETWORK"] = "testnet" if testnet else "mainnet"
+    r = subprocess.run(["node", str(HERE / "autotrader" / "cli.js"), "picks"], capture_output=True, text=True, env=env, timeout=180)
+    if r.returncode != 0:
+        raise RuntimeError("picks failed")
+    return json.loads(r.stdout)
 
 def norm_qfex(raw):
     positions = []
@@ -470,6 +495,15 @@ def main(argv=None):
         return 0
     doc = {"v": 1, "generated": now_ts, "tz": "Europe/Berlin", "network": "testnet" if a.testnet else ("mock" if a.mock else "mainnet"),
            "baseline": (base or {}).get("t"), "platforms": out}
+    # Low-OI picks (points tilt): lowest open-interest markets that still pass the spread/depth/stop-slippage gate
+    if a.mock:
+        if raw.get("lowOi"):
+            doc["lowOi"] = raw["lowOi"]
+    elif os.environ.get("BOBBY_LOW_OI", "1") == "1":
+        try:
+            doc["lowOi"] = fetch_low_oi(a.testnet)
+        except Exception as e:  # noqa: BLE001
+            doc["lowOi"] = {"error": scrub(f"{type(e).__name__}: {e}", secrets)[:200]}
     text = json.dumps(doc, indent=1, ensure_ascii=False)
     leaked = [s for s in secrets if s and s.lower() in text.lower()]
     if leaked:
