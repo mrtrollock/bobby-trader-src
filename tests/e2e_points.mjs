@@ -31,7 +31,7 @@ writeFileSync(join(bt, 'points_manual.json'), JSON.stringify({ variational: { eq
   extended: { weeks: { 66: { points: 6.3 } }, pointsTotal: 4064.9, profile: { asOf: 'test', items: [['Total rank', '#1,890']] } } }));
 writeFileSync(join(bt, 'v.json'), JSON.stringify({ generatedAt: '2026-10-21', disclaimer: 'Illustrative only: points carry no guaranteed token rights.', platforms: [
   { id: 'extended', tgeStatus: 'announced, no date', airdropPct: 0.3, airdropBadge: 'official', airdropUrl: 'https://docs.extended.exchange/', totalPoints: 70e6, totalPointsBadge: 'official', valuable: true, marketReference: 'Polymarket >$150M 67%', userPoints: 1, scenarios: {} },
-  { id: 'txflow', tgeStatus: 'unknown', airdropPct: 0.1, airdropBadge: 'assumed', totalPoints: 36380800, totalPointsBadge: 'projected', valuable: true, warning: 'txflowtoken.com is NOT an official TxFlow site' },
+  { id: 'txflow', tgeStatus: 'unknown', docNotes: { url: 'https://docs.txflow.com/points/how-points-work', items: ['Cancelled orders and spot trading earn nothing.'] }, airdropPct: 0.1, airdropBadge: 'user assumption', totalPoints: 36380800, totalPointsBadge: 'projected', valuable: true, warning: 'txflowtoken.com is NOT an official TxFlow site' },
   { id: 'qfex', tgeStatus: 'unknown', valuable: false, cannotValue: "no token/points announced: can't value" },
   { id: 'entropy', tgeStatus: 'none', valuable: false, cannotValue: "no token/points announced: can't value (Entropy pays cashback: USDC fee rebates)" }] }));
 const pyEnv = { ...process.env, BOBBY_VIEW_PASSPHRASE: PASS, BOBBY_ACCOUNT_ADDRESS: '', BOBBY_HL_ADDRESS: '', BOBBY_TXFLOW_ADDRESS: '', BOBBY_VARIATIONAL_ADDRESS: '', QFEX_API_PUBLIC_KEY: '', QFEX_API_SECRET_KEY: '', QFEX_ACCOUNT_ID: '' };
@@ -88,11 +88,11 @@ try {
   if (!/no guaranteed token rights/.test(val.disc)) fail.push('valuation disclaimer');
   if (val.ext.join(' | ') !== '$ / point $1.0714 $2.1429 $4.2857 $8.5714 $12.86 | Your $ $4,355 $8,711 $17,421 $34,842 $52,263') fail.push('extended valuation');
   if (val.tx.join(' | ') !== '$ / point $0.6872 $1.3744 $2.7487 $5.4974 $8.2461 | Your $ $172 $344 $687 $1,374 $2,062') fail.push('txflow valuation (250 pts)');
-  if (!/30% official/.test(val.t['val-extended'] || '') || !/Market hint: Polymarket/.test(val.t['val-extended'] || '') || !/NOT an official TxFlow site/.test(val.t['val-txflow'] || '') || !/assumed/.test(val.t['val-txflow'] || '')) fail.push('valuation badges/notes');
+  if (!/30% official/.test(val.t['val-extended'] || '') || !/Market hint: Polymarket/.test(val.t['val-extended'] || '') || !/NOT an official TxFlow site/.test(val.t['val-txflow'] || '') || !/10% user assumption/.test(val.t['val-txflow'] || '') || !/From the official docs \(source\) Cancelled orders/.test(val.t['val-txflow'] || '')) fail.push('valuation badges/notes');
   if (!/can't value/.test(val.t['val-qfex'] || '') || !/cashback/.test(val.t['val-entropy'] || '')) fail.push('cannot value');
   if (!/Points this week pending/.test(txCard) || !/Points season total 250 over 1 week\(s\) · 5,000 pts \/ \$1K/.test(txCard)) fail.push('txflow card points');
   const cards = a.cards.join(' ');
-  if (!/Season 1 · 250K points \/ week/.test(cards) || !/Next points drop/.test(cards) || !/Epoch ends/.test(cards) || !/every 2 weeks \(date not published\)/.test(cards) || !/Points drop not announced/.test(cards)) fail.push('cards');
+  if (!/Season 1 · 250K points \/ week/.test(cards) || !/Next points drop/.test(cards) || !/Points credited \(Tuesday; time not stated\)/.test(cards) || !/every 2 weeks \(date not published\)/.test(cards) || !/Points drop not announced/.test(cards)) fail.push('cards');
   // Balances tab: loss caps card
   await page.evaluate(() => [...document.querySelectorAll('nav button')].find((x) => x.textContent.includes('Balances')).click());
   await page.waitForSelector('#limitscard', { timeout: 10000 });

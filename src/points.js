@@ -48,7 +48,7 @@ export function target(p, now) {
   return w ? { t: w.end, kind: 'end' } : null;
 }
 export function targetLabel(p, kind) {
-  if (kind === 'drop') return 'Next points drop';
+  if (kind === 'drop') return p.dropExact === false ? 'Points credited (Tuesday; time not stated)' : 'Next points drop';
   if (p.kind === 'points') return 'Epoch ends';
   return 'Tracking week ends';
 }

@@ -66,6 +66,7 @@ test('valuation.js: $ per point and user $ from the CURRENT points total (resear
   assert.equal(v[0].user.toFixed(2), '3848.36'); assert.equal(v[2].perPoint.toFixed(4), '28.5714');
   assert.equal(scenarios({ airdropPct: 0.1, totalPoints: 36380800 }, 137)[0].user.toFixed(2), '94.14');
   assert.equal(scenarios({ airdropPct: 0.1, totalPoints: 9.75e6 }, 1.7)[1].user.toFixed(2), '8.72');
+  assert.equal(scenarios({ airdropPct: 0.35, totalPoints: 36380800 }, 137)[0].user.toFixed(2), '329.50'); // TxFlow at the user's 35% assumption
   assert.equal(perPoint(1e9, null, 1), null); assert.equal(scenarios({ airdropPct: 0.3, totalPoints: 70e6 }, null)[0].user, null);
   const doc = { platforms: [{ id: 'txflow', earned: { points: 137 } }, { id: 'arcus', earned: { points: null } }] };
   assert.equal(userPointsFor(doc, 'txflow'), 137); assert.equal(userPointsFor(doc, 'arcus'), null); assert.equal(userPointsFor(doc, 'x'), null);

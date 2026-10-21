@@ -18,9 +18,9 @@ w = PT.window("arcus", PT.window_index("arcus", NOW))
 assert (w["n"], w["start"], w["end"], w["drop"]) == (3, U(2026, 10, 14, 19), U(2026, 10, 21, 19), U(2026, 10, 21, 19)), w
 assert PT.window("arcus", PT.window_index("arcus", U(2026, 11, 2)))["drop"] == U(2026, 11, 4, 19)  # Points page: 19:00 UTC all year (blog: 3 PM ET)
 assert PT.window("arcus", PT.window_index("arcus", U(2026, 10, 7, 18, 59)))["n"] == 1  # Week 1 dropped Oct 7
-# TxFlow: Epoch 2 = Mon 19 Oct -> Mon 26 Oct 00:00 UTC, no exact drop time
+# TxFlow: Epoch 2 = Mon 19 Oct -> Mon 26 Oct 00:00 UTC, credited Tuesday (countdown to Tue 00:00 UTC)
 w = PT.window("txflow", PT.window_index("txflow", NOW))
-assert (w["n"], w["start"], w["end"], w["drop"]) == (2, U(2026, 10, 19), U(2026, 10, 26), None), w
+assert (w["n"], w["start"], w["end"], w["drop"]) == (2, U(2026, 10, 19), U(2026, 10, 26), U(2026, 10, 27)), w  # credited Tuesday after the Monday 00:00 UTC end
 assert PT.window("txflow", PT.window_index("txflow", U(2026, 10, 12)))["n"] == 1
 # Variational: Week 45 = Thu 15 Oct -> Thu 22 Oct 00:00 UTC, drop Fri 23 Oct 00:00 UTC (= API next_drop_ts on 2026-10-21)
 w = PT.window("variational", PT.window_index("variational", NOW))

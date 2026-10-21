@@ -13,7 +13,7 @@ export function userPointsFor(pointsDoc, id) {
   const p = ((pointsDoc && pointsDoc.platforms) || []).find((x) => x.id === id);
   return p && p.earned && p.earned.points != null ? Number(p.earned.points) : null;
 }
-const badge = (h, b) => (b ? h('span', { class: 'badge' + (b === 'official' ? ' ok' : ' warn') }, b) : null);
+const badge = (h, b) => (b ? h('span', { class: 'badge' + (b === 'official' ? ' ok' : ' warn') + (b === 'user assumption' ? ' user' : '') }, b) : null);
 const link = (h, url, text) => (url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, text || 'source') : null);
 const NAME = { extended: '♟️ Extended', variational: '🌀 Variational', arcus: '🏹 Arcus', txflow: '🌊 TxFlow', qfex: '📈 QFEX', entropy: '🤖 Entropy' };
 const ORDER = ['extended', 'variational', 'arcus', 'txflow', 'qfex', 'entropy'];
@@ -49,6 +49,8 @@ export function valuationCard(h, doc) {
         h('tbody', {}, h('tr', {}, h('th', {}, '$ / point'), ...sc.map((x) => h('td', {}, usd(x.perPoint, x.perPoint != null && x.perPoint < 10 ? 4 : 2)))),
           h('tr', {}, h('th', {}, 'Your $'), ...sc.map((x) => h('td', {}, x.user == null ? '—' : usd(x.user, x.user < 100 ? 2 : 0))))))));
     }
+    if (v.docNotes && (v.docNotes.items || []).length) sec.append(h('div', { class: 'small docnotes' }, h('b', {}, 'From the official docs '), link(h, v.docNotes.url, '(source)'),
+      h('ul', { class: 'small muted valnotes' }, ...v.docNotes.items.map((n) => h('li', {}, n)))));
     const notes = [v.marketReference ? 'Market hint: ' + v.marketReference : null, v.raiseValuation ? 'Funding: ' + v.raiseValuation : null, v.notes || null].filter(Boolean);
     if (notes.length) sec.append(h('ul', { class: 'small muted valnotes' }, ...notes.map((n) => h('li', {}, n))));
     if ((v.sources || []).length) sec.append(h('details', { class: 'small muted' }, h('summary', {}, 'Sources'), h('ul', {}, ...v.sources.map((u) => h('li', {}, link(h, u, u.replace(/^https?:\/\//, '')))))));

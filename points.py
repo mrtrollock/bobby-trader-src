@@ -49,7 +49,7 @@ POINTS_SRC = {
     "entropy": "rebates, not points: Entropy pays USDC/HYPE fee rebates every 2 weeks (claimable on the Entropy profile, no API); enter them as \"rebates\" by week",
 }
 KEEP = ("points", "pointsSrc", "rebates", "rebatesSrc")  # survive a recompute of the week from fills
-PENDING_GRACE = {"txflow": 86400}  # TxFlow credits points the Tuesday after the epoch (no time stated)
+PENDING_GRACE = {}  # TxFlow: drop = Tuesday 00:00 UTC after the epoch (credit time on Tuesday not stated)
 
 
 def _utc_midnight(d):
@@ -74,8 +74,8 @@ SCHED = {
     "txflow": {
         "kind": "points", "program": "Season 1 · 1.25M trader points / epoch", "unit": "Epoch",
         "boundary": lambda k: _utc_midnight(date(2026, 10, 12) + timedelta(days=7 * k)),
-        "number": lambda k: k + 1, "drop": lambda s, e: None, "dropExact": False,
-        "rule": "Epochs run Monday 00:00 → Monday 00:00 UTC; points are credited the Tuesday after (time not stated; Epoch 1 was announced Tue 20 Oct 20:03 Berlin)",
+        "number": lambda k: k + 1, "drop": lambda s, e: e + DAY, "dropExact": False,  # credited "on Tuesday": countdown to Tue 00:00 UTC (earliest)
+        "rule": "Epochs run Monday 00:00 → Monday 00:00 UTC; points are credited the Tuesday after (countdown targets Tuesday 00:00 UTC, the earliest possible time) (time not stated; Epoch 1 was announced Tue 20 Oct 20:03 Berlin)",
         "window": "Monday 00:00 UTC → Monday 00:00 UTC (02:00/01:00 Berlin)",
         "endsBy": int(datetime(2027, 4, 1, tzinfo=UTC).timestamp()), "endsNote": "Weekly distribution ends no later than Q1 2027",
         "sources": [["TxFlow docs: How Points Work", "https://docs.txflow.com/points/how-points-work"],
@@ -175,7 +175,7 @@ def aggregate(fills, fundings, start_ms, end_ms):
 
 
 VAL_FIELDS = ("id", "platform", "tgeStatus", "tgeDate", "token", "airdropPct", "airdropBadge", "airdropPctSource", "airdropUrl", "totalPoints", "totalPointsBadge",
-              "totalPointsSource", "raiseValuation", "marketReference", "notes", "warning", "valuable", "cannotValue", "sources")
+              "totalPointsSource", "raiseValuation", "marketReference", "notes", "warning", "valuable", "cannotValue", "sources", "docNotes")
 VAL_FDVS = (250e6, 500e6, 1e9, 2e9, 3e9)
 
 
