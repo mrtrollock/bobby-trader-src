@@ -7,7 +7,7 @@ import * as C from '../autotrader/core.js';
 import { processQueue } from '../autotrader/cli.js';
 import { validateProposal } from '../src/proposal.js';
 import { randHex } from './helpers.mjs';
-import { fakeWsClass, fakeFetch, ACCT, OTHER } from './qfex_mock.mjs';
+import { fakeWsClass, fakeFetch, ACCT, USER } from './qfex_mock.mjs';
 
 const NOW = Date.UTC(2026, 9, 21, 12, 0, 0);
 const PUB = 'pk_' + randHex(8), SEC = randHex(24);
@@ -93,24 +93,32 @@ test('proposal validation: qfex accepts open entries with SL+TP only', () => {
   assert.throws(() => validateProposal({ ...base, act: 'cancel', oid: '1' }), /only new entries/);
 });
 
-test('key safety: ack required; multi-account (All accounts) keys refused; single account accepted', async () => {
+test('key safety: ack required; 403 on the cross-account listing = single-account evidence; All-accounts, foreign-account and main-account keys refused', async () => {
   let t = setup({}, { QFEX_KEY_SINGLE_ACCOUNT_ACK: '0' });
   try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /QFEX_KEY_SINGLE_ACCOUNT_ACK=1/); } finally { t.restore(); }
-  t = setup({ accounts: [{ account_id: ACCT, equity: '300' }, { account_id: OTHER, equity: '5000', is_master: true }], otherAccountReadable: true });
-  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /more than one account/); } finally { t.restore(); }
-  t = setup({ accounts: [{ account_id: ACCT, equity: '300' }, { account_id: OTHER, equity: '5000', is_master: true }] });
-  try { const v = await C.verifyKeys(t.cfg, t.net); assert.match(v.qfex.scope, /verified/);
-    assert.ok(t.restLog.every((r) => r.path.startsWith('/user/') && !/withdraw|transfer|address/.test(r.path))); } finally { t.restore(); }
-  t = setup({ accounts: [{ account_id: ACCT, equity: '300' }, { account_id: OTHER }] }, { QFEX_ACCOUNT_ID: '' });
-  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /set QFEX_ACCOUNT_ID/); } finally { t.restore(); }
   t = setup();
-  try { const v = await C.verifyKeys(t.cfg, t.net); assert.match(v.qfex.scope, /acknowledged/); assert.match(v.qfex.account, /subaccount/); } finally { t.restore(); }
-  t = setup({ accounts: [{ account_id: ACCT, equity: '300', is_master: true }] });
+  try { const v = await C.verifyKeys(t.cfg, t.net); assert.match(v.qfex.scope, /cross-account listing 403/); assert.equal(v.qfex.account, 'subaccount'); assert.equal(v.qfex.websocket, 'authenticated');
+    assert.ok(t.restLog.every((r) => r.method === 'GET' && !/withdraw|transfer|address/.test(r.path)));
+    assert.ok(!JSON.stringify(v).includes(PUB) && !JSON.stringify(v).includes(ACCT)); } finally { t.restore(); }
+  t = setup({ allAccountsKey: true });
+  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /All accounts/); } finally { t.restore(); }
+  t = setup({ foreignReadable: true });
+  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /foreign account/); } finally { t.restore(); }
+  t = setup({ wsAccount: USER, wsUser: USER, ownAccount: USER }, { QFEX_ACCOUNT_ID: USER });
   try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /MAIN account/); } finally { t.restore(); }
-  t = setup({ accounts: [{ account_id: ACCT, equity: '300', is_master: true }] }, { QFEX_ALLOW_MAIN_ACCOUNT: '1' });
-  try { await C.verifyKeys(t.cfg, t.net); } finally { t.restore(); }
+  t = setup({ wsAccount: USER, wsUser: USER, ownAccount: USER }, { QFEX_ACCOUNT_ID: USER, QFEX_ALLOW_MAIN_ACCOUNT: '1' });
+  try { assert.match((await C.verifyKeys(t.cfg, t.net)).qfex.account, /main account/); } finally { t.restore(); }
+  t = setup({ wsAccount: USER });
+  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /different account/); } finally { t.restore(); }
+  t = setup({ noBalance: true });
+  try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /account identity/); } finally { t.restore(); }
   t = setup({ authOk: false });
   try { await assert.rejects(C.accountState('qfex', t.cfg, t.net), /authentication failed/); } finally { t.restore(); }
+});
+
+test('state: equity = deposit + pnl + funding, capped by the latest account-equity point; free = available_balance', async () => {
+  const t = setup({ balance: { deposit: 300, realised_pnl: -2, unrealised_pnl: 1, net_funding: 0, available_balance: 250 }, equitySeries: [300, 297.5] });
+  try { const s = await C.accountState('qfex', t.cfg, t.net); assert.equal(s.equity, 297.5); assert.equal(s.free, 250); } finally { t.restore(); }
 });
 
 test('evaluate: passing US100 long; risk uses maker entry + taker/slippage stop leg', async () => {
@@ -133,7 +141,7 @@ test('evaluate: hard blocks (loss > $3 incl. stop fee+slippage, weekly cap, free
   const check = async (q, st, re, cx = {}) => { const t = setup(st, cx); try { const ev = await C.evaluate(q, t.cfg, t.net); assert.equal(ev.ok, false); assert.ok(ev.reasons.some((x) => re.test(x)), ev.reasons.join(' | ')); } finally { t.restore(); } };
   await check({ ...QX, sz: 0.0095 }, {}, /loss at SL/); // 0.0095*299 = 2.84 + fees ~0.34 -> > $3
   await check(QX, { trades: [{ order_timestamp: NOW / 1000 - 3600, realised_pnl_change: '-49', fee: '0.5', symbol: 'US100-USD' }] }, /weekly/);
-  await check(QX, { accounts: [{ account_id: ACCT, equity: '300', available_balance: '20' }] }, /free collateral/);
+  await check(QX, { balance: { deposit: 300, realised_pnl: 0, unrealised_pnl: 0, net_funding: 0, available_balance: 20 } }, /free collateral/);
   await check({ ...QX, px: 29601.5 }, {}, /cross/);
   await check({ ...QX, sd: 'short', px: 29598.2, sl: 29900, tp: 29100 }, {}, /cross/);
   await check({ ...QX, ref: 29000 }, {}, /moved/);
@@ -179,7 +187,7 @@ test('live send path against the MOCK socket: leverage 1x first, entry ACK must 
     assert.equal(r[0].status, 'placed');
     const lev = t.restLog.find((x) => x.method === 'POST'); assert.equal(lev.path, '/user/leverage');
     const ws = sentWs(t.log).map((m) => m.type);
-    assert.deepEqual(ws.filter((x) => x !== 'subscribe' && x !== 'get_user_orders'), ['auth', 'auth', 'cancel_on_disconnect', 'add_order']);
+    assert.deepEqual(ws.filter((x) => x !== 'subscribe' && x !== 'get_user_orders'), ['auth', 'auth', 'get_user_leverage', 'cancel_on_disconnect', 'add_order']);
   } finally { t.restore(); }
   t = setup({ ackStops: false }, { AUTOTRADER_LIVE: '1', AUTOTRADER_ENABLED: '1' });
   try {
@@ -187,6 +195,13 @@ test('live send path against the MOCK socket: leverage 1x first, entry ACK must 
     assert.equal(r[0].status, 'failed');
     assert.ok(sentWs(t.log).some((m) => m.type === 'cancel_order' && m.params.order_id === 'oid-1'));
   } finally { t.restore(); }
+  for (const st of [{ leverageEcho: null, levStuck: 10 }, { leverageEcho: null, levStuck: 1 }]) { // REST body without leverage: the trade socket decides
+    t = setup(st, { AUTOTRADER_LIVE: '1', AUTOTRADER_ENABLED: '1' });
+    try {
+      const r = await processQueue(t.cfg, t.net, { queue: [QX], state: { dry: {}, live: {} }, stopExists: () => false, logFn: () => {}, journalFn: () => {} });
+      assert.equal(r[0].status, st.levStuck === 1 ? 'placed' : 'failed'); assert.equal(sentWs(t.log).some((m) => m.type === 'add_order'), st.levStuck === 1);
+    } finally { t.restore(); }
+  }
   t = setup({ leverageEcho: 5 }, { AUTOTRADER_LIVE: '1', AUTOTRADER_ENABLED: '1' });
   try {
     const r = await processQueue(t.cfg, t.net, { queue: [QX], state: { dry: {}, live: {} }, stopExists: () => false, logFn: () => {}, journalFn: () => {} });

@@ -6,7 +6,7 @@ import { WebSocketServer } from 'ws';
 import * as Q from '../src/qfex.js';
 import * as C from '../autotrader/core.js';
 import { processQueue } from '../autotrader/cli.js';
-import { fakeFetch, ACCT } from './qfex_mock.mjs';
+import { fakeFetch, ACCT, USER } from './qfex_mock.mjs';
 import { randHex } from './helpers.mjs';
 
 const state = { mark: 29600, bid: 29599, ask: 29601, orders: [], stops: [], positions: [] };
@@ -22,7 +22,8 @@ wss.on('connection', (sock, req) => {
     if (mds) { for (const s of m.symbols) { reply({ type: 'mark_price', symbol: s, price: String(state.mark) }); reply({ type: 'bbo', symbol: s, bid: [[String(state.bid), '1']], ask: [[String(state.ask), '1']] }); } return; }
     if (m.type === 'auth') { authed = m.params.hmac.signature === Q.signature(SEC, m.params.hmac.nonce, m.params.hmac.unix_ts); return reply(authed ? { authenticated: true } : { err: { error_code: 'PermissionDenied' } }); }
     if (!authed) return reply({ err: { error_code: 'PermissionDenied', incoming_message: m } });
-    if (m.type === 'subscribe') return m.params.channels.forEach((c) => reply({ subscribed: c }));
+    if (m.type === 'subscribe') return m.params.channels.forEach((c) => { reply({ subscribed: c });
+      if (c === 'balances') reply({ balance_response: { id: ACCT, user_id: USER, deposit: 300, realised_pnl: 0, order_margin: 0, position_margin: 0, unrealised_pnl: 0, net_funding: 0, available_balance: 300, fees: 0 } }); });
     if (m.type === 'get_user_orders') return reply({ all_orders_response: { orders: state.orders, twaps: [] } });
     reply({ err: { error_code: 'PermissionDenied', message: 'e2e server refuses all trading messages', incoming_message: m } });
   });

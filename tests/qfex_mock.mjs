@@ -2,7 +2,8 @@
 import { readFileSync } from 'node:fs';
 import { EventEmitter } from 'node:events';
 export const FXQ = (f) => JSON.parse(readFileSync(new URL('./fixtures/' + f, import.meta.url)));
-export const ACCT = '0b7c6a7e-1d2f-4c3b-9a8e-5f6d7c8b9a01', OTHER = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+export const ACCT = '0b7c6a7e-1d2f-4c3b-9a8e-5f6d7c8b9a01', USER = '9a8b7c6d-5e4f-4a3b-8c2d-1e0f9a8b7c6d';
+// Shapes below mirror what mainnet returned for a single-account key on 2026-10-21.
 
 // state: { mark, bid, ask, orders[], stops[], authOk, ackStops (echo SL/TP), noStopsSnapshot, entryStatus }
 export function fakeWsClass(state, log) {
@@ -18,7 +19,9 @@ export function fakeWsClass(state, log) {
       }
       const p = m.params || {};
       if (m.type === 'auth') return this.reply(state.authOk === false ? { err: { error_code: 'PermissionDenied', message: 'bad hmac' } } : { authenticated: true });
+      if (m.type === 'get_user_leverage') return this.reply({ user_leverage_response: [{ id: 'x', symbol: p.symbol, initial_margin: 1, maintenance_margin: 0.5, leverage: String(state.levNow ?? 10) }, { id: 'y', symbol: 'AAPL-USD', leverage: '10' }] });
       if (m.type === 'subscribe') { for (const ch of p.channels) { this.reply({ subscribed: ch });
+        if (ch === 'balances' && !state.noBalance) this.reply({ balance_response: { id: state.wsAccount || ACCT, user_id: state.wsUser || USER, deposit: 300, realised_pnl: 0, order_margin: 0, position_margin: 0, unrealised_pnl: 0, net_funding: 0, available_balance: 300, fees: 0 } });
         if (ch === 'stop_orders' && !state.noStopsSnapshot) for (const st of state.stops || []) this.reply({ stop_order_response: st }); } return; }
       if (m.type === 'get_user_orders') return this.reply({ all_orders_response: { orders: state.orders || [], twaps: [] } });
       if (m.type === 'cancel_on_disconnect') return;
@@ -32,7 +35,7 @@ export function fakeWsClass(state, log) {
     close() { this.closed = true; }
   };
 }
-// REST: state.accounts, state.positions, state.balance, state.trades, state.fees, state.otherAccountReadable, state.leverageEcho
+// REST: state.allAccountsKey, state.positions, state.balance, state.trades, state.fees, state.foreignReadable, state.leverageEcho, state.equitySeries
 export function fakeFetch(state, log) {
   return async (url, init = {}) => {
     const u = new URL(url), h = init.headers || {}, method = init.method || 'GET';
@@ -41,12 +44,13 @@ export function fakeFetch(state, log) {
     if (u.pathname === '/refdata') return json(200, FXQ(u.searchParams.get('ticker') === 'AAPL-USD' ? 'qfex_refdata_aapl.json' : 'qfex_refdata_us100.json'));
     if (!h['x-qfex-hmac-signature']) return json(401, { error: 'unauthenticated' });
     const acct = h['x-qfex-requested-account-id'] || null;
-    if (acct && acct !== (state.ownAccount || ACCT) && !state.otherAccountReadable) return json(403, { error: 'forbidden' });
-    if (u.pathname === '/user/subaccounts/balance') return json(200, { accounts: state.accounts || [{ account_id: ACCT, equity: '300', available_balance: '300', is_master: false }] });
+    if (acct && acct !== (state.ownAccount || ACCT) && !state.foreignReadable) return json(401, 'invalid HMAC signature');
+    if (u.pathname === '/user/subaccounts/balance') return state.allAccountsKey ? json(200, { accounts: [{ account_id: ACCT, equity: 300, available_balance: 300, is_master: false }] }) : json(403, 'insufficient API key permissions');
+    if (u.pathname === '/user/account-equity') return json(200, { duration: '1d', interval_minutes: 60, data: (state.equitySeries || [300]).map((v, i) => ({ window_start: new Date(i * 3600e3).toISOString(), value: v })) });
     if (u.pathname === '/user/positions') return json(200, { positions: state.positions || [], balance: state.balance || { available_balance: '300', deposit: '300', realised_pnl: '0', unrealised_pnl: '0', net_funding: '0' } });
     if (u.pathname === '/user/trade') return json(200, { data: state.trades || [], count: (state.trades || []).length });
     if (u.pathname === '/user/fees') return json(200, { fees: state.fees || {} });
-    if (u.pathname === '/user/leverage' && method === 'POST') return json(200, { leverage: state.leverageEcho ?? JSON.parse(init.body).leverage });
+    if (u.pathname === '/user/leverage' && method === 'POST') { state.levNow = state.levStuck ?? JSON.parse(init.body).leverage; return json(200, state.leverageEcho === undefined ? { leverage: JSON.parse(init.body).leverage } : state.leverageEcho === null ? {} : { leverage: state.leverageEcho }); }
     return json(404, { error: 'not found' });
   };
 }

@@ -79,7 +79,8 @@ export function authMessage(c, { nonce = newNonce(), unixTs = Math.floor(Date.no
 }
 
 // ---------------------------------------------------------------- trade-only guards
-const REST_GET = [/^\/user\/positions$/, /^\/user\/trade$/, /^\/user\/subaccounts\/balance$/, /^\/user\/fees$/, /^\/refdata$/,
+// /user/subaccounts/balance is only called as a scope probe: a single-account key gets 403 there (verified on mainnet).
+const REST_GET = [/^\/user\/positions$/, /^\/user\/trade$/, /^\/user\/subaccounts\/balance$/, /^\/user\/account-equity$/, /^\/user\/fees$/, /^\/refdata$/,
   /^\/md\/contracts$/, /^\/md\/orderbook\/[A-Z0-9-]+$/];
 const REST_POST = [/^\/user\/leverage$/];
 export function assertQfexRest(base, method, path) {
@@ -146,7 +147,12 @@ export function classify(msg) {
   if (!msg || typeof msg !== 'object') return { kind: 'other', msg };
   if (msg.err) return { kind: 'err', err: msg.err };
   if (msg.error_code) return { kind: 'err', err: msg };
+  // shapes confirmed on mainnet (2026-10-21): {"authenticated":true}, {"subscribed":"<channel>"},
+  // {"all_orders_response":{"orders":[],"twaps":[]}}, {"balance_response":{id, user_id, deposit, ..., available_balance, fees}},
+  // {"user_leverage_response":[{id, symbol, initial_margin, maintenance_margin, leverage:"10"}]}
   if (msg.authenticated !== undefined) return { kind: 'auth', ok: msg.authenticated === true };
+  if (msg.balance_response) return { kind: 'balance', balance: msg.balance_response };
+  if (msg.user_leverage_response) return { kind: 'leverage', rows: [].concat(msg.user_leverage_response) };
   if (msg.type === 'authenticated') return { kind: 'auth', ok: true };
   if (msg.order_response) return { kind: 'order', order: msg.order_response };
   if (msg.all_orders_response) return { kind: 'orders', orders: msg.all_orders_response.orders || [] };
@@ -255,7 +261,7 @@ export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
     wsRead: async ({ stopsMs = defStopsMs } = {}) => {
       const s = await openSession(b, creds, { WS });
       try {
-        s.send({ type: 'subscribe', params: { channels: ['stop_orders'] } });
+        s.send({ type: 'subscribe', params: { channels: ['stop_orders', 'balances'] } });
         s.send({ type: 'get_user_orders', params: { limit: 200, offset: 0 } });
         const o = await s.wait((c) => c.kind === 'orders' || (c.kind === 'err' && c.err.incoming_message && c.err.incoming_message.type === 'get_user_orders'), 10000, 'open orders');
         if (o.kind === 'err') throw new Error('QFEX get_user_orders: ' + o.err.error_code);
@@ -263,7 +269,8 @@ export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
         const subscribed = all.some((c) => c.kind === 'subscribed' && /stop/.test(String(c.channel)));
         const stops = [...all.filter((c) => c.kind === 'stop').map((c) => c.stop), ...all.filter((c) => c.kind === 'stops').flatMap((c) => c.stops)];
         const latest = new Map(); for (const st of stops) latest.set(String(st.stop_order_id), st);
-        return { orders: o.orders, stops: [...latest.values()], stopsSubscribed: subscribed };
+        const bal = all.filter((c) => c.kind === 'balance').pop();
+        return { orders: o.orders, stops: [...latest.values()], stopsSubscribed: subscribed, balance: bal ? bal.balance : null };
       } finally { s.close(); }
     },
     // reqs: [{label, kind:'rest'|'ws', d}] -> results; stops at the first failure (never place an entry after a failed step).
@@ -274,7 +281,17 @@ export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
           if (r.kind === 'rest') {
             const res = await rest(b, r.d.method, r.d.path, { body: r.d.body, creds });
             let err = res.ok ? null : `HTTP ${res.status} ${JSON.stringify(res.body).slice(0, 200)}`;
-            if (!err && r.d.path === '/user/leverage' && Number(res.body.leverage) !== 1) err = 'leverage is ' + res.body.leverage + ', not 1x';
+            if (!err && r.d.path === '/user/leverage' && res.body && res.body.leverage != null && Number(res.body.leverage) !== 1) err = 'leverage is ' + res.body.leverage + ', not 1x';
+            if (!err && r.d.path === '/user/leverage') { // confirm on the trade socket (authoritative, shape verified): the symbol must read 1x
+              const sym = JSON.parse(r.d.body).symbol;
+              if (!s) { s = await openSession(b, creds, { WS }); s.send({ type: 'subscribe', params: { channels: ['order_responses'] } }); }
+              s.send({ type: 'get_user_leverage', params: { symbol: sym } });
+              let lv; try { lv = await s.wait((c) => c.kind === 'leverage' || (c.kind === 'err' && c.err.incoming_message && c.err.incoming_message.type === 'get_user_leverage'), 10000, 'leverage'); }
+              catch (e) { lv = null; }
+              const row = lv && lv.kind === 'leverage' ? lv.rows.find((x) => x.symbol === sym) : null;
+              if (!row) err = 'could not confirm 1x leverage on ' + sym;
+              else if (Number(row.leverage) !== 1) err = `leverage on ${sym} is ${row.leverage}x, not 1x`;
+            }
             out.push({ label: r.label, status: res.status, ok: !err, error: err, body: res.body }); if (err) break; continue;
           }
           if (!s) { s = await openSession(b, creds, { WS }); s.send({ type: 'subscribe', params: { channels: ['order_responses'] } }); }

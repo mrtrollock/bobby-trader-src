@@ -8,6 +8,8 @@ ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
 FX = ROOT / "tests" / "fixtures"
 FAKE = "0x" + "ab" * 20
+for _k in [k for k in os.environ if k.startswith("QFEX_") or k == "BOBBY_QFEX"]:
+    os.environ.pop(_k)  # never touch a real QFEX key from the caller's environment
 os.environ.update(BOBBY_ACCOUNT_ADDRESS=FAKE, BOBBY_TXFLOW_ADDRESS="", BOBBY_HL_ADDRESS="")
 import briefing as B  # noqa: E402
 

@@ -52,7 +52,7 @@ export function loadConfig(env = process.env) {
   cfg.bases.qfex = Q.bases(testnet);
   return cfg;
 }
-export const secretsOf = (cfg) => [cfg.arcus && cfg.arcus.key, cfg.hl && cfg.hl.key, cfg.qfex && cfg.qfex.secret, cfg.qfex && cfg.qfex.pub].filter(Boolean);
+export const secretsOf = (cfg) => [cfg.arcus && cfg.arcus.key, cfg.hl && cfg.hl.key, cfg.qfex && cfg.qfex.secret, cfg.qfex && cfg.qfex.pub, cfg.qfex && cfg.qfex.accountId].filter(Boolean);
 
 export function realNet(cfg) {
   return {
@@ -94,35 +94,36 @@ export async function verifyKeys(cfg, net) {
 }
 
 // QFEX has no endpoint that lists a key's permissions, and the only withdraw-capable paths live on the funding service,
-// which this code never calls. What CAN be detected without side effects: whether the key reaches more than one account.
-// Withdraw permission ("deposit_withdraw") only exists on keys with "All accounts" access, so a key that can read a
-// second account is refused. A key on an account with no sibling cannot be distinguished: then the user's explicit
-// QFEX_KEY_SINGLE_ACCOUNT_ACK=1 (single account, execute + view only, withdraw unticked) is required. It is required always.
+// which this code never calls. Detected without side effects (behaviour confirmed on mainnet 2026-10-21):
+//  * the cross-account listing GET /user/subaccounts/balance answers 403 for a single-account key: POSITIVE evidence of
+//    single-account scope. "deposit_withdraw" only exists on "All accounts" keys, so a 200 there is refused.
+//  * a request for a random foreign account id must be refused (401/403/404).
+//  * the trade socket's balance snapshot carries {id, user_id}; id == user_id is the MAIN account (builder/wallet keys,
+//    which can withdraw to registered addresses, are main-account keys) -> refused unless QFEX_ALLOW_MAIN_ACCOUNT=1.
+// QFEX_KEY_SINGLE_ACCOUNT_ACK=1 (single account, execute + view only, withdraw unticked) is required on top.
 export async function verifyQfex(cfg, net) {
   const q = cfg.qfex;
   if (!q.ack) throw new Error('QFEX: set QFEX_KEY_SINGLE_ACCOUNT_ACK=1 only after confirming the API key is scoped to ONE specific account with ' +
     'only "Execute orders" + view permissions and "Deposit and withdraw" unticked (QFEX cannot report key permissions)');
-  const lst = await net.qfex.get('/user/subaccounts/balance', null, { accountId: null }).catch((e) => { throw new Error('QFEX: API key rejected or no read permission (' + e.message + ')'); });
-  const accounts = (lst && lst.accounts) || [];
-  if (!q.accountId && accounts.length > 1) throw new Error('QFEX: the key sees ' + accounts.length + ' accounts; set QFEX_ACCOUNT_ID to the UUID of the trading (sub)account');
-  const target = q.accountId || (accounts[0] || {}).account_id || null;
-  if (q.accountId && accounts.length && !accounts.some((a) => a.account_id === q.accountId)) throw new Error('QFEX: QFEX_ACCOUNT_ID is not one of this key\'s accounts');
-  // Builder/wallet-registered keys (the only kind that can withdraw without "All accounts") are restricted to the MAIN
-  // account, so a key that trades a SUBACCOUNT cannot be one of them. Refuse the main account when the API says it is.
-  const tRow = accounts.find((a) => a.account_id === target);
-  if (tRow && tRow.is_master === true && !q.allowMain) throw new Error('QFEX: the configured account is the MAIN account; trade from a dedicated subaccount ' +
-    '(create one, move ~$300 to it in the QFEX UI, scope the key to it and set QFEX_ACCOUNT_ID). Override: QFEX_ALLOW_MAIN_ACCOUNT=1');
   const own = await net.qfex.getRaw('/user/positions', null, { accountId: q.accountId });
-  if (!own.ok) throw new Error(`QFEX: key cannot read the configured account (HTTP ${own.status}); check QFEX_ACCOUNT_ID and the view permissions`);
-  const others = accounts.map((a) => a.account_id).filter((id) => id && id !== target);
-  for (const id of others) {
-    const r = await net.qfex.getRaw('/user/positions', null, { accountId: id });
-    if (r.ok) throw new Error('QFEX: this API key can read more than one account ("All accounts" scope, which is the only scope that can carry ' +
-      'withdraw permission). Create a key scoped to ONE specific account with execute + view only.');
-    if (![401, 403, 404].includes(r.status)) throw new Error(`QFEX: could not verify the key scope (HTTP ${r.status} on another account); aborting on doubt`);
-  }
-  return { key: q.pub.slice(0, 12) + '…', account: (target ? target.slice(0, 8) + '…' : 'primary') + (tRow && tRow.is_master === false ? ' (subaccount)' : ''), scope: others.length ? 'single account (verified: ' + others.length + ' other account(s) refused)' : 'single account (acknowledged, not detectable)',
-    permissions: 'withdraw/funding never called; ack=1' };
+  if (own.status === 401) throw new Error('QFEX: API key rejected (HTTP 401: wrong key pair, or QFEX_ACCOUNT_ID is not the key\'s account)');
+  if (!own.ok) throw new Error(`QFEX: key cannot read positions of its account (HTTP ${own.status}); tick "View positions"`);
+  const cross = await net.qfex.getRaw('/user/subaccounts/balance', null, { accountId: null });
+  if (cross.ok) throw new Error('QFEX: this API key can list all your accounts ("All accounts" scope, the only scope that can carry withdraw ' +
+    'permission). Create a key scoped to ONE specific account with execute + view only.');
+  if (cross.status !== 403) throw new Error(`QFEX: could not verify the key scope (cross-account listing answered HTTP ${cross.status}); aborting on doubt`);
+  const foreign = await net.qfex.getRaw('/user/positions', null, { accountId: globalThis.crypto.randomUUID() });
+  if (foreign.ok) throw new Error('QFEX: the key accepted a foreign account id; refusing');
+  if (![401, 403, 404].includes(foreign.status)) throw new Error(`QFEX: could not verify the key scope (foreign account answered HTTP ${foreign.status}); aborting on doubt`);
+  const ws = await net.qfex.wsRead(); // also proves the trade-socket authentication
+  const b = ws.balance;
+  if (!b || !b.id || !b.user_id) throw new Error('QFEX: could not read the account identity from the trade socket; aborting on doubt');
+  if (q.accountId && b.id !== q.accountId) throw new Error('QFEX: the key trades a different account than QFEX_ACCOUNT_ID');
+  const isMain = b.id === b.user_id;
+  if (isMain && !q.allowMain) throw new Error('QFEX: the key is scoped to the MAIN account; trade from a dedicated subaccount ' +
+    '(create one, move funds to it in the QFEX UI, scope the key to it and set QFEX_ACCOUNT_ID). Override: QFEX_ALLOW_MAIN_ACCOUNT=1');
+  return { key: 'configured', account: isMain ? 'main account (override)' : 'subaccount', websocket: 'authenticated',
+    scope: 'single account (verified: cross-account listing 403, foreign account ' + foreign.status + ')', permissions: 'view ok; withdraw/funding never called; ack=1' };
 }
 
 // ---------------------------------------------------------------- proposals
@@ -182,13 +183,15 @@ async function qfexTrades(net, cfg, fromMs) {
 }
 async function qfexState(cfg, net, { sinceMs } = {}) {
   const q = cfg.qfex;
-  const lst = await net.qfex.get('/user/subaccounts/balance', null, { accountId: q.accountId });
-  const accts = (lst && lst.accounts) || [];
-  const a = (q.accountId ? accts.find((x) => x.account_id === q.accountId) : accts.find((x) => x.is_master)) || (accts.length === 1 ? accts[0] : null);
   const pb = await net.qfex.get('/user/positions', null, { accountId: q.accountId });
   const bal = (pb && pb.balance) || {};
-  const equity = a && a.equity != null ? Number(a.equity) : Number(bal.deposit || 0) + Number(bal.realised_pnl || 0) + Number(bal.unrealised_pnl || 0) + Number(bal.net_funding || 0);
-  const free = a && a.available_balance != null ? Number(a.available_balance) : Number(bal.available_balance || 0);
+  // equity = deposit + realised + unrealised + funding (the balance has no equity field); cross-checked against the latest
+  // point of GET /user/account-equity and the lower of the two is used (conservative for the 1 % rule)
+  let equity = Number(bal.deposit || 0) + Number(bal.realised_pnl || 0) + Number(bal.unrealised_pnl || 0) + Number(bal.net_funding || 0);
+  try { const ae = await net.qfex.get('/user/account-equity', { duration: '1d' }, { accountId: q.accountId });
+    const last = ((ae && ae.data) || []).filter((x) => Number.isFinite(Number(x.value))).pop();
+    if (last && Number(last.value) < equity) equity = Number(last.value); } catch { /* optional */ }
+  const free = Number(bal.available_balance || 0);
   const positions = ((pb && pb.positions) || []).filter((p) => Number(p.position) !== 0).map((p) => ({ market: p.symbol, side: Number(p.position) > 0 ? 'long' : 'short',
     size: Math.abs(Number(p.position)), entry: Number(p.average_price), mark: null, upnl: Number(p.unrealised_pnl || 0), leverage: Number(p.leverage), raw: p }));
   const ws = await net.qfex.wsRead();

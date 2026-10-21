@@ -15,8 +15,10 @@ TxFlow stays manual (web app). Runs on this box with Node 20; reuses the web app
     `ARCUS_ACCOUNT_INDEX` (or all subaccounts), with **no extra `permissions`** (e.g. `withdraw` ⇒ abort).
   * Hyperliquid: `POST /info {type:"userRole", user:<agent>}` must be `agent` of `HL_ACCOUNT_ADDRESS`;
     the main account key itself is refused.
-  * QFEX: see [QFEX](#qfex) — `QFEX_KEY_SINGLE_ACCOUNT_ACK=1` is mandatory, a key that can read a second account
-    ("All accounts" scope, the only scope that can hold `deposit_withdraw`) is refused, and so is the main account.
+  * QFEX: see [QFEX](#qfex) — `QFEX_KEY_SINGLE_ACCOUNT_ACK=1` is mandatory; the cross-account listing
+    `GET /user/subaccounts/balance` must answer **403** (single-account key; a 200 means "All accounts", the only scope
+    that can hold `deposit_withdraw`, and is refused); a random foreign account id must be refused; the trade socket must
+    authenticate and its balance snapshot must name the configured account and NOT the main account (`id == user_id`).
 * **Never moves funds.** withdraw / transfer / vault actions are refused by `assertTradeOnly` in the shared signers
   and network layer (`src/risk.js`), and no code path builds them. QFEX: `assertQfexRest` only allows a handful of GET
   reads + `POST /user/leverage` on `api.qfex.*` (the funding host `banker.qfex.*` is never contacted), and
@@ -96,7 +98,8 @@ Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses
 * **Auth**: HMAC-SHA256 of `"<nonce>:<unix_ts>"` with the secret key; REST headers `x-qfex-public-key`,
   `x-qfex-hmac-signature`, `x-qfex-nonce`, `x-qfex-timestamp` (+ `x-qfex-requested-account-id`); WebSocket `auth`
   message with the same HMAC (+ `account_id`). No builder code, no wallet (SIWE) sign-in, no JWT is ever used.
-* **Reads**: `GET /user/subaccounts/balance` (equity, free), `/user/positions`, `/user/trade` (weekly realized loss =
+* **Reads** (all work with a single-account key): `/user/positions` (balance: equity = deposit + realised + unrealised +
+  funding, capped by the latest `/user/account-equity` point; free = `available_balance`), `/user/trade` (weekly realized loss =
   `realised_pnl_change − fee`, conservative), `/user/fees`, public `/refdata`; mark price + best bid/ask from the MDS
   WebSocket; open orders (`get_user_orders`) and stop orders (`stop_orders` subscription) from the trade WebSocket.
 * **Entry** (in this order, stops at the first failure): `POST /user/leverage {symbol, leverage:1}` → must answer `1`;
@@ -132,6 +135,6 @@ Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses
    chmod 600 env file outside the repo, then `node autotrader/cli.js verify` and a dry-run `once`.
 
 Never create keys through "builder wallet registration" / wallet sign-in: those keys are main-account keys that can withdraw
-to registered addresses. The bot refuses the main account (`is_master`) for that reason. QFEX cannot report a key's
+to registered addresses. The bot refuses the main account (balance snapshot `id == user_id`) for that reason. QFEX cannot report a key's
 permissions, so withdraw capability is not directly detectable; what is enforced: the ack, single-account scope (a key that
 can read another of your accounts is refused), subaccount only, and a code path that cannot reach any funding endpoint.
