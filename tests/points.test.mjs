@@ -39,7 +39,7 @@ test('points.js: countdown format, target = next drop else window end, rolls ove
 import { pointsText, lastDropped } from '../src/points.js';
 test('points.js: points earned cells (auto / manual tag, pending, not entered yet, rebates)', () => {
   const now = 1792600000, P = { kind: 'points' };
-  assert.equal(pointsText({ points: 1234.56, pointsSrc: 'manual' }, P, now), '1,234.6 · ✍ manual');
+  assert.equal(pointsText({ points: 1234.56, pointsSrc: 'manual' }, P, now), '1,234.56 · ✍ manual');
   assert.equal(pointsText({ points: 7, pointsSrc: 'auto' }, P, now), '7 · auto');
   assert.equal(pointsText({ points: 0, pointsSrc: 'manual' }, P, now), '0 · ✍ manual'); // an entered 0 stays 0
   assert.equal(pointsText({ pointsState: 'missing' }, P, now), 'not entered yet');
@@ -49,4 +49,10 @@ test('points.js: points earned cells (auto / manual tag, pending, not entered ye
   assert.equal(pointsText({ points: null }, { kind: 'rebates' }, now), 'rebates, not points');
   assert.equal(pointsText({ rebates: 2.5, rebatesSrc: 'manual' }, { kind: 'rebates' }, now), '$2.50 · ✍ manual rebates');
   assert.equal(lastDropped({ history: [{ current: true }, { current: false, label: 'Week 2' }] }).label, 'Week 2');
+});
+test('points.js: Extended (ended program) has no countdown; small Variational values keep their decimals', () => {
+  assert.equal(target({ kind: 'ended', window: { start: 0, end: 1e10, drop: null }, upcoming: [] }, 100), null);
+  assert.equal(pointsText({ current: true, pointsState: 'pending' }, { kind: 'ended' }, 100), 'no weekly drops (ended)');
+  assert.equal(pointsText({ points: 0.146345, pointsSrc: 'manual' }, { kind: 'points' }, 100), '0.146345 · ✍ manual');
+  assert.equal(pointsText({ points: 4064.9, pointsSrc: 'manual' }, { kind: 'points' }, 100), '4,064.9 · ✍ manual');
 });

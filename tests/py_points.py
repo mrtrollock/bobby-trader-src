@@ -128,7 +128,7 @@ d5 = PT.update(L5, ACT5, M5, NOW)
 P5 = {p["id"]: p for p in d5["platforms"]}
 t5 = P5["txflow"]
 assert [(x["label"], x["points"], x["pointsSrc"], x["pointsState"], x["ptsPer1k"]) for x in t5["history"]] == [("Epoch 2", None, None, "pending", None), ("Epoch 1", 300.0, "manual", "entered", 150.0)], t5["history"]
-assert t5["earned"] == {"points": 300.0, "weeks": 1, "volume": 2000.0, "ptsPer1k": 150.0, "src": ["manual"], "rebates": None} and t5["pointsSource"].startswith("manual")
+assert {k: t5["earned"][k] for k in ("points", "weeks", "volume", "ptsPer1k", "src", "rebates", "totalSrc")} == {"points": 300.0, "weeks": 1, "volume": 2000.0, "ptsPer1k": 150.0, "src": ["manual"], "rebates": None, "totalSrc": "sum"} and t5["pointsSource"].startswith("manual")
 assert P5["qfex"]["current"]["points"] == 40.0 and P5["qfex"]["current"]["ptsPer1k"] == 8.0
 assert P5["entropy"]["history"][0]["rebates"] == 1.25 and P5["entropy"]["history"][0]["pointsState"] == "rebates" and P5["entropy"]["earned"]["rebates"] == 1.25
 assert P5["arcus"]["earned"]["points"] is None and "no points or rewards endpoint" in P5["arcus"]["pointsSource"]
@@ -141,4 +141,21 @@ assert {p["id"]: p for p in d6["platforms"]}["qfex"]["current"]["points"] == 40.
 d7 = PT.update({}, {"txflow": ACT5["txflow"]}, {}, NOW)
 assert {p["id"]: p for p in d7["platforms"]}["txflow"]["history"][1]["pointsState"] == "missing"
 assert PT.update({}, {}, {"arcus": {"pointsTotal": 1234}}, NOW)["platforms"][0]["earned"]["points"] == 1234.0
+# bonus / retro / profile (persist in the ledger); Extended: tracking only, weekly distributions ended, Tue-Mon epochs
+L8 = {}
+M8 = {"variational": {"weeks": {"2026-10-08": {"points": 2.907816}}, "bonus": [{"label": "Swap Market Competition", "points": 0.358827, "date": "2026-09-24"}, {"label": "Retro", "points": 497.4, "date": "2025-01-29"}],
+                      "profile": {"rank": "3014", "total": 538.77}},
+      "txflow": {"retro": {"label": "Retroactive (pre-Season 1)", "points": None}},
+      "extended": {"weeks": {"75": {"points": 0}, "66": {"points": 6.3}}, "pointsTotal": 4064.9}}
+P8 = {p["id"]: p for p in PT.update(L8, {}, M8, NOW)["platforms"]}
+v8 = P8["variational"]
+assert v8["history"][0]["label"] == "Week 44" and v8["history"][0]["points"] == 2.907816 and [b["label"] for b in v8["bonus"]] == ["Swap Market Competition", "Retro"]
+assert v8["earned"]["points"] == round(2.907816 + 0.358827 + 497.4, 6) and v8["earned"]["weeklyPoints"] == 2.907816 and v8["earned"]["bonusPoints"] == 497.758827 and v8["profile"]["rank"] == "3014"
+assert P8["txflow"]["retro"] == {"label": "Retroactive (pre-Season 1)", "points": None, "note": None}
+x8 = P8["extended"]
+assert x8["tracking"] and x8["kind"] == "ended" and [(h["label"], h["points"]) for h in x8["history"]] == [("Epoch 75", 0.0), ("Epoch 66", 6.3)]
+assert x8["history"][0]["start"] == U(2026, 9, 29) and x8["earned"]["points"] == 4064.9 and x8["earned"]["totalSrc"] == "dashboard" and x8["earned"]["sum"] == 6.3
+# removed from the manual file -> still in the ledger
+P9 = {p["id"]: p for p in PT.update(L8, {}, {}, NOW + 86400)["platforms"]}
+assert len(P9["variational"]["bonus"]) == 2 and P9["variational"]["history"][0]["points"] == 2.907816 and P9["txflow"]["retro"]["label"].startswith("Retro") and P9["variational"]["profile"]["rank"] == "3014"
 print(json.dumps({"ok": True}))

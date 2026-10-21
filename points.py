@@ -16,6 +16,11 @@ Schedules (primary sources, checked 2026-10-21):
   entropy      no points; USDC fee rebates, "distributions occur bi-weekly" (no day/time published).
                docs.entropy.io/about-entropy/referrals
   qfex         Season 0 announced (CEO post 2026-10-07), no schedule/rules published.
+  extended     TRACKING ONLY (not farmed). Weekly epochs Tuesday -> Monday (page dates; Tue 00:00 UTC assumed); weekly distributions have ENDED (docs:
+               "as of 06.10.2026, 69,235,805 of 70 million points distributed"; last weekly = Epoch 75, Sep 29 - Oct 5);
+               a final distribution follows the ongoing competition (date not published).
+               docs.extended.exchange/extended-resources/points-program. Account data (volume/PnL/points) is only
+               available with an API key (api.docs.extended.exchange), which we do not have or request -> manual.
 
 Ledger (git-ignored, chmod 600) points_ledger.json: {"v": 1, "weeks": {pf: {"<window start unix>": row}}, "cov": {pf: unix}}.
 Manual entries (git-ignored) points_manual.json, see points_manual.example.json: per platform "equity" (balance for
@@ -28,10 +33,10 @@ from zoneinfo import ZoneInfo
 
 UTC, ET = timezone.utc, ZoneInfo("America/New_York")
 DAY = 86400
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended"}
 VARIATIONAL_NEXT_DROP = "https://omni.variational.io/api/points/next_drop_ts"
-HISTORY_KEEP = 26
+HISTORY_KEEP = 60
 # Where the points numbers come from. Checked 2026-10-21: no documented API exposes a user's points on any platform, so
 # points are entered by hand (points_manual.json) and kept in the private points ledger. activity[pf]["points"] =
 # {window_start: points} is the hook for an official source if one appears (shown as "auto").
@@ -40,6 +45,7 @@ POINTS_SRC = {
     "txflow": "manual: the TxFlow API (docs.txflow.com) has no points query (only referral rewards); points are shown on the TxFlow Points dashboard",
     "variational": "manual: Variational documents no points API; the Omni points page needs a signed-in session",
     "qfex": "manual: the QFEX API (api.qfex.com/openapi.yaml) has no points or season endpoint (only referral rewards); Season 0 points are not published yet",
+    "extended": "manual: Extended's points (GET /api/v1/user/rewards/earned) and account volume/PnL are only readable with an Extended API key, which Bobby does not have and does not request (tracking only)",
     "entropy": "rebates, not points: Entropy pays USDC/HYPE fee rebates every 2 weeks (claimable on the Entropy profile, no API); enter them as \"rebates\" by week",
 }
 KEEP = ("points", "pointsSrc", "rebates", "rebatesSrc")  # survive a recompute of the week from fills
@@ -63,7 +69,7 @@ SCHED = {
         "sources": [["Arcus blog: Introducing Arcus Points", "https://arcus.xyz/blog/introducing-arcus-points"],
                     ["@arcus_xyz: definitive points update (Wed 3PM)", "https://x.com/arcus_xyz/status/2106278949915681229"],
                     ["@arcus_xyz: Season 1 Week 2 complete", "https://x.com/arcus_xyz/status/2110449661031129363"]],
-        "unverified": ["activity window (assumed drop-to-drop)"],
+        "unverified": ["activity window (assumed drop-to-drop)", "drop time after 1 Nov: the Points Dashboard says 19:00 UTC every Wednesday, the blog says 3 PM ET (= 20:00 UTC in US winter time)"],
     },
     "txflow": {
         "kind": "points", "program": "Season 1 · 1.25M trader points / epoch", "unit": "Epoch",
@@ -98,6 +104,17 @@ SCHED = {
         "endsBy": None, "endsNote": None,
         "sources": [["Entropy docs: Referrals / rebates", "https://docs.entropy.io/about-entropy/referrals"]],
         "unverified": ["rebate distribution day/time"],
+    },
+    "extended": {
+        "kind": "ended", "tracking": True, "program": "Points program · weekly distributions ended (70M points total)", "unit": "Epoch",
+        "boundary": lambda k: _utc_midnight(date(2026, 9, 29) + timedelta(days=7 * k)),
+        "number": lambda k: k + 75, "drop": lambda s, e: None, "dropExact": False,
+        "rule": "Weekly distributions have ended (69,235,805 of 70M points distributed as of 6 Oct 2026; last weekly epoch: Epoch 75, Sep 29 - Oct 5). The final distribution takes place after the ongoing competition: date not published",
+        "window": "Epochs Tuesday → Monday (dates as shown on the Extended points page, e.g. Epoch 75 = Tue Sep 29 - Mon Oct 5, 2026); assumed Tuesday 00:00 UTC boundaries",
+        "endsBy": _utc_midnight(date(2026, 10, 6)), "endsNote": "Weekly distributions ended; one final distribution after the ongoing competition (date not published)",
+        "sources": [["Extended docs: Points Program", "https://docs.extended.exchange/extended-resources/points-program"],
+                    ["Extended API docs: Points (authenticated)", "https://api.docs.extended.exchange/#points"]],
+        "unverified": ["exact epoch boundary time (dates only on the points page)", "final distribution date"],
     },
     "qfex": {
         "kind": "not announced", "program": "Season 0 announced · schedule not announced", "unit": "Week",
@@ -174,17 +191,20 @@ def points_state(pf, w, row, now_ts):
     return "pending" if now_ts < due else "missing"
 
 
-def points_totals(pf, weeks, man):
-    """Season totals from the ledger (all stored weeks): points, the volume of the weeks that have points, pts/$1K; rebates."""
+def points_totals(pf, weeks, man, bonus=()):
+    """Totals from the ledger (all stored weeks + bonus entries): points, the volume of the weeks that have points,
+    pts/$1K (weekly points only, bonuses excluded); rebates. A "pointsTotal" read off the dashboard overrides the sum."""
     with_pts = [r for r in weeks.values() if r.get("points") is not None]
-    pts = round(sum(float(r["points"]) for r in with_pts), 4) if with_pts else None
+    wk = round(sum(float(r["points"]) for r in with_pts), 6) if with_pts else None
     vol = round(sum(float(r.get("volume") or 0) for r in with_pts), 2) if with_pts else None
+    bon = [float(b["points"]) for b in bonus if b.get("points") is not None]
+    pts = None if wk is None and not bon else round((wk or 0) + sum(bon), 6)
     reb = [float(r["rebates"]) for r in weeks.values() if r.get("rebates") is not None]
-    out = {"points": pts, "weeks": len(with_pts), "volume": vol, "ptsPer1k": per_1k(pts, vol),
-           "src": sorted({r.get("pointsSrc") or "manual" for r in with_pts}) or None,
-           "rebates": round(sum(reb), 4) if reb else None}
+    out = {"points": pts, "weeks": len(with_pts), "weeklyPoints": wk, "bonusPoints": round(sum(bon), 6) if bon else None, "volume": vol,
+           "ptsPer1k": per_1k(wk, vol) if vol else None, "src": sorted({r.get("pointsSrc") or "manual" for r in with_pts} | ({"manual"} if bon else set())) or None,
+           "rebates": round(sum(reb), 4) if reb else None, "totalSrc": "sum" if pts is not None else None}
     if man.get("pointsTotal") is not None:  # e.g. a season total read off the dashboard (overrides the sum)
-        out["points"], out["src"], out["ptsPer1k"] = float(man["pointsTotal"]), ["manual"], None
+        out["sum"], out["points"], out["src"], out["totalSrc"] = pts, float(man["pointsTotal"]), ["manual"], "dashboard"
     if man.get("rebatesTotal") is not None:
         out["rebates"] = float(man["rebatesTotal"])
     return out
@@ -193,6 +213,8 @@ def points_totals(pf, weeks, man):
 def update(ledger, activity, manual, now_ts):
     """Pure (tested). Mutates the ledger; returns the published "points" document."""
     ledger.setdefault("v", 1); ledger.setdefault("weeks", {}); ledger.setdefault("cov", {})
+    for x in ("bonus", "retro", "profile"):
+        ledger.setdefault(x, {})
     out = []
     for pf in ORDER:
         s, act, man = SCHED[pf], activity.get(pf) or {}, (manual or {}).get(pf) or {}
@@ -239,6 +261,19 @@ def update(ledger, activity, manual, now_ts):
                         row[f + "Src"] = "manual"
             row.setdefault("src", "manual"); row["updated"] = row.get("updated") or now_ts
             weeks[str(w["start"])] = row
+        # bonus entries (competitions, retroactive or off-schedule distributions), keyed by label; kept in the ledger
+        bon = ledger["bonus"].setdefault(pf, {})
+        for b in man.get("bonus") or []:
+            if b.get("label"):
+                bon[str(b["label"])] = {"label": str(b["label"]), "points": None if b.get("points") is None else float(b["points"]),
+                                        "date": b.get("date"), "note": b.get("note"), "src": "manual"}
+        # retroactive allocation still to come (e.g. TxFlow pre-Season 1): {"label", "points" (null = pending)}
+        if isinstance(man.get("retro"), dict):
+            r0 = man["retro"]
+            ledger["retro"][pf] = {"label": r0.get("label") or "Retroactive", "points": None if r0.get("points") is None else float(r0["points"]), "note": r0.get("note")}
+        # dashboard snapshot (rank, tier, totals as shown by the platform), latest one kept
+        if isinstance(man.get("profile"), dict):
+            ledger["profile"][pf] = man["profile"]
         # trim
         for key in sorted(weeks, key=int)[:-60]:
             weeks.pop(key)
@@ -257,7 +292,8 @@ def update(ledger, activity, manual, now_ts):
                          **{f: weeks[key].get(f) for f in ("volume", "fees", "funding", "pnl", "trades", "points", "pointsSrc", "rebates", "rebatesSrc", "makerShare", "src", "manual")},
                          "pointsState": points_state(pf, w, r, now_ts), "ptsPer1k": per_1k(r.get("points"), r.get("volume"))})
         hist = hist[:HISTORY_KEEP]
-        earned = points_totals(pf, weeks, man)
+        bonus = sorted(bon.values(), key=lambda b: str(b.get("date") or ""), reverse=True)
+        earned = points_totals(pf, weeks, man, bonus)
         has_data = act.get("fills") is not None or isinstance(act.get("week"), dict)
         conn = bool(man) or act.get("connected", has_data)
         status = act.get("status") or ("ok" if has_data else "manual" if man else "not connected")
@@ -266,7 +302,8 @@ def update(ledger, activity, manual, now_ts):
                     "unverified": s["unverified"], "connected": bool(conn), "status": status,
                     "dataNote": act.get("note") or man.get("note"), "window": {k: cur[k] for k in ("n", "label", "start", "end", "drop")},
                     "upcoming": [{k: w[k] for k in ("n", "label", "start", "end", "drop")} for w in upcoming],
-                    "current": next((h for h in hist if h["current"]), None), "history": hist, "earned": earned, "pointsSource": POINTS_SRC[pf],
+                    "current": next((h for h in hist if h["current"]), None), "history": hist, "earned": earned, "pointsSource": POINTS_SRC[pf], "tracking": bool(s.get("tracking")),
+                    "bonus": bonus, "retro": ledger["retro"].get(pf), "profile": ledger["profile"].get(pf),
                     **({"apiNextDrop": act["apiNextDrop"]} if act.get("apiNextDrop") else {})})
     cur = [p["current"] for p in out if p["current"]]
     tot = {f: round(sum(float(c.get(f) or 0) for c in cur), 4) for f in ("volume", "fees", "pnl")} if cur else None

@@ -20,6 +20,10 @@
       "1": {
         "points": 210.4
       }
+    },
+    "retro": {
+      "label": "Retroactive (pre-Season 1)",
+      "points": null
     }
   },
   "arcus": {
@@ -41,6 +45,24 @@
       "2026-10-19": {
         "points": 0
       }
+    }
+  },
+  "_help2": "Optional per platform: \"bonus\": [{\"label\", \"points\", \"date\" or \"note\"}] for competitions / retroactive / off-schedule distributions (listed in the given order, counted in the season total); \"retro\": {\"label\", \"points\": null = pending}; \"profile\": {\"asOf\", \"items\": [[label, value], ...]} = what the platform's points page shows (rank, tier, totals).",
+  "extended": {
+    "weeks": {
+      "75": {
+        "points": 0
+      }
+    },
+    "pointsTotal": 0,
+    "profile": {
+      "asOf": "2026-10-21",
+      "items": [
+        [
+          "Total rank",
+          "#1"
+        ]
+      ]
     }
   }
 }

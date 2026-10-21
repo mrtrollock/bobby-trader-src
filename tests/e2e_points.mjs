@@ -27,7 +27,8 @@ writeFileSync(join(bt, 'm.json'), JSON.stringify({ switches: { enabled: true, qf
   qfex: { equity: 100, deposit: 100, limits: { weeklyCap: 30, weeklyUsed: 12.5, weeklyRemaining: 17.5, dailyCap: 12, dailyUsed: 12.2, dailyRemaining: 0, maxTradeLoss: 0, halted: { scope: 'daily', until: dayEnd, reason: 'daily loss cap reached' } }, volume: { day: {}, week: { volume: 71500, fees: 1.5, pnl: -2.25, trades: 300 }, month: { volume: 71500 }, goal: 300000 } },
   txflow: { equity: 518.7, activity: { fills, fundings: [], from: now - 30 * 86400 } } }));
 const mon = (t) => { const d = Math.floor(t / 86400); return (d - ((d + 3) % 7)) * 86400; }; // Monday 00:00 UTC
-writeFileSync(join(bt, 'points_manual.json'), JSON.stringify({ variational: { equity: 250, weeks: {} }, txflow: { weeks: { [String(mon(now - 9 * 86400))]: { points: 250 } } } }));
+writeFileSync(join(bt, 'points_manual.json'), JSON.stringify({ variational: { equity: 250, weeks: {} }, txflow: { weeks: { [String(mon(now - 9 * 86400))]: { points: 250 } }, retro: { label: 'Retroactive (pre-Season 1)', points: null } },
+  extended: { weeks: { 66: { points: 6.3 } }, pointsTotal: 4064.9, profile: { asOf: 'test', items: [['Total rank', '#1,890']] } } }));
 const pyEnv = { ...process.env, BOBBY_VIEW_PASSPHRASE: PASS, BOBBY_ACCOUNT_ADDRESS: '', BOBBY_HL_ADDRESS: '', BOBBY_TXFLOW_ADDRESS: '', BOBBY_VARIATIONAL_ADDRESS: '', QFEX_API_PUBLIC_KEY: '', QFEX_API_SECRET_KEY: '', QFEX_ACCOUNT_ID: '' };
 execFileSync('python3', ['balances.py', '--mock', join(bt, 'm.json'), '--ledger', join(bt, 'l.json'), '--starts', join(bt, 's.json'), '--alerts', join(bt, 'ALERT'), '--out', 'dist/balances.enc.json', '--now', String(now)], { env: pyEnv });
 const srv = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1', '-d', 'dist'], { stdio: 'ignore' });
@@ -58,7 +59,7 @@ try {
   const rows = a.rows.join(' | ');
   console.log(JSON.stringify({ navOk, rows: a.rows, cds: [a.cds, b.cds], hist: a.hist, cards: a.cards.map((c) => c.slice(0, 220)), outside, logs }, null, 1));
   if (navOk.n !== 7 || !navOk.fits || !a.wide) fail.push('nav/mobile layout');
-  if (a.rows.length !== 6) fail.push('summary rows');
+  if (a.rows.length !== 7) fail.push('summary rows');
   if (!/Arcus \d*d? ?\d\d:\d\d:\d\d not connected/.test(rows) || !/Entropy .* not connected/.test(rows)) fail.push('not connected rows with countdown');
   if (!/TxFlow [\dd :]+ \$420 \+\$19\.86 \$0\.14/.test(rows)) fail.push('txflow week');
   if (!/QFEX [\dd :]+ \$71\.5K -\$2\.25 \$1\.50/.test(rows)) fail.push('qfex week');
@@ -69,8 +70,11 @@ try {
   const earned = await page.evaluate(() => [...document.querySelectorAll('#ptsearned tbody tr')].map((r) => r.innerText.replace(/\s+/g, ' ').trim()));
   console.log(JSON.stringify({ earned }, null, 1));
   const E = earned.join(' | ');
-  if (earned.length !== 5 || !/TxFlow Epoch \d+: 250 · ✍ manual 250 · ✍ manual 5,000( \||$)/.test(E) || !/Entropy .*rebates, not points/.test(E) || !/Arcus — not entered yet —/.test(E) || /\b0 · /.test(E)) fail.push('points earned table');
+  if (earned.length !== 6 || !/TxFlow Epoch \d+: 250 · ✍ manual 250 · ✍ manual 5,000( \||$)/.test(E) || !/Entropy .*rebates, not points/.test(E) || !/Arcus — not entered yet —/.test(E) || /\b0 · /.test(E)) fail.push('points earned table');
   const txCard = a.cards.find((c) => c.startsWith('🌊')) || '';
+  const exCard = a.cards.find((c) => c.startsWith('♟')) || '';
+  if (!/tracking only · not farmed/.test(exCard) || !/weekly distributions ended/.test(exCard) || !/Total rank #1,890/.test(exCard) || !/Extended Epoch 66: 6\.3 · ✍ manual 4,064\.9 · ✍ dashboard —/.test(E)) fail.push('extended');
+  if (!/Retroactive \(pre-Season 1\) pending/.test(txCard)) fail.push('txflow retro');
   if (!/Points this week pending/.test(txCard) || !/Points season total 250 over 1 week\(s\) · 5,000 pts \/ \$1K/.test(txCard)) fail.push('txflow card points');
   const cards = a.cards.join(' ');
   if (!/Season 1 · 250K points \/ week/.test(cards) || !/Next points drop/.test(cards) || !/Epoch ends/.test(cards) || !/every 2 weeks \(date not published\)/.test(cards) || !/Points drop not announced/.test(cards)) fail.push('cards');

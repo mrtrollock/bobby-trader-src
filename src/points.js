@@ -6,7 +6,7 @@ export const berlin = (t) => (t == null ? '—' : new Date(t * 1000).toLocaleStr
 const money = (x, d = 2) => (x == null || !Number.isFinite(Number(x)) ? '—' : (Number(x) < 0 ? '-$' : '$') + Math.abs(Number(x)).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }));
 const signed = (x) => (x == null || !Number.isFinite(Number(x)) ? '—' : Number(x) === 0 ? '$0.00' : (Number(x) < 0 ? '-$' : '+$') + Math.abs(Number(x)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 export const kusd = (x) => (x == null || !Number.isFinite(Number(x)) ? '—' : Math.abs(x) >= 1e6 ? '$' + (x / 1e6).toFixed(2) + 'M' : Math.abs(x) >= 1e3 ? '$' + (x / 1e3).toFixed(1) + 'K' : '$' + Number(x).toFixed(0));
-const pts = (x) => (x == null ? '—' : Number(x).toLocaleString('en-US', { maximumFractionDigits: 1 }));
+const pts = (x) => (x == null ? '—' : Number(x).toLocaleString('en-US', { maximumFractionDigits: Math.abs(Number(x)) < 10 && Number(x) % 1 ? 6 : 2 }));
 const eff = (x) => (x == null ? '—' : Number(x).toLocaleString('en-US', { maximumFractionDigits: Number(x) >= 100 ? 0 : 2 }));
 const srcTag = (src) => (src === 'auto' ? ' · auto' : src === 'manual' ? ' · ✍ manual' : '');
 // Points cell text for one week: the number (with auto / manual tag), or why there is none. Never shows 0 for "unknown".
@@ -15,6 +15,7 @@ export function pointsText(x, p, now = Date.now() / 1000) {
   if (p && p.kind === 'rebates') return x.rebates != null ? money(x.rebates) + srcTag(x.rebatesSrc || 'manual') + ' rebates' : 'rebates, not points';
   if (x.points != null) return pts(x.points) + srcTag(x.pointsSrc || 'manual');
   if (p && p.kind === 'not announced' && x.current) return 'no drop announced';
+  if (p && p.kind === 'ended' && x.current) return 'no weekly drops (ended)';
   if (x.pointsState === 'pending' || (x.current && x.pointsState !== 'missing')) {
     const due = x.drop != null ? x.drop : null;
     return due != null && due > now ? `pending (drop ${berlin(due)})` : x.current ? 'pending' : 'not entered yet';
@@ -37,6 +38,7 @@ export function liveWindow(p, now) {
 }
 // Countdown target: the next published drop that is still ahead, else the end of the live window.
 export function target(p, now) {
+  if (p.kind === 'ended') return null; // no more scheduled drops (Extended)
   const all = [p.window, ...(p.upcoming || [])].filter(Boolean);
   if (p.apiNextDrop && p.apiNextDrop > now) return { t: p.apiNextDrop, kind: 'drop' };
   const d = all.map((w) => w.drop).filter((t) => t != null && t > now).sort((a, b) => a - b)[0];
@@ -88,7 +90,7 @@ export function viewPoints(app, { h, doc, refresh }) {
     const last = lastDropped(p), e = p.earned || {}, reb = p.kind === 'rebates';
     return h('tr', { id: 'pe-' + p.id }, h('th', {}, p.name),
       h('td', {}, last ? h('span', {}, h('span', { class: 'muted' }, last.label + ': '), pointsText(last, p, now)) : '—'),
-      h('td', {}, reb ? (e.rebates != null ? money(e.rebates) + ' rebates' : 'rebates, not points') : e.points != null ? pts(e.points) + srcTag((e.src || [])[0]) : 'not entered yet'),
+      h('td', {}, reb ? (e.rebates != null ? money(e.rebates) + ' rebates' : 'rebates, not points') : e.points != null ? pts(e.points) + (e.totalSrc === 'dashboard' ? ' · ✍ dashboard' : srcTag((e.src || [])[0])) : 'not entered yet'),
       h('td', {}, reb ? '—' : eff(e.ptsPer1k)));
   });
   app.append(h('section', { class: 'card', id: 'ptsearnedcard' }, h('h2', {}, '🏅 Points earned'),
@@ -100,7 +102,8 @@ export function viewPoints(app, { h, doc, refresh }) {
     const tg = target(p, now), w = liveWindow(p, now) || p.window, c = p.current;
     const stale = w && p.window && w.start !== p.window.start;
     const sec = h('section', { class: 'card pts', id: 'pts-' + p.id },
-      h('h2', {}, p.name, ' ', h('span', { class: 'badge' + (p.connected ? '' : ' warn') }, p.connected ? (p.status === 'manual' ? 'manual' : p.status === 'error' ? 'error' : 'connected') : 'not connected')),
+      h('h2', {}, p.name, ' ', h('span', { class: 'badge' + (p.connected ? '' : ' warn') }, p.connected ? (p.status === 'manual' ? 'manual' : p.status === 'error' ? 'error' : 'connected') : 'not connected'),
+        p.tracking ? ' ' : null, p.tracking ? h('span', { class: 'badge warn' }, 'tracking only · not farmed') : null),
       h('div', { class: 'small' }, h('b', {}, p.program)),
       h('div', { class: 'small muted' }, p.rule),
       h('div', { class: 'small muted' }, 'Week: ' + p.windowRule),
@@ -109,6 +112,7 @@ export function viewPoints(app, { h, doc, refresh }) {
         tg ? [targetLabel(p, tg.kind), h('span', {}, berlin(tg.t), ' · in ', h('span', { 'data-cd': String(tg.t), class: 'cd' }, fmtCountdown(tg.t - now)))] : null,
         p.kind === 'rebates' ? ['Rebate payout', 'every 2 weeks (date not published)'] : null,
         p.kind === 'not announced' ? ['Points drop', 'not announced'] : null,
+        p.kind === 'ended' ? ['Points drop', 'weekly distributions ended · final distribution after the ongoing competition (date not published)'] : null,
         p.endsNote ? ['Program', p.endsNote] : null,
         ...(p.connected ? [
           ['Volume this week' + (stale ? ' (last week, data not refreshed yet)' : ''), kusd(c && c.volume)],
@@ -118,14 +122,19 @@ export function viewPoints(app, { h, doc, refresh }) {
           [p.kind === 'rebates' ? 'Rebates this week' : 'Points this week', pointsText(c || { current: true, drop: w && w.drop, pointsState: 'pending' }, p, now)],
           p.kind !== 'rebates' && p.earned ? ['Points season total', p.earned.points != null ? `${pts(p.earned.points)} over ${p.earned.weeks} week(s) · ${eff(p.earned.ptsPer1k)} pts / $1K` : 'not entered yet'] : null,
           p.kind === 'rebates' && p.earned && p.earned.rebates != null ? ['Rebates total', money(p.earned.rebates)] : null,
+          p.retro ? [p.retro.label || 'Retroactive', p.retro.points != null ? pts(p.retro.points) + ' · ✍ manual' : 'pending'] : null,
         ] : [['Data', 'not connected']]),
       ]),
       p.dataNote ? h('div', { class: 'small muted' }, p.dataNote) : null);
+    if (p.profile && (p.profile.items || []).length) sec.append(h('h3', {}, 'Dashboard snapshot' + (p.profile.asOf ? ' · ' + p.profile.asOf : '') + ' · ✍ manual'), kvTable(h, p.profile.items.map(([k, v]) => [k, String(v)])));
     const hist = (p.history || []).filter((x) => !x.current);
     if (hist.length) sec.append(h('h3', {}, 'Past weeks'), h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'ptshist-' + p.id },
       h('thead', {}, h('tr', {}, ...['Week', 'Volume', 'PnL', 'Fees', p.kind === 'rebates' ? 'Rebates' : 'Points', 'Pts / $1K'].map((t) => h('th', {}, t)))),
       h('tbody', {}, ...hist.map((x) => h('tr', {}, h('th', {}, x.n != null ? x.label : berlin(x.start).replace(/, \d\d:\d\d$/, '')), h('td', {}, kusd(x.volume)),
         h('td', { class: cls(x.pnl) }, signed(x.pnl)), h('td', {}, money(x.fees)), h('td', { class: x.points == null && p.kind !== 'rebates' ? 'muted' : '' }, pointsText(x, p, now)), h('td', {}, eff(x.ptsPer1k))))))));
+    if ((p.bonus || []).length) sec.append(h('h3', {}, 'Bonus / competitions / off-schedule'), h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'ptsbonus-' + p.id },
+      h('thead', {}, h('tr', {}, ...['Entry', 'Points', 'Note'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, ...p.bonus.map((b) => h('tr', {}, h('th', {}, b.label), h('td', {}, b.points != null ? pts(b.points) + ' · ✍ manual' : 'not entered yet'), h('td', { class: 'small muted' }, b.date || b.note || '—')))))));
     sec.append(h('div', { class: 'small muted' }, 'Points source: ' + (p.pointsSource || 'manual')));
     sec.append(h('details', { class: 'small muted' }, h('summary', {}, 'Sources' + ((p.unverified || []).length ? ' · unverified: ' + p.unverified.join(', ') : '')),
       h('ul', {}, ...(p.sources || []).map((s) => h('li', {}, h('a', { href: s.url, target: '_blank', rel: 'noopener noreferrer' }, s.label)))),
