@@ -249,12 +249,14 @@ can read another of your accounts is refused), subaccount only, and a code path 
 QFEX sometimes answers 401/403 with an empty body, 5xx, or drops the connection during an outage (seen 2026-10-21,
 together with mds.qfex.com 503s). While the loop runs, such a failure no longer aborts it:
 
-- the tick is retried with exponential backoff (15 s, 30 s, 60 s, 120 s, then every 240 s);
+- the tick is retried with exponential backoff (15 s, 30 s, 60 s, then every 120 s), indefinitely;
 - NEW entries (volume mode and the proposal queue) are paused while reads fail; exits and the guard keep running and
   exchange stop-loss/take-profit orders are never removed;
-- only if QFEX reads fail continuously for more than 10 minutes is it treated as a key problem: ERROR + alert, loop exits
-  (stops stay on the exchange). The startup `verify` still aborts on any doubt, and definitive key findings
-  (all-accounts scope, foreign account accepted, ...) abort immediately.
+- the loop never exits on such failures. After more than 10 minutes of continuous failures it logs an ERROR, writes a
+  `reads-down` alert (Balances tab, repeated every 30 min while it lasts) and `autotrader/qfex_health.json`, which
+  `briefing.py` shows as a note on the QFEX card; on recovery a `reads-recovered` alert follows. The startup `verify`
+  still aborts on any doubt, and definitive key findings (all-accounts scope, foreign account accepted, ...) abort
+  immediately.
 - every QFEX REST request times out after 15 s (`QFEX_HTTP_TIMEOUT_MS`), and a watchdog logs an ERROR + alert when no tick
   has completed for 5 minutes (repeated every 15 minutes while it lasts).
 - after any read failure the healthy loop ticks at most every 45 s for 15 minutes (fewer REST calls and WebSocket

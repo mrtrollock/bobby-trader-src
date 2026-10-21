@@ -23,6 +23,7 @@ public/balances.json
 balances_ledger.json
 balances_start.json
 autotrader/ALERT
+autotrader/qfex_health.json
 # points weeks ledger + manual entries (private)
 points_ledger.json
 points_manual.json

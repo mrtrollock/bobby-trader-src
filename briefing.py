@@ -427,6 +427,20 @@ def scrub(text, secrets):
             text = text.replace(s, "<address>").replace(s.lower(), "<address>")
     return text
 
+def qfex_outage_note(path, now_ts, fresh_s=20 * 60):
+    """autotrader/qfex_health.json (written by the loop): a note while QFEX reads have failed for > 10 min, else None.
+    Stale files (loop stopped, > fresh_s old) are ignored. Contains no keys or account ids."""
+    try:
+        h = json.loads(Path(path).read_text())
+        t = datetime.fromisoformat(str(h.get("t")).replace("Z", "+00:00")).timestamp()
+    except (OSError, ValueError, TypeError):
+        return None
+    if not h.get("down") or now_ts - t > fresh_s:
+        return None
+    return (f"Autotrader: QFEX reads failing for {h.get('downMin')} min ({h.get('failedTicks')} failed checks); "
+            "new entries paused, exchange stops untouched, still retrying.")
+
+
 def main(argv=None):
     load_env()
     ap = argparse.ArgumentParser(description="Bobby morning briefing -> public/briefing.enc.json (encrypted)")
@@ -493,6 +507,15 @@ def main(argv=None):
     if a.snapshot_only:
         print(f"snapshot stored ({len(snap['platforms'])} platform(s))")
         return 0
+    note = None if a.mock else qfex_outage_note(HERE / "autotrader" / "qfex_health.json", now_ts)
+    if note:
+        q = next((p for p in out if p["id"] == "qfex"), None)
+        if q is None:
+            out.append({"id": "qfex", "emoji": PLATFORMS["qfex"][0], "name": PLATFORMS["qfex"][1], "error": note, "items": []})
+        elif q.get("error"):
+            q["error"] = note + " " + q["error"]
+        else:
+            q.setdefault("notes", []).insert(0, note)
     doc = {"v": 1, "generated": now_ts, "tz": "Europe/Berlin", "network": "testnet" if a.testnet else ("mock" if a.mock else "mainnet"),
            "baseline": (base or {}).get("t"), "platforms": out}
     # Low-OI picks (points tilt): lowest open-interest markets that still pass the spread/depth/stop-slippage gate

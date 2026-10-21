@@ -156,18 +156,21 @@ export function isTransientError(e) {
   if (/Unexpected server response: (401|403|408|425|429|5\d\d)\b/.test(m)) return true;
   return /fetch failed|timed? ?out|timeout|aborted|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network|WebSocket (connect timeout|closed|error)|UND_ERR/i.test(m);
 }
-// Consecutive-failure tracker for the loop: exponential backoff (base, 2x, ... capped below the 5-min stall watchdog);
-// abort only once reads have failed continuously for longer than maxDownMs.
+// Consecutive-failure tracker for the loop: exponential backoff (base, 2x, ... capped at capMs, well below the 5-min stall
+// watchdog). It never aborts: once reads have failed continuously for longer than maxDownMs, fail() returns alert:true
+// (again every alertRepeatMs while it lasts); new entries stay paused and the exchange stops are never touched.
 // pace(t): after any failure, the healthy loop waits at least slowMs between ticks for coolMs (fewer REST calls and
 // WebSocket handshakes while the QFEX edge is throwing intermittent 403s; normal speed returns once it has been quiet)
-export function readHealth({ baseMs = 15e3, capMs = 240e3, maxDownMs = 10 * 60e3, slowMs = 45e3, coolMs = 15 * 60e3 } = {}) {
-  const h = { since: null, n: 0, lastFail: null, get degraded() { return h.since != null; },
+export function readHealth({ baseMs = 15e3, capMs = 120e3, maxDownMs = 10 * 60e3, alertRepeatMs = 30 * 60e3, slowMs = 45e3, coolMs = 15 * 60e3 } = {}) {
+  const h = { since: null, n: 0, lastFail: null, alertedAt: null, get degraded() { return h.since != null; },
     pace(t) { return h.lastFail != null && t - h.lastFail < coolMs ? slowMs : 0; },
     // partial: another QFEX read of the same tick succeeded (the key demonstrably works): backoff continues, but the
-    // "continuous failure" window that leads to the abort restarts
+    // "continuous failure" window restarts
     fail(t, { partial = false } = {}) { if (h.since == null || partial) h.since = t; h.n += 1; h.lastFail = t; const downMs = t - h.since;
-      return { downMs, n: h.n, waitMs: Math.min(capMs, baseMs * 2 ** (h.n - 1)), abort: downMs > maxDownMs }; },
-    ok(t) { const r = h.since == null ? null : { downMs: t - h.since, n: h.n }; h.since = null; h.n = 0; return r; } };
+      const long = downMs > maxDownMs, alert = long && (h.alertedAt == null || t - h.alertedAt >= alertRepeatMs);
+      if (alert) h.alertedAt = t;
+      return { downMs, n: h.n, waitMs: Math.min(capMs, baseMs * 2 ** (h.n - 1)), long, alert }; },
+    ok(t) { const r = h.since == null ? null : { downMs: t - h.since, n: h.n, alerted: h.alertedAt != null }; h.since = null; h.n = 0; h.alertedAt = null; return r; } };
   return h;
 }
 // Stall watchdog: no tick finished for > limitMs -> one message, repeated every repeatMs while it lasts.

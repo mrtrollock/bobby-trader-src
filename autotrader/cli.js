@@ -31,6 +31,8 @@ function journal(entry) {
   appendFileSync(join(P.logs, 'journal.jsonl'), redact(JSON.stringify({ t: new Date().toISOString(), ...entry })) + '\n');
 }
 // autotrader/ALERT: JSON lines, newest last; surfaced by balances.py (count + latest) in the encrypted Balances tab.
+// autotrader/qfex_health.json: long QFEX read outage status (briefing.py marks it on the QFEX card); no secrets
+const writeQfexHealth = (o) => { try { writeFileSync(join(DIR, 'qfex_health.json'), JSON.stringify({ t: new Date().toISOString(), ...o })); } catch { /* best effort */ } };
 function alert(entry) { appendFileSync(P.alert, redact(JSON.stringify({ t: new Date().toISOString(), ...entry })) + '\n'); }
 const readJournal = () => { try { return readFileSync(join(P.logs, 'journal.jsonl'), 'utf8').split('\n').filter(Boolean); } catch { return []; } };
 const loadState = () => { try { return JSON.parse(readFileSync(P.state, 'utf8')); } catch { return { dry: {}, live: {} }; } };
@@ -214,13 +216,19 @@ async function loop() {
     wait = Math.max(wait, health.pace(Date.now())); // slower while 403s were seen in the last 15 min
     if (failure) {
       const h = health.fail(Date.now(), { partial: !!failure.partial });
-      if (h.abort) {
-        const msg = `QFEX reads failed continuously for ${Math.round(h.downMs / 60e3)} min (${redact(failure.message)}): treating it as a key problem, aborting loop (exchange stops stay in place)`;
-        log('ERROR', msg); alert({ pf: 'qfex', kind: 'abort', reason: msg }); process.exit(2);
-      }
       wait = h.waitMs;
+      if (h.long) writeQfexHealth({ down: true, since: new Date(health.since).toISOString(), downMin: Math.round(h.downMs / 60e3), failedTicks: h.n, lastError: redact(failure.message).slice(0, 200) });
+      if (h.alert) {
+        // never exits: a key that really stopped working only means no reads -> no new entries; the stops stay on QFEX
+        const msg = `QFEX reads have failed continuously for ${Math.round(h.downMs / 60e3)} min (${redact(failure.message)}): new entries stay paused, exchange stops untouched, still retrying every <= ${Math.round(h.waitMs / 1000)}s; check the QFEX key/status if this persists`;
+        log('ERROR', msg); alert({ pf: 'qfex', kind: 'reads-down', reason: msg });
+      }
       log('WARN', `QFEX read failure #${h.n} (${Math.round(h.downMs / 1000)}s): ${redact(failure.message)}; new entries paused, exchange stops untouched, retry in ${wait / 1000}s`);
-    } else if (health.degraded) { const r = health.ok(Date.now()); log('INFO', `QFEX reads recovered after ${Math.round(r.downMs / 1000)}s (${r.n} failed ticks); entries resume`); }
+    } else if (health.degraded) {
+      const r = health.ok(Date.now()); log('INFO', `QFEX reads recovered after ${Math.round(r.downMs / 1000)}s (${r.n} failed ticks); entries resume`);
+      if (r.downMs > 10 * 60e3) writeQfexHealth({ down: false, recoveredAt: new Date().toISOString(), lastOutageMin: Math.round(r.downMs / 60e3) });
+      if (r.alerted) alert({ pf: 'qfex', kind: 'reads-recovered', ok: true, reason: `QFEX reads recovered after ${Math.round(r.downMs / 60e3)} min; entries resume` });
+    }
     for (let t = 0; t < wait && !stopping; t += 1000) await new Promise((r) => setTimeout(r, 1000));
   }
   clearInterval(wd);

@@ -130,4 +130,15 @@ try:
     B.main(["--mock", str(FX / "briefing_mock.json"), "--snapshots", str(tmp / "q6.json"), "--out", str(tmp / "plain.json"), "--now", str(NOW)]); raise AssertionError("plaintext name accepted")
 except SystemExit as e:
     assert ".enc.json" in str(e)
+# long QFEX read outage (autotrader/qfex_health.json) -> note on the QFEX card; stale/recovered/missing -> nothing
+from datetime import timezone as _tz
+_iso = lambda ts: datetime.fromtimestamp(ts, _tz.utc).isoformat().replace("+00:00", "Z")
+_hp = tmp / "qfex_health.json"
+assert B.qfex_outage_note(_hp, NOW) is None
+_hp.write_text(json.dumps({"t": _iso(NOW - 60), "down": True, "downMin": 14, "failedTicks": 9}))
+_n = B.qfex_outage_note(_hp, NOW); assert _n and "14 min" in _n and "paused" in _n, _n
+_hp.write_text(json.dumps({"t": _iso(NOW - 3600), "down": True, "downMin": 14, "failedTicks": 9}))
+assert B.qfex_outage_note(_hp, NOW) is None
+_hp.write_text(json.dumps({"t": _iso(NOW - 60), "down": False, "recoveredAt": _iso(NOW - 60)}))
+assert B.qfex_outage_note(_hp, NOW) is None
 print(json.dumps({"ok": True}))

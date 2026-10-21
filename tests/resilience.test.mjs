@@ -27,24 +27,28 @@ test('a 403 on the positions probe during verify is classified transient; a defi
   assert.match(e2.message, /All accounts/); assert.equal(C.isTransientError(e2), false);
 });
 
-test('read health: exponential backoff capped below the stall watchdog, abort only after > 10 min of continuous failures', () => {
+test('read health: exponential backoff capped at 2 min, never aborts: alert after > 10 min, repeated every 30 min', () => {
   const h = C.readHealth(); const t0 = 1e12;
   assert.equal(h.degraded, false);
   const waits = []; let r;
-  for (let i = 0, t = t0; i < 6; i++) { r = h.fail(t); waits.push(r.waitMs); assert.equal(r.abort, false); t += r.waitMs; }
-  assert.deepEqual(waits, [15e3, 30e3, 60e3, 120e3, 240e3, 240e3]);
-  assert.ok(waits.every((w) => w < 5 * 60e3));
+  for (let i = 0, t = t0; i < 6; i++) { r = h.fail(t); waits.push(r.waitMs); assert.equal(r.alert, false); assert.equal('abort' in r, false); t += r.waitMs; }
+  assert.deepEqual(waits, [15e3, 30e3, 60e3, 120e3, 120e3, 120e3]);
   assert.equal(h.degraded, true);
-  assert.equal(h.fail(t0 + 10 * 60e3).abort, false);         // exactly 10 min: still retrying
-  assert.equal(h.fail(t0 + 10 * 60e3 + 1).abort, true);      // > 10 min in a row: real problem
-  const rec = h.ok(t0 + 11 * 60e3); assert.equal(rec.n, 8); assert.equal(h.degraded, false);
-  // a recovery resets the window: a new blip starts from scratch
-  assert.deepEqual([h.fail(t0 + 20 * 60e3).waitMs, h.fail(t0 + 20 * 60e3).abort], [15e3, false]);
+  assert.equal(h.fail(t0 + 10 * 60e3).alert, false);          // exactly 10 min: still quiet
+  r = h.fail(t0 + 10 * 60e3 + 1); assert.equal(r.alert, true); assert.equal(r.long, true); assert.equal(r.waitMs, 120e3); // > 10 min: alert, keep retrying
+  assert.equal(h.fail(t0 + 12 * 60e3).alert, false);          // no alert spam
+  assert.equal(h.fail(t0 + 40 * 60e3).alert, false);
+  assert.equal(h.fail(t0 + 40 * 60e3 + 2).alert, true);       // repeated after 30 min
+  for (let k = 0; k < 100; k++) assert.ok(h.fail(t0 + 41 * 60e3 + k * 120e3).waitMs <= 120e3); // hours later: still retrying
+  const rec = h.ok(t0 + 300 * 60e3); assert.equal(rec.alerted, true); assert.equal(h.degraded, false);
+  // a recovery resets the window: a new blip starts from scratch, no alert
+  r = h.fail(t0 + 400 * 60e3); assert.deepEqual([r.waitMs, r.alert, r.long], [15e3, false, false]);
+  assert.equal(h.ok(t0 + 401 * 60e3).alerted, false);
 });
 
-test('intermittent blips never abort as long as reads recover in between', () => {
+test('intermittent blips never alert as long as reads recover in between', () => {
   const h = C.readHealth(); let t = 1e12;
-  for (let i = 0; i < 50; i++) { assert.equal(h.fail(t).abort, false); t += 15e3; h.ok(t); t += 60e3; }
+  for (let i = 0; i < 50; i++) { assert.equal(h.fail(t).alert, false); t += 15e3; h.ok(t); t += 60e3; }
 });
 
 test('stall watchdog: one ERROR after 5 min without a finished tick, repeated every 15 min, then recovery', () => {
@@ -72,11 +76,11 @@ test('QFEX REST calls are bounded by a timeout (a hanging request cannot freeze 
   } finally { globalThis.fetch = realFetch; if (prev == null) delete process.env.QFEX_HTTP_TIMEOUT_MS; else process.env.QFEX_HTTP_TIMEOUT_MS = prev; }
 });
 
-test('a tick where the guard read worked but a later read failed backs off without moving toward the abort', () => {
+test('a tick where the guard read worked but a later read failed backs off without moving toward the alert', () => {
   const h = C.readHealth(); const t0 = 1e12; let t = t0, r;
-  for (let i = 0; i < 12; i++) { r = h.fail(t, { partial: true }); assert.equal(r.abort, false); t += r.waitMs; }
-  assert.ok(t - t0 > 10 * 60e3); assert.equal(r.waitMs, 240e3); assert.equal(h.degraded, true);
-  assert.equal(h.fail(t + 1000).abort, false); // a full failure starts the 10-min window from the last partial success
+  for (let i = 0; i < 12; i++) { r = h.fail(t, { partial: true }); assert.equal(r.alert, false); t += r.waitMs; }
+  assert.ok(t - t0 > 10 * 60e3); assert.equal(r.waitMs, 120e3); assert.equal(h.degraded, true);
+  assert.equal(h.fail(t + 1000).alert, false); // a full failure starts the 10-min window from the last partial success
 });
 
 test('readHealth.pace: slower ticks for 15 min after any read failure, normal speed when quiet', () => {
@@ -94,4 +98,12 @@ test('isTransientError: a WebSocket handshake rejected with HTTP 403/5xx is tran
   assert.equal(C.isTransientError(new Error('QFEX: authentication failed (trade WebSocket refused the API key: Unexpected server response: 403)')), true);
   assert.equal(C.isTransientError(new Error('QFEX: trade WebSocket read failed after retries (QFEX: authentication failed (trade WebSocket refused the API key: Unexpected server response: 503))')), true);
   assert.equal(C.isTransientError(new Error('QFEX: this API key has all-accounts scope')), false);
+});
+
+test('loop source: the long-outage path alerts and never exits (no process.exit after health.fail)', async () => {
+  const { readFileSync } = await import('node:fs');
+  const src = readFileSync(new URL('../autotrader/cli.js', import.meta.url), 'utf8');
+  const blk = src.slice(src.indexOf('const h = health.fail('), src.indexOf('for (let t = 0; t < wait'));
+  assert.ok(blk.length > 100); assert.equal(/process\.exit/.test(blk), false);
+  assert.match(blk, /kind: 'reads-down'/); assert.match(blk, /kind: 'reads-recovered'/);
 });
