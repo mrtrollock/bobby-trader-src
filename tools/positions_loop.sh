@@ -23,9 +23,10 @@ if sorted(o) != sorted(["v", "alg", "kdf", "it", "aad", "salt", "iv", "ct"]) or 
 PY
   git -C "$WT" add -- public/positions.enc.json
   git -C "$WT" diff --cached --quiet && return 0
-  name=$(git -C "$WT" log -1 --format=%an); mail=$(git -C "$WT" log -1 --format=%ae)
-  git -C "$WT" -c user.name="$name" -c user.email="$mail" commit -q -m "data: refresh encrypted positions ($(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z'))" -- public/positions.enc.json
-  git -C "$WT" push -q fork HEAD:web-app
+  # author: the repo-local identity (shared with this worktree); refuse without one
+  git -C "$WT" config user.email >/dev/null || { echo "no repo-local git identity"; return 1; }
+  git -C "$WT" commit -q -m "data: refresh encrypted positions ($(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z'))" -- public/positions.enc.json || return 1
+  git -C "$WT" push -q fork HEAD:web-app || return 1
 }
 while true; do
   once >/dev/null 2>/tmp/bobby-positions-loop.err && echo "$(date '+%F %T') ok" >> /tmp/bobby-positions-loop.log || echo "$(date '+%F %T') failed: $(tail -c 300 /tmp/bobby-positions-loop.err)" >> /tmp/bobby-positions-loop.log

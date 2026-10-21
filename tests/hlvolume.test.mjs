@@ -14,7 +14,7 @@ const MASTER = '0x' + '22'.repeat(20), SUB = '0x' + '55'.repeat(20), HL_KEY = '0
 const ENV = { AUTOTRADER_NETWORK: 'mainnet', AUTOTRADER_ENABLED: '1', AUTOTRADER_LIVE: '1', HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: MASTER, HL_SUBACCOUNT_ADDRESS: SUB, AUTOTRADER_ENTROPY_VOLUME: '1' };
 const VC = HV.loadHlVolumeConfig(ENV);
 const MK = { 'io:OAI': { asset: 110000, szDecimals: 3, maxLev: 6 }, 'io:ANTH': { asset: 110001, szDecimals: 3, maxLev: 6 }, 'io:TCNT': { asset: 110002, szDecimals: 2, maxLev: 5 } };
-const Qt = (mid, spr = 0.0004, depthUsd = 50000) => ({ bid: +(mid * (1 - spr / 2)).toFixed(3), ask: +(mid * (1 + spr / 2)).toFixed(3), mark: mid, depthUsd });
+const Qt = (mid, spr = 0.0004, depthUsd = 50000, trades = 100) => ({ bid: +(mid * (1 - spr / 2)).toFixed(3), ask: +(mid * (1 + spr / 2)).toFixed(3), mark: mid, depthUsd, trades });
 const QUOTES = { 'io:OAI': Qt(380), 'io:ANTH': Qt(380), 'io:TCNT': Qt(50) };
 const LIM = { perTrade: 3, weeklyCap: 50, dailyCap: 20 };
 const ST = (o = {}) => ({ equity: 300, free: 300, positions: [], orders: [], weeklyLoss: 0, dailyLoss: 0, ...o });
@@ -99,6 +99,7 @@ function mockNet() {
       if (b.type === 'perpDexs') return FX('hl_perpdexs.json');
       if (b.type === 'metaAndAssetCtxs') { assert.equal(b.dex, 'io'); return FX('hl_io_meta.json'); }
       if (b.type === 'l2Book') return { levels: [[{ px: '379.9', sz: '50', n: 1 }], [{ px: '380.1', sz: '50', n: 1 }]] };
+      if (b.type === 'candleSnapshot') { const t0 = b.req.startTime; return Array.from({ length: 15 }, (_, i) => ({ t: t0 + i * 60e3, n: b.req.coin === 'io:ANTH' ? 0 : 3 })); }
       throw new Error('unmocked ' + b.type);
     },
     picks: async () => ({ platforms: { entropy: { picks: [{ market: 'io:ANTH', depthUsd: 40000 }, { market: 'io:OAI', depthUsd: 40000 }] } } }),
@@ -142,4 +143,34 @@ test('daily action budget (unified accounts: 50k/day): >= 80 % no new entries, >
   HV._resetCache(); const net = mockNet(); const vs = {};
   await HV.hlVolumeTick(cfgOf(), net, vs, IO()); assert.equal(HV.actionsToday(vs, NOW), net.sent.length); assert.ok(net.sent.length > 0);
   assert.throws(() => HV.loadHlVolumeConfig({ ...ENV, ENTROPY_VOL_MAX_ACTIONS_PER_DAY: '60000' }), /50k/);
+});
+
+test('max rest: an unfilled entry is cancelled after ENTROPY_VOL_ENTRY_MAX_REST_S, its SL/TP only on a later flat tick, then the market rests and another is picked', () => {
+  assert.equal(VC.entryMaxRestS, 600); assert.equal(VC.minTrades, 20);
+  const px = QUOTES['io:OAI'].ask, e = ent('io:OAI', 'SELL', px, 1, '9'), sl = trig('io:OAI', 'SL', px * 1.004, '10'), tp = trig('io:OAI', 'TP', px * 0.997, '11');
+  const vs = { markets: { 'io:OAI': { phase: 'entry', since: NOW - 300e3, requotes: [] } } };
+  const run = (st, now, pool = ['io:OAI', 'io:TCNT']) => HV.decideHlVolume({ vc: VC, st: ST(st), mk: MK, quotes: QUOTES, pool, vstate: vs, now, rng: seq(0.5), limits: LIM });
+  assert.equal(run({ orders: [e, sl, tp] }, NOW).actions.filter((a) => a.market === 'io:OAI').length, 0); // 5 min: keep resting
+  let r = run({ orders: [e, sl, tp] }, NOW + 301e3);
+  assert.deepEqual(r.actions.filter((a) => a.market === 'io:OAI').map((a) => [a.kind, a.id]), [['cancel', '9']]); // the entry only
+  // the cancel raced a fill: position present -> its SL/TP are kept, the volume mode manages the position
+  const vsFill = JSON.parse(JSON.stringify(vs));
+  const rf = HV.decideHlVolume({ vc: VC, st: ST({ positions: [{ market: 'io:OAI', side: 'short', size: 1, entry: px, mark: px }], orders: [sl, tp] }), mk: MK, quotes: QUOTES, pool: [], vstate: vsFill, now: NOW + 362e3, rng: seq(0.5), limits: LIM });
+  assert.ok(!rf.actions.some((a) => a.kind === 'cancel' && ['10', '11'].includes(a.id))); assert.ok(rf.actions.some((a) => a.kind === 'exit'));
+  // next tick, flat and the entry gone: orphan SL/TP cancelled, OAI rests 15 min, TCNT picked instead
+  r = run({ orders: [sl, tp] }, NOW + 362e3);
+  assert.deepEqual(r.actions.filter((a) => a.kind === 'cancel').map((a) => a.id).sort(), ['10', '11']);
+  assert.ok(vs.markets['io:OAI'].blockedUntil >= NOW + 362e3 + 900e3 - 1);
+  r = run({}, NOW + 600e3); const en = r.actions.filter((a) => a.kind === 'enter'); assert.equal(en.length, 1); assert.equal(en[0].market, 'io:TCNT');
+});
+
+test('activity gate: too few recent trades (or unknown) -> no entry there; the executor reads 1m candles and counts its actions', async () => {
+  const run = (trades) => HV.decideHlVolume({ vc: VC, st: ST(), mk: MK, quotes: { 'io:OAI': { ...Qt(380), trades } }, pool: ['io:OAI'], vstate: {}, now: NOW, rng: seq(0.5), limits: LIM });
+  assert.equal(run(5).actions.length, 0); assert.ok(run(5).notes.some((n) => /too quiet/.test(n)));
+  assert.equal(run(undefined).actions.length, 0);
+  assert.equal(run(25).actions.filter((a) => a.kind === 'enter').length, 1);
+  HV._resetCache(); const net = mockNet(), vs = {};
+  const rep = await HV.hlVolumeTick(cfgOf(), net, vs, IO()); // ANTH has 0 trades -> OAI
+  const en = rep.actions.filter((a) => a.kind === 'enter'); assert.equal(en.length, 1); assert.equal(en[0].market, 'io:OAI');
+  assert.equal(HV.actionsToday(vs, NOW), net.sent.length);
 });

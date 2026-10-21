@@ -57,6 +57,12 @@ export function loadHlVolumeConfig(env = process.env) {
     capital: numEnv(env, 'HL_CAPITAL_USD', 300),
     // Hyperliquid unified/portfolio-margin accounts are capped at 50k actions/day: stay far below (entries stop at 80 %)
     maxActionsPerDay: numEnv(env, 'ENTROPY_VOL_MAX_ACTIONS_PER_DAY', 5000),
+    // an unfilled entry is cancelled after this long; that market then rests ENTROPY_VOL_REST_COOLDOWN_S (another is picked)
+    entryMaxRestS: numEnv(env, 'ENTROPY_VOL_ENTRY_MAX_REST_S', 600),
+    restCooldownS: numEnv(env, 'ENTROPY_VOL_REST_COOLDOWN_S', 900),
+    // activity gate (candleSnapshot 1m, public info API): >= MIN_TRADES trades in the last ACTIVITY_MIN minutes
+    activityMin: numEnv(env, 'ENTROPY_VOL_ACTIVITY_MIN', 15),
+    minTrades: numEnv(env, 'ENTROPY_VOL_MIN_TRADES', 20),
   };
   const bad = [];
   if (!(Number.isInteger(vc.leverage) && vc.leverage >= 1 && vc.leverage <= 3)) bad.push('ENTROPY_VOL_LEVERAGE must be an integer 1..3');
@@ -72,6 +78,10 @@ export function loadHlVolumeConfig(env = process.env) {
   if (!(vc.cooldownS[0] >= 10 && vc.cooldownS[1] >= vc.cooldownS[0])) bad.push('ENTROPY_VOL_COOLDOWN_S must be MIN-MAX seconds, MIN >= 10');
   if (!(vc.capital > 0 && vc.capital <= 300)) bad.push('HL_CAPITAL_USD must be > 0 and <= 300');
   if (!(vc.maxActionsPerDay >= 100 && vc.maxActionsPerDay <= 20000)) bad.push('ENTROPY_VOL_MAX_ACTIONS_PER_DAY must be 100..20000 (unified accounts: 50k/day)');
+  if (!(vc.entryMaxRestS >= 60 && vc.entryMaxRestS <= 3600)) bad.push('ENTROPY_VOL_ENTRY_MAX_REST_S must be 60..3600');
+  if (!(vc.restCooldownS >= 0)) bad.push('ENTROPY_VOL_REST_COOLDOWN_S must be >= 0');
+  if (!(vc.activityMin >= 1 && vc.activityMin <= 120)) bad.push('ENTROPY_VOL_ACTIVITY_MIN must be 1..120');
+  if (!(vc.minTrades >= 0)) bad.push('ENTROPY_VOL_MIN_TRADES must be >= 0');
   if (bad.length) throw new Error('Entropy volume mode config: ' + bad.join('; '));
   return vc;
 }
@@ -152,6 +162,10 @@ export function decideHlVolume({ vc, st, mk, quotes, pool, vstate, now, rng = Ma
       const o = entries[0]; active += 1; m.phase = 'entry'; openRisk += m.risk || 0; pendingMargin += m.margin || 0;
       const isLong = up(o.side) === 'BUY', touch = isLong ? q.bid : q.ask;
       if (!canEnter || vstate.halted) { actions.push({ kind: 'cancel', market: s, id: o.id, why: vstate.halted ? 'halted: ' + vstate.halted.reason : 'new exposure paused' }); m.cancelled = true; continue; }
+      m.since ||= now;
+      // resting too long unfilled: cancel the entry only. Its SL/TP are cancelled on a LATER tick by the orphan-trigger
+      // rule, which runs only while the market is flat, so a fill racing this cancel keeps its protection.
+      if (now - m.since > vc.entryMaxRestS * 1000) { m.cancelled = true; m.restExpired = true; actions.push({ kind: 'cancel', market: s, id: o.id, why: `unfilled for ${Math.round((now - m.since) / 1000)}s (max ${vc.entryMaxRestS}s): re-pick` }); continue; }
       if (touch != null && o.px != null && Math.abs(touch - o.px) / o.px > vc.stalePct) {
         if (requoteOk(m)) { m.requotes.push(now); m.cancelled = true; actions.push({ kind: 'cancel', market: s, id: o.id, why: `stale: touch ${touch} vs ${o.px}` }); }
         else notes.push(`${s}: stale entry, re-quote budget used (${vc.requotesPerMin}/min)`);
@@ -163,6 +177,8 @@ export function decideHlVolume({ vc, st, mk, quotes, pool, vstate, now, rng = Ma
     if (m.phase === 'entry') { // entry gone, no position: cancelled by us (re-quote now) or filled + closed between ticks
       m.phase = 'idle'; m.risk = 0; m.margin = 0;
       m.cooldownUntil = m.cancelled ? now : cool();
+      if (m.restExpired) { m.cooldownUntil = cool(); m.blockedUntil = now + vc.restCooldownS * 1000; m.restExpired = false; notes.push(`${s}: entry expired unfilled; market rests ${vc.restCooldownS}s`); }
+      m.since = 0;
       if (!m.cancelled) { vstate.stats.stopsOrOther += 1; notes.push(`${s}: entry vanished without a position (filled and closed between ticks?)`); }
     }
     m.cancelled = false;
@@ -177,6 +193,7 @@ export function decideHlVolume({ vc, st, mk, quotes, pool, vstate, now, rng = Ma
     if (!k || k.isDelisted || busy.has(s) || now < (m.cooldownUntil || 0) || now < (m.blockedUntil || 0)) continue;
     if (!(q.bid > 0 && q.ask > q.bid && q.mark > 0)) continue;
     if ((q.ask - q.bid) / q.mark > vc.maxSpreadPct) { notes.push(`${s}: spread ${((q.ask - q.bid) / q.mark * 100).toFixed(3)}% too wide`); continue; }
+    if (vc.minTrades > 0 && !(q.trades >= vc.minTrades)) { notes.push(`${s}: ${q.trades ?? 'unknown'} trades in ${vc.activityMin} min < ${vc.minTrades} (too quiet to fill)`); continue; }
     cands.push(s);
   }
   // low-OI picks keep their rank; a little randomness among the top ones (timing/market vary)
@@ -211,7 +228,7 @@ export function decideHlVolume({ vc, st, mk, quotes, pool, vstate, now, rng = Ma
 
 // ---------------------------------------------------------------- executor (one tick)
 const cache = { picks: null, picksAt: 0, perpDexs: null, perpDexsAt: 0 };
-export const _resetCache = () => { cache.picks = null; cache.perpDexs = null; };
+export const _resetCache = () => { cache.picks = null; cache.perpDexs = null; activity.clear(); };
 async function marketData(cfg, net, vc, coins, env) {
   const now = net.now();
   if (!cache.perpDexs || now - cache.perpDexsAt > 3600e3) { cache.perpDexs = await net.hlInfo({ type: 'perpDexs' }); cache.perpDexsAt = now; }
@@ -230,8 +247,18 @@ async function marketData(cfg, net, vc, coins, env) {
     if (!mk[c]) continue;
     try { const b = await net.hlInfo({ type: 'l2Book', coin: c }); const bid = b.levels[0][0], ask = b.levels[1][0];
       quotes[c] = { bid: bid ? Number(bid.px) : null, ask: ask ? Number(ask.px) : null, mark: marks[c], depthUsd: depth[c] ?? null }; } catch { /* no quote -> no new entry there */ }
+    if (quotes[c] && vc.minTrades > 0 && pool.includes(c)) quotes[c].trades = await tradeCount(net, c, vc, now);
   }
   return { pool, mk, quotes };
+}
+
+// recent trade count of a market (sum of n over 1m candles, cached 2 min); null if unknown (-> no new entry there)
+const activity = new Map();
+async function tradeCount(net, coin, vc, now) {
+  const c = activity.get(coin); if (c && now - c.at < 120e3) return c.n;
+  try { const cs = await net.hlInfo({ type: 'candleSnapshot', req: { coin, interval: '1m', startTime: now - vc.activityMin * 60e3, endTime: now } });
+    const n = (cs || []).filter((x) => Number(x.t) >= now - vc.activityMin * 60e3).reduce((a, x) => a + (Number(x.n) || 0), 0); activity.set(coin, { n, at: now }); return n; }
+  catch { return null; }
 }
 
 // io = { live, kill, log, journal, alert, canEnter, accountState, rng, env }

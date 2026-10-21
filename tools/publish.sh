@@ -34,10 +34,15 @@ PY
 [ "$(git branch --show-current)" = web-app ] || { echo "refusing: not on the web-app branch" >&2; exit 3; }
 git add -- "${files[@]}"
 if git diff --cached --quiet -- "${files[@]}"; then echo "nothing changed"; exit 0; fi
-name=$(git log -1 --format=%an); mail=$(git log -1 --format=%ae)
-git -c user.name="$name" -c user.email="$mail" commit -q -m "data: refresh encrypted $what ($(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z'))" -- "${files[@]}"
+# author: the repo-local identity (git config user.name / user.email, shared by every worktree); refuse without one
+git config user.name >/dev/null && git config user.email >/dev/null || { echo "publish FAILED: no repo-local git identity (git config user.name/user.email)" >&2; exit 4; }
+fail() { echo "publish FAILED: $1 (nothing reported as published)" >&2; git rebase --abort >/dev/null 2>&1 || true; exit 5; }
+git commit -q -m "data: refresh encrypted $what ($(TZ=Europe/Berlin date '+%Y-%m-%d %H:%M %Z'))" -- "${files[@]}" || fail "commit failed"
 # the positions loop pushes too: on a non-fast-forward, rebase onto fork/web-app (our encrypted files win) and retry
 if ! git push -q fork HEAD:web-app 2>/dev/null; then
-  git pull -q --rebase --autostash -X theirs fork web-app && git push -q fork HEAD:web-app
+  git pull -q --rebase --autostash -X theirs fork web-app || fail "rebase onto fork/web-app failed"
+  git push -q fork HEAD:web-app || fail "push failed"
 fi
+[ "$(git rev-parse HEAD)" = "$(git rev-parse fork/web-app)" ] || fail "fork/web-app does not match HEAD after push"
+[ "$(git branch --show-current)" = web-app ] || fail "not back on the web-app branch"
 echo "published: ${files[*]} (encrypted) -> fork/web-app"

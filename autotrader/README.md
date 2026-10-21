@@ -314,6 +314,10 @@ margin gate is active (it idles with "waiting for margin on EntropyIO" until the
   -> margin = spot USDC total - holds, equity = that + io uPnL (per-dex perp states are not meaningful);
   `dexAbstraction` -> io + the subaccount's main-dex balance; standard (`disabled`) -> the io dex balance only (spot
   USDC does not count). The margin gate turns Entropy on by itself once >= $10 is usable.
+- Entry max rest: an unfilled entry is cancelled after `ENTROPY_VOL_ENTRY_MAX_REST_S` (600 s); its SL/TP are cancelled
+  on the next tick only if the market is still flat (a racing fill keeps its protection); that market then rests
+  `ENTROPY_VOL_REST_COOLDOWN_S` (900 s) and another pick is used. Activity gate: >= `ENTROPY_VOL_MIN_TRADES` (20) trades
+  in the last `ENTROPY_VOL_ACTIVITY_MIN` (15) minutes (public 1m `candleSnapshot`), unknown = no entry.
 - Action budget: Hyperliquid caps unified accounts at 50k actions/day; this mode counts what it sends per UTC day and
   stops new entries at 80 % of `ENTROPY_VOL_MAX_ACTIONS_PER_DAY` (5000), everything at 100 % (exchange SL/TP stay).
 - Fees: io maker ~0.0246 %, taker ~0.0298 % (measured on the master's io fills); Entropy cashback is not counted.
