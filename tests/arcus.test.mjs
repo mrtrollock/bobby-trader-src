@@ -87,3 +87,16 @@ test('decimal snapping mirrors Python Decimal rules', () => {
   assert.equal(A.maxLeverage({ initialMarginFraction: '0.025' }), 40);
   assert.equal(A.maxLeverage({ initialMarginFraction: '0.1', offHoursInitialMarginFraction: '0.2', isOutsideRth: true }), 5);
 });
+
+test('tickTiers: entry, protective and stop prices snap to the tier tick; the signed integer still uses tickSize', () => {
+  const m = { marketId: 1, marketDisplayName: 'BTC-USD', tickSize: '0.1', stepSize: '0.00000001', markPrice: '600000',
+    tickTiers: [{ upToPrice: '500000', tick: '0.1' }, { upToPrice: '1000000', tick: '0.2' }, { tick: '5' }] };
+  const ctx = A.makeCtx({ priv: A.keyFromHex(KEY), address: ADDRESS, accountIndex: 0, nowNs: () => 1792136420518974644n, nowUs: () => 1792136420518974n });
+  const d = A.entryTpsl(ctx, m, 'BUY', '0.001', { type: 'limit', limitPrice: '600000.3', stopLoss: '590000.3', takeProfit: '610000.1', postOnly: true });
+  const b = JSON.parse(d.body);
+  assert.equal(b.orders[0].timeInForce, 'ALO');
+  const isMul = (x, t) => D.cmp(D.snap(x, t, 'floor'), x) === 0;
+  for (const o of b.orders) { assert.ok(isMul(o.price, '0.2'), o.price); if (o.stopPrice) assert.ok(isMul(o.stopPrice, '0.2'), o.stopPrice); }
+  assert.ok(BigInt(b.orders[0].goodTilTime) >= 1792136420518974n + 30n * 86400n * 1000000n); // >= 1 month ahead (µs)
+  assert.equal(A.tpslStop(m, '590000.3'), '590000.2');
+});

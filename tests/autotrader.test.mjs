@@ -16,6 +16,8 @@ const ENV = { AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ARCUS: '1', ARCUS_API_PR
   HL_AGENT_PRIVATE_KEY: HL_KEY, HL_ACCOUNT_ADDRESS: MASTER };
 const cfgOf = (extra = {}) => C.loadConfig({ ...ENV, ...extra });
 
+// deep two-sided book around mid (5 levels/side, 1 bp apart, $100k each)
+const BOOK = (mid, sz = 100000 / mid, step = 0.0001) => ({ bids: [1, 2, 3, 4, 5].map((i) => [String(+(mid * (1 - i * step)).toFixed(4)), String(sz)]), asks: [1, 2, 3, 4, 5].map((i) => [String(+(mid * (1 + i * step)).toFixed(4)), String(sz)]) });
 function mockNet(cfg, o = {}) {
   const s = { equity: 300, free: 300, positions: [], orders: [], fills: [], hlEquity: 300, hlFree: 300, hlPositions: [], hlOrders: [], hlFills: [],
     keys: [{ apiKey: cfg.arcus ? cfg.arcus.apiKey : 'x', status: 'ACTIVE', validUntil: NOW + 30 * 86400e3, accountIndex: 0 }],
@@ -31,6 +33,7 @@ function mockNet(cfg, o = {}) {
       if (path === '/v1/fills') return { fills: s.fills };
       if (path === '/v1/markets') return { markets: [FX('arcus_market_tsla.json')] };
       if (path === '/v1/account/stats') return {};
+      if (path.startsWith('/v1/l2OrderBook/')) return s.arcusBook || BOOK(400);
       throw new Error('unmocked ' + path);
     },
     hlInfo: async (b) => {
@@ -40,6 +43,7 @@ function mockNet(cfg, o = {}) {
       if (b.type === 'userFillsByTime') return s.hlFills;
       if (b.type === 'metaAndAssetCtxs') return FX('hl_io_meta.json');
       if (b.type === 'perpDexs') return FX('hl_perpdexs.json');
+      if (b.type === 'l2Book') { const k = s.hlBook || BOOK(380); return { levels: [k.bids.map(([px, sz]) => ({ px, sz, n: 1 })), k.asks.map(([px, sz]) => ({ px, sz, n: 1 }))] }; }
       throw new Error('unmocked ' + b.type);
     },
     sendArcus: async (d) => { sent.push({ pf: 'arcus', d }); return { ok: true, status: 200, body: { responses: [{ status: 'OK' }] } }; },
@@ -241,4 +245,28 @@ test('AUTOTRADER_ARCUS master switch: Arcus off unless =1 (key still validated),
   assert.ok(C.loadConfig({ ...ENV, AUTOTRADER_ARCUS: '1' }).arcus);
   const ev = await C.evaluate({ id: 'a2', pf: 'arcus', m: 'BTC', sd: 'long', px: 1, sz: 1, sl: 0.9, tp: 1.1, ref: 1, exp: NOW / 1000 + 600 }, cfg, { now: () => NOW });
   assert.equal(ev.ok, false);
+});
+
+test('liquidity gate (Arcus + Entropy): wide spread, thin book, low OI, missing book -> rejected; equity above $300 is capped', async () => {
+  const cfg = cfgOf();
+  const rej = async (q, re, o) => { const r = await C.evaluate(q, cfg, mockNet(cfg, o)); assert.equal(r.ok, false); assert.ok(r.reasons.some((x) => re.test(x)), JSON.stringify(r.reasons)); };
+  await rej(AR, /spread .* > 0\.20% max/, { arcusBook: { bids: [['399', '100']], asks: [['401', '100']] } });
+  await rej(AR, /cannot absorb this stop-loss size/, { arcusBook: { bids: [['399.9', '0.01']], asks: [['400.1', '0.01']] } });
+  await rej(AR, /order book unavailable/, { arcusBook: { bids: [], asks: [] } });
+  await rej(EN, /spread/, { hlBook: { bids: [['379', '100']], asks: [['381', '100']] } });
+  // stressed slippage pushes the SL loss over the cap: thin book 1 % deep on the exit side
+  await rej(AR, /incl\. stressed stop slippage/, { arcusBook: { bids: [['399.98', '0.001'], ['396', '10']], asks: [['400.02', '10']] } });
+  const lowOi = C.loadConfig({ ...ENV, LOWOI_MIN_OI_USD: '1e9' });
+  const r = await C.evaluate(AR, lowOi, mockNet(lowOi)); assert.ok(r.reasons.some((x) => /open interest .* minimum/.test(x)), JSON.stringify(r.reasons));
+  const rich = await C.evaluate(AR, cfg, mockNet(cfg, { equity: 1000, free: 1000 }));
+  assert.deepEqual(rich.reasons, []); assert.equal(rich.risk.maxLoss, 3); // 1 % of min(equity, $300)
+  assert.throws(() => C.loadConfig({ ...ENV, ARCUS_CAPITAL_USD: '500' }), /ARCUS_CAPITAL_USD/);
+});
+
+test('Arcus fills: from is sent in microseconds and µs createdAt is converted to ms (weekly loss counted once)', async () => {
+  const cfg = cfgOf(), net = mockNet(cfg, { fills: [{ createdAt: (NOW - 3600e3) * 1000, closedPnl: '-5', fee: '0.1' }] });
+  const calls = []; const g = net.arcusGet; net.arcusGet = async (p, q) => { if (p === '/v1/fills') calls.push(q); return g(p, q); };
+  const st = await C.accountState('arcus', cfg, net, {});
+  assert.ok(calls.length && calls.every((q) => q.from > 1e15), JSON.stringify(calls));
+  assert.ok(st.weeklyLoss >= 5 && st.weeklyLoss <= 5.1 + 1e-9, String(st.weeklyLoss));
 });

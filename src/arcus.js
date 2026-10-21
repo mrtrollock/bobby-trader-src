@@ -57,9 +57,10 @@ export function orderBody(ctx, m, ts, side, orderType, qty, price, tif, reduceOn
 
 export function protectivePrice(m, side, refPrice, slippage) {
   if (!(slippage > 0 && slippage < 0.10)) throw new Error('slippage must be in (0, 0.10)');
-  const tick = m.tickSize;
-  if (side === 'BUY') return D.snap(D.mul(refPrice, D.add('1', String(slippage))), tick, 'floor');
-  return D.snap(D.mul(refPrice, D.sub('1', String(slippage))), tick, 'ceil');
+  // tier tick of the target price (a price in a coarser tickTiers band must be a multiple of that band's tick; the
+  // signed integer still uses the top-level tickSize, see orderPayload)
+  const raw = side === 'BUY' ? D.mul(refPrice, D.add('1', String(slippage))) : D.mul(refPrice, D.sub('1', String(slippage)));
+  return D.snap(raw, tickFor(m, raw), side === 'BUY' ? 'floor' : 'ceil');
 }
 
 // ---- builders mirroring arcus.py mutating functions
@@ -81,7 +82,7 @@ function tpslLegs(ctx, m, ts, g, closeSide, qty, tp, sl, slippage) {
   const legs = [];
   for (const [kind, trig] of [['TAKE_PROFIT', tp], ['STOP_LOSS', sl]]) {
     if (trig == null || trig === '') continue;
-    const stop = D.snap(String(trig), m.tickSize, 'floor');
+    const stop = D.snap(String(trig), tickFor(m, String(trig)), 'floor');
     const price = protectivePrice(m, closeSide, stop, slippage);
     const payload = orderPayload(ctx, OP_PLACE_UNTRIGGERED, m, ts, closeSide, price, qty, 'IOC', true, g);
     const body = orderBody(ctx, m, ts, closeSide, 'MARKET', String(qty), price, 'IOC', true, g, null, { tpslType: kind, stopPrice: String(stop) });
@@ -165,7 +166,7 @@ export function qtyFloor(m, qty) { return D.normalize(D.snap(String(qty), m.step
 // ---- TP/SL replacement (Arcus rejects a 2nd position-level TPSL with POSITION_TPSL_ALREADY_EXISTS; modify is not
 // supported on TPSL legs, so "replace" = cancel the old legs, then place the new positionTpsl).
 export const isLongSide = (s) => ['LONG', 'BUY'].includes(String(s).toUpperCase());
-export const tpslStop = (m, trig) => D.normalize(D.snap(String(trig), m.tickSize, 'floor'));
+export const tpslStop = (m, trig) => D.normalize(D.snap(String(trig), tickFor(m, String(trig)), 'floor'));
 const has = (x) => x != null && x !== '';
 const live = (o) => o && o.tpslType && (o.status == null || o.status === 'UNTRIGGERED');
 

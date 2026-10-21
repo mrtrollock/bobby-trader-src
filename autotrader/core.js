@@ -7,6 +7,7 @@ import * as Q from '../src/qfex.js';
 import * as API from '../src/api.js';
 import * as F from '../src/fees.js';
 import { loadVolumeConfig } from './volume.js';
+import * as L from '../src/lowoi.js';
 import { computeRisk, checkPolicy, POLICY, weekStartUtc, realizedLoss, assertTradeOnly, policyFor } from '../src/risk.js';
 
 export const MAX_POSITIONS = 3;
@@ -59,6 +60,10 @@ export function loadConfig(env = process.env) {
     if (!(cfg.qfex.weeklyLossCap > 0 && cfg.qfex.weeklyLossCap <= POLICY.weeklyLossCap)) throw new Error(`QFEX_WEEKLY_LOSS_CAP_USD must be > 0 and <= ${POLICY.weeklyLossCap}`);
     if (!(cfg.qfex.maxTradeLossUsd > 0 && cfg.qfex.maxTradeLossUsd <= cfg.qfex.weeklyLossCap)) throw new Error('QFEX_MAX_TRADE_LOSS_USD must be > 0 and <= the weekly cap');
   }
+  cfg.capital = { arcus: env.ARCUS_CAPITAL_USD ? Number(env.ARCUS_CAPITAL_USD) : POLICY.capital.arcus, hl: env.HL_CAPITAL_USD ? Number(env.HL_CAPITAL_USD) : POLICY.capital.hl };
+  for (const [k, v] of Object.entries(cfg.capital)) if (!(v > 0 && v <= POLICY.capital[k])) throw new Error(`${k === 'hl' ? 'HL' : 'ARCUS'}_CAPITAL_USD must be > 0 and <= ${POLICY.capital[k]}`);
+  // low-OI ranking + liquidity gate settings (ARCUS_PREFER_LOW_OI / ENTROPY_PREFER_LOW_OI, LOWOI_* thresholds; see src/lowoi.js)
+  cfg.lowOi = { arcus: L.optsFromEnv(env, 'arcus'), entropy: L.optsFromEnv(env, 'entropy') };
   cfg.bases.qfex = Q.bases(testnet);
   // volume mode: OFF unless QFEX_VOLUME_MODE=1 (and still needs AUTOTRADER_ENABLED=1 + AUTOTRADER_LIVE=1 to send anything)
   cfg.qfexVol = cfg.qfex ? loadVolumeConfig(env) : null;
@@ -189,9 +194,19 @@ function basicChecks(p, cfg, nowS) {
 }
 
 // ---------------------------------------------------------------- live context per platform (public reads)
+// Arcus /v1/fills: from/to and createdAt are epoch MICROseconds (mainnet answers 400 "from must be a microsecond
+// timestamp" to ms); newest first, paged backwards with `to`. Times are returned in ms.
+export const arcusMs = (t) => { const n = Number(t); return n > 1e14 ? n / 1000 : n; };
 async function arcusFillsSince(net, addr, ai, fromMs) {
-  const r = await net.arcusGet('/v1/fills', { address: addr, accountIndex: ai, from: fromMs, limit: 1000 });
-  return (r.fills || []).map((f) => ({ time: Number(f.createdAt), closedPnl: f.closedPnl, fee: f.fee, m: f.marketDisplayName, px: f.price, sz: f.size, side: f.side }));
+  const out = []; let to;
+  for (let page = 0; page < 20; page++) {
+    const r = await net.arcusGet('/v1/fills', { address: addr, accountIndex: ai, from: Math.floor(fromMs) * 1000, ...(to != null ? { to } : {}), limit: 1000 });
+    const rows = r.fills || []; out.push(...rows);
+    if (rows.length < 1000) break;
+    const oldest = Math.min(...rows.map((f) => Number(f.createdAt))); if (!(oldest > 1e14)) break; to = oldest - 1;
+  }
+  return out.map((f) => ({ time: arcusMs(f.createdAt), closedPnl: f.closedPnl, fee: f.fee, m: f.marketDisplayName, px: f.price, sz: f.size, side: f.side }))
+    .filter((f) => f.time >= fromMs);
 }
 async function hlFillsSince(net, user, fromMs, dexes) {
   const rows = await net.hlInfo({ type: 'userFillsByTime', user, startTime: fromMs });
@@ -324,7 +339,7 @@ async function marketCtx(pf, p, cfg, net, st) {
     const fr = F.arcusRates(m, stats, null);
     return { m, market: m.marketDisplayName, mark: Number(m.markPrice), maxLev: A.maxLeverage(m), mmf: Number(m.maintenanceMarginFraction), maker: fr.maker, taker: fr.taker,
       feeSrc: fr.source, size: Number(A.qtyFloor(m, p.sz)), sizeStr: A.qtyFloor(m, p.sz), minSize: Number(m.minOrderSize || 0), minNotional: Number(m.minOrderNotional || 0),
-      status: m.status };
+      status: m.status, oiUsd: Number(m.openInterest || 0) * Number(m.markPrice || 0), vol24hUsd: Number(m.volume24hNotional || 0) };
   }
   const dex = H.dexOf(p.m);
   const [meta, ctxs] = await net.hlInfo({ type: 'metaAndAssetCtxs', dex });
@@ -335,7 +350,7 @@ async function marketCtx(pf, p, cfg, net, st) {
   const fr = { ...F.FALLBACK.hl_io, source: 'default (HIP-3)' };
   return { mk: { coin: p.m, dex, asset: H.assetId(p.m, meta.universe, perpDexs), szDecimals: u.szDecimals, maxLeverage: u.maxLeverage, isDelisted: !!u.isDelisted },
     market: p.m, mark: Number(c.markPx), maxLev: u.maxLeverage, mmf: 1 / (2 * u.maxLeverage), maker: fr.maker, taker: fr.taker, feeSrc: fr.source,
-    size: Number(H.roundSz(p.sz, u.szDecimals)), status: u.isDelisted ? 'DELISTED' : 'ONLINE' };
+    size: Number(H.roundSz(p.sz, u.szDecimals)), status: u.isDelisted ? 'DELISTED' : 'ONLINE', oiUsd: Number(c.openInterest || 0) * Number(c.markPx || 0), vol24hUsd: Number(c.dayNtlVlm || 0) };
 }
 
 // Full hard-policy evaluation. Returns { ok, reasons[], risk, ctx }. Every computeRisk warning is a hard block here
@@ -356,7 +371,10 @@ export async function evaluate(q, cfg, net, stCache = {}) {
     freeCollateral: st.free, maxLoss: Infinity, maxMove: MAX_DRIFT });
   reasons.push(...r.blocks, ...r.warns);
   const basePol = p.pf === 'qfex' ? policyFor('qfex', POLICY, { weeklyLossCap: cfg.qfex.weeklyLossCap, maxTradeLossUsd: cfg.qfex.maxTradeLossUsd }) : POLICY;
-  const pol = { ...basePol, capital: { ...POLICY.capital, [POL_PF[p.pf]]: st.equity } };
+  // usable capital = live equity, capped at the platform's starting capital (Arcus/Entropy $300; ARCUS_CAPITAL_USD / HL_CAPITAL_USD override)
+  const capOf = { arcus: cfg.capital && cfg.capital.arcus, entropy: cfg.capital && cfg.capital.hl }[p.pf];
+  const usable = capOf > 0 ? Math.min(st.equity, capOf) : st.equity;
+  const pol = { ...basePol, capital: { ...POLICY.capital, [POL_PF[p.pf]]: usable } };
   const cp = checkPolicy({ ...p, pf: POL_PF[p.pf] }, r, { policy: pol, weeklyLossUsed: st.weeklyLoss, freeCollateral: st.free });
   reasons.push(...cp.blocks);
   if (!(st.equity > 0)) reasons.push('no equity on this platform');
@@ -379,9 +397,31 @@ export async function evaluate(q, cfg, net, stCache = {}) {
   const busy = new Set([...st.positions.map((x) => x.market), ...entries.map((o) => o.market)]);
   if (busy.size >= cfg.maxPositions && !busy.has(c.market)) reasons.push(`max ${cfg.maxPositions} concurrent positions/entries on ${p.pf} reached`);
   if (st.positions.some(sameMarket) || entries.some(sameMarket)) reasons.push('a position or resting entry already exists on ' + c.market);
+  if (p.pf === 'arcus' || p.pf === 'entropy') reasons.push(...await liquidityGate(p, c, r, cp, cfg, net));
   return { ok: reasons.length === 0, p, reasons: [...new Set(reasons)], risk: { slLoss: r.slLoss, tpGain: r.tpGain, notional: r.notional, margin: r.margin,
     maxLoss: cp.maxLoss, weeklyLossUsed: st.weeklyLoss, equity: st.equity, free: st.free, mark: c.mark, drift: r.moved,
     fees: { maker: c.maker, taker: c.taker, ...(p.pf === 'qfex' ? { stopRate: c.stopRate, slippage: c.slippage, category: c.category, preferred: Q.PREFERRED_CATEGORIES.includes(c.category) } : {}), src: c.feeSrc } }, ctx: c };
+}
+
+// Liquidity gate (Arcus + Entropy): fail closed. Skips thin markets (OI / 24h volume below the minimum, wide spread) and
+// requires loss at SL + the stressed stop slippage of THIS trade's size (walked on the live book) to fit the per-trade cap.
+export async function liquidityGate(p, c, r, cp, cfg, net) {
+  const o = cfg.lowOi ? cfg.lowOi[p.pf] : L.DEFAULTS, out = [];
+  let book = null;
+  try {
+    if (p.pf === 'arcus') { const b = await net.arcusGet('/v1/l2OrderBook/' + encodeURIComponent(c.market), { nLevels: 50 }); book = { bids: b.bids || [], asks: b.asks || [] }; }
+    else { const b = await net.hlInfo({ type: 'l2Book', coin: c.market }); book = { bids: (b.levels[0] || []).map((x) => [x.px, x.sz]), asks: (b.levels[1] || []).map((x) => [x.px, x.sz]) }; }
+  } catch { /* fail closed below */ }
+  const bs = book && L.bookStats(book.bids, book.asks, o.depthBand);
+  if (!bs) return ['Liquidity: order book unavailable or one-sided (fail closed)'];
+  if (bs.spread > o.maxSpread) out.push(`Liquidity: spread ${(bs.spread * 100).toFixed(3)}% > ${(o.maxSpread * 100).toFixed(2)}% max`);
+  if (c.oiUsd != null && c.oiUsd < o.minOiUsd) out.push(`Liquidity: open interest $${Math.round(c.oiUsd)} < $${o.minOiUsd} minimum`);
+  if (c.vol24hUsd != null && c.vol24hUsd < o.minVol24hUsd) out.push(`Liquidity: 24h volume $${Math.round(c.vol24hUsd)} < $${o.minVol24hUsd} minimum`);
+  const slip = L.stopSlippageFor(book.bids, book.asks, p.sd === 'long', r.notional || 0, o.stressMult);
+  if (!Number.isFinite(slip)) out.push('Liquidity: the book cannot absorb this stop-loss size (fail closed)');
+  else if (cp.maxLoss != null && r.slLoss != null && r.slLoss + (r.notional || 0) * slip > cp.maxLoss + 1e-9)
+    out.push(`Liquidity: loss at SL incl. stressed stop slippage $${(r.slLoss + r.notional * slip).toFixed(2)} > $${cp.maxLoss.toFixed(2)}`);
+  return out;
 }
 
 // ---------------------------------------------------------------- request builders (signed, not sent)
