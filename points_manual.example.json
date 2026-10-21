@@ -1,12 +1,46 @@
 {
-  "_help": "Copy to points_manual.json (git-ignored, private). Week keys are the platform's own week/epoch numbers (Variational 'Week 45', TxFlow 'Epoch 2', Arcus 'Week 3'). Any field you set overrides the computed one. Points are not readable by any public API, so enter them from each platform's points page after a drop.",
+  "_help": "Copy to points_manual.json (git-ignored, private). Week keys: the platform's own week/epoch number (Variational '45', TxFlow '1' = Epoch 1, Arcus '3'), the week's start date in UTC ('2026-10-19', for QFEX/Entropy tracking weeks that run Monday 00:00 UTC) or its start as unix seconds. Fields: points, rebates (Entropy, USD), volume, pnl, fees, trades; any field you set overrides the computed one. Entered points/rebates are copied into points_ledger.json, so past weeks stay even after you remove them here. pointsTotal / rebatesTotal (optional) override the season total. No platform has a documented points API, so points are entered from each platform's points page after a drop.",
   "variational": {
     "equity": 250.0,
     "note": "from omni.variational.io portfolio",
-    "weekPnl": -3.2, "dayPnl": -1.0,
+    "weekPnl": -3.2,
+    "dayPnl": -1.0,
     "_capsHelp": "weekPnl = PnL since Monday 00:00 UTC, dayPnl = since 00:00 UTC (incl. fees): measured against the $50/week manual reference cap on the Balances tab",
-    "weeks": { "45": { "volume": 12000, "pnl": -3.2, "fees": 0, "points": 12.5 } }
+    "weeks": {
+      "45": {
+        "volume": 12000,
+        "pnl": -3.2,
+        "fees": 0,
+        "points": 12.5
+      }
+    }
   },
-  "txflow": { "weeks": { "1": { "points": 210.4 } } },
-  "arcus": { "weeks": { "3": { "points": 0 } } }
+  "txflow": {
+    "weeks": {
+      "1": {
+        "points": 210.4
+      }
+    }
+  },
+  "arcus": {
+    "weeks": {
+      "3": {
+        "points": 0
+      }
+    }
+  },
+  "entropy": {
+    "weeks": {
+      "2026-10-12": {
+        "rebates": 0.0
+      }
+    }
+  },
+  "qfex": {
+    "weeks": {
+      "2026-10-19": {
+        "points": 0
+      }
+    }
+  }
 }

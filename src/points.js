@@ -7,6 +7,21 @@ const money = (x, d = 2) => (x == null || !Number.isFinite(Number(x)) ? '—' : 
 const signed = (x) => (x == null || !Number.isFinite(Number(x)) ? '—' : Number(x) === 0 ? '$0.00' : (Number(x) < 0 ? '-$' : '+$') + Math.abs(Number(x)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 export const kusd = (x) => (x == null || !Number.isFinite(Number(x)) ? '—' : Math.abs(x) >= 1e6 ? '$' + (x / 1e6).toFixed(2) + 'M' : Math.abs(x) >= 1e3 ? '$' + (x / 1e3).toFixed(1) + 'K' : '$' + Number(x).toFixed(0));
 const pts = (x) => (x == null ? '—' : Number(x).toLocaleString('en-US', { maximumFractionDigits: 1 }));
+const eff = (x) => (x == null ? '—' : Number(x).toLocaleString('en-US', { maximumFractionDigits: Number(x) >= 100 ? 0 : 2 }));
+const srcTag = (src) => (src === 'auto' ? ' · auto' : src === 'manual' ? ' · ✍ manual' : '');
+// Points cell text for one week: the number (with auto / manual tag), or why there is none. Never shows 0 for "unknown".
+export function pointsText(x, p, now = Date.now() / 1000) {
+  if (!x) return '—';
+  if (p && p.kind === 'rebates') return x.rebates != null ? money(x.rebates) + srcTag(x.rebatesSrc || 'manual') + ' rebates' : 'rebates, not points';
+  if (x.points != null) return pts(x.points) + srcTag(x.pointsSrc || 'manual');
+  if (p && p.kind === 'not announced' && x.current) return 'no drop announced';
+  if (x.pointsState === 'pending' || (x.current && x.pointsState !== 'missing')) {
+    const due = x.drop != null ? x.drop : null;
+    return due != null && due > now ? `pending (drop ${berlin(due)})` : x.current ? 'pending' : 'not entered yet';
+  }
+  return 'not entered yet';
+}
+export function lastDropped(p) { return (p.history || []).find((x) => !x.current) || null; }
 const cls = (x) => (x == null ? '' : x >= 0 ? 'green' : 'redtxt');
 
 export function fmtCountdown(sec) {
@@ -68,6 +83,19 @@ export function viewPoints(app, { h, doc, refresh }) {
     h('thead', {}, h('tr', {}, ...['', 'Countdown', 'Volume', 'PnL', 'Fees'].map((t) => h('th', {}, t)))), h('tbody', {}, ...rows))),
   h('p', { class: 'muted small' }, 'This points week per platform. PnL = realized PnL minus fees, plus funding where the API reports it. Countdown: next points drop, or the end of the epoch / tracking week when no drop time is published.'));
 
+  // points earned: last finished week, season total (from the private ledger), efficiency, and where the numbers come from
+  const er = P.platforms.map((p) => {
+    const last = lastDropped(p), e = p.earned || {}, reb = p.kind === 'rebates';
+    return h('tr', { id: 'pe-' + p.id }, h('th', {}, p.name),
+      h('td', {}, last ? h('span', {}, h('span', { class: 'muted' }, last.label + ': '), pointsText(last, p, now)) : '—'),
+      h('td', {}, reb ? (e.rebates != null ? money(e.rebates) + ' rebates' : 'rebates, not points') : e.points != null ? pts(e.points) + srcTag((e.src || [])[0]) : 'not entered yet'),
+      h('td', {}, reb ? '—' : eff(e.ptsPer1k)));
+  });
+  app.append(h('section', { class: 'card', id: 'ptsearnedcard' }, h('h2', {}, '🏅 Points earned'),
+    h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'ptsearned' },
+      h('thead', {}, h('tr', {}, ...['', 'Last week', 'Season', 'Pts/$1K'].map((t) => h('th', {}, t)))), h('tbody', {}, ...er))),
+    h('p', { class: 'muted small' }, 'Volume, PnL and fees are read automatically from each platform\'s API. No platform offers a documented API for your points, so points are entered by hand in points_manual.json (✍ manual) and kept per week in the private points ledger; "auto" would mark points read from an official API. "not entered yet" = the week has dropped but no number was entered (it is not 0). Season total = sum of the entered weeks; pts / $1K = season points ÷ volume of those weeks. Points of different platforms are not added up (different programs).')));
+
   for (const p of P.platforms) {
     const tg = target(p, now), w = liveWindow(p, now) || p.window, c = p.current;
     const stale = w && p.window && w.start !== p.window.start;
@@ -87,15 +115,18 @@ export function viewPoints(app, { h, doc, refresh }) {
           ['PnL this week (fees incl.)', h('span', { class: cls(c && c.pnl) }, signed(c && c.pnl))],
           ['Fees this week', money(c && c.fees, 2) + (c && c.funding ? ` · funding ${signed(c.funding)}` : '')],
           c && c.trades != null ? ['Fills', String(c.trades) + (c.makerShare != null ? ` · ${(c.makerShare * 100).toFixed(0)}% maker` : '')] : null,
-          c && c.points != null ? ['Points this week', pts(c.points)] : null,
+          [p.kind === 'rebates' ? 'Rebates this week' : 'Points this week', pointsText(c || { current: true, drop: w && w.drop, pointsState: 'pending' }, p, now)],
+          p.kind !== 'rebates' && p.earned ? ['Points season total', p.earned.points != null ? `${pts(p.earned.points)} over ${p.earned.weeks} week(s) · ${eff(p.earned.ptsPer1k)} pts / $1K` : 'not entered yet'] : null,
+          p.kind === 'rebates' && p.earned && p.earned.rebates != null ? ['Rebates total', money(p.earned.rebates)] : null,
         ] : [['Data', 'not connected']]),
       ]),
       p.dataNote ? h('div', { class: 'small muted' }, p.dataNote) : null);
     const hist = (p.history || []).filter((x) => !x.current);
     if (hist.length) sec.append(h('h3', {}, 'Past weeks'), h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'ptshist-' + p.id },
-      h('thead', {}, h('tr', {}, ...['Week', 'Volume', 'PnL', 'Fees', 'Points'].map((t) => h('th', {}, t)))),
+      h('thead', {}, h('tr', {}, ...['Week', 'Volume', 'PnL', 'Fees', p.kind === 'rebates' ? 'Rebates' : 'Points', 'Pts / $1K'].map((t) => h('th', {}, t)))),
       h('tbody', {}, ...hist.map((x) => h('tr', {}, h('th', {}, x.n != null ? x.label : berlin(x.start).replace(/, \d\d:\d\d$/, '')), h('td', {}, kusd(x.volume)),
-        h('td', { class: cls(x.pnl) }, signed(x.pnl)), h('td', {}, money(x.fees)), h('td', {}, pts(x.points))))))));
+        h('td', { class: cls(x.pnl) }, signed(x.pnl)), h('td', {}, money(x.fees)), h('td', { class: x.points == null && p.kind !== 'rebates' ? 'muted' : '' }, pointsText(x, p, now)), h('td', {}, eff(x.ptsPer1k))))))));
+    sec.append(h('div', { class: 'small muted' }, 'Points source: ' + (p.pointsSource || 'manual')));
     sec.append(h('details', { class: 'small muted' }, h('summary', {}, 'Sources' + ((p.unverified || []).length ? ' · unverified: ' + p.unverified.join(', ') : '')),
       h('ul', {}, ...(p.sources || []).map((s) => h('li', {}, h('a', { href: s.url, target: '_blank', rel: 'noopener noreferrer' }, s.label)))),
 ));

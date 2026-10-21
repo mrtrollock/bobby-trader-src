@@ -35,3 +35,18 @@ test('points.js: countdown format, target = next drop else window end, rolls ove
   assert.deepEqual(target({ ...v, endsBy: s0 }, s0 + 10), { t: s0 + W, kind: 'end' });
   assert.equal(kusd(71500), '$71.5K'); assert.equal(kusd(1250000), '$1.25M'); assert.equal(kusd(null), '—');
 });
+
+import { pointsText, lastDropped } from '../src/points.js';
+test('points.js: points earned cells (auto / manual tag, pending, not entered yet, rebates)', () => {
+  const now = 1792600000, P = { kind: 'points' };
+  assert.equal(pointsText({ points: 1234.56, pointsSrc: 'manual' }, P, now), '1,234.6 · ✍ manual');
+  assert.equal(pointsText({ points: 7, pointsSrc: 'auto' }, P, now), '7 · auto');
+  assert.equal(pointsText({ points: 0, pointsSrc: 'manual' }, P, now), '0 · ✍ manual'); // an entered 0 stays 0
+  assert.equal(pointsText({ pointsState: 'missing' }, P, now), 'not entered yet');
+  assert.match(pointsText({ current: true, pointsState: 'pending', drop: now + 3600 }, P, now), /^pending \(drop \w{3} \d+ \w{3}, \d\d:\d\d\)$/);
+  assert.equal(pointsText({ current: true, pointsState: 'pending', drop: null }, P, now), 'pending');
+  assert.equal(pointsText({ current: true, pointsState: 'pending' }, { kind: 'not announced' }, now), 'no drop announced');
+  assert.equal(pointsText({ points: null }, { kind: 'rebates' }, now), 'rebates, not points');
+  assert.equal(pointsText({ rebates: 2.5, rebatesSrc: 'manual' }, { kind: 'rebates' }, now), '$2.50 · ✍ manual rebates');
+  assert.equal(lastDropped({ history: [{ current: true }, { current: false, label: 'Week 2' }] }).label, 'Week 2');
+});

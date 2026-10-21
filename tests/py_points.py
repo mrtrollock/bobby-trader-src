@@ -118,4 +118,27 @@ assert P3["entropy"]["current"]["volume"] == 180.0 and P3["entropy"]["current"][
 d4 = PT.update({}, {"arcus": {"connected": False, "note": "not connected: set BOBBY_ACCOUNT_ADDRESS"}}, {}, NOW)
 a4 = d4["platforms"][0]
 assert a4["id"] == "arcus" and a4["connected"] is False and a4["window"]["drop"] and "BOBBY_ACCOUNT_ADDRESS" in a4["dataNote"]
+# points earned: manual points persist in the ledger after the manual entry is removed and survive a recompute from fills;
+# states (entered / pending / missing / rebates), pts per $1K, season totals, date keys, auto hook never overrides manual
+L5 = {}
+FX = [{"time": U(2026, 10, 13, 1) * 1000, "px": "100", "sz": "20", "fee": "0.1", "closedPnl": "1"}, {"time": U(2026, 10, 20, 1) * 1000, "px": "100", "sz": "5", "fee": "0", "closedPnl": "0"}]
+ACT5 = {"txflow": {"fills": FX, "fundings": [], "from": U(2026, 10, 12)}, "qfex": {"week": {"volume": 5000, "fees": 1, "pnl": 2, "trades": 10}}}
+M5 = {"txflow": {"weeks": {"1": {"points": 300}}}, "entropy": {"weeks": {"2026-10-12": {"rebates": 1.25}}}, "qfex": {"weeks": {"2026-10-19": {"points": 40}}}}
+d5 = PT.update(L5, ACT5, M5, NOW)
+P5 = {p["id"]: p for p in d5["platforms"]}
+t5 = P5["txflow"]
+assert [(x["label"], x["points"], x["pointsSrc"], x["pointsState"], x["ptsPer1k"]) for x in t5["history"]] == [("Epoch 2", None, None, "pending", None), ("Epoch 1", 300.0, "manual", "entered", 150.0)], t5["history"]
+assert t5["earned"] == {"points": 300.0, "weeks": 1, "volume": 2000.0, "ptsPer1k": 150.0, "src": ["manual"], "rebates": None} and t5["pointsSource"].startswith("manual")
+assert P5["qfex"]["current"]["points"] == 40.0 and P5["qfex"]["current"]["ptsPer1k"] == 8.0
+assert P5["entropy"]["history"][0]["rebates"] == 1.25 and P5["entropy"]["history"][0]["pointsState"] == "rebates" and P5["entropy"]["earned"]["rebates"] == 1.25
+assert P5["arcus"]["earned"]["points"] is None and "no points or rewards endpoint" in P5["arcus"]["pointsSource"]
+# next day: manual file emptied, fills recomputed, an "auto" source must not override the manual number
+d6 = PT.update(L5, {**ACT5, "txflow": {**ACT5["txflow"], "points": {str(U(2026, 10, 12)): 999, str(U(2026, 10, 19)): 55}}}, {}, NOW + 86400)
+t6 = {p["id"]: p for p in d6["platforms"]}["txflow"]
+assert [(x["points"], x["pointsSrc"]) for x in t6["history"]] == [(55.0, "auto"), (300.0, "manual")], t6["history"]
+assert {p["id"]: p for p in d6["platforms"]}["qfex"]["current"]["points"] == 40.0  # QFEX week totals path keeps points too
+# Epoch 1 without points after its credit day -> missing ("not entered yet"), never 0
+d7 = PT.update({}, {"txflow": ACT5["txflow"]}, {}, NOW)
+assert {p["id"]: p for p in d7["platforms"]}["txflow"]["history"][1]["pointsState"] == "missing"
+assert PT.update({}, {}, {"arcus": {"pointsTotal": 1234}}, NOW)["platforms"][0]["earned"]["points"] == 1234.0
 print(json.dumps({"ok": True}))

@@ -32,6 +32,18 @@ ORDER = ("arcus", "entropy", "txflow", "qfex", "variational")
 NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational"}
 VARIATIONAL_NEXT_DROP = "https://omni.variational.io/api/points/next_drop_ts"
 HISTORY_KEEP = 26
+# Where the points numbers come from. Checked 2026-10-21: no documented API exposes a user's points on any platform, so
+# points are entered by hand (points_manual.json) and kept in the private points ledger. activity[pf]["points"] =
+# {window_start: points} is the hook for an official source if one appears (shown as "auto").
+POINTS_SRC = {
+    "arcus": "manual: the documented Arcus API (docs.arcus.xyz, REST + WebSocket) has no points or rewards endpoint; points are only shown on the Arcus Points Dashboard",
+    "txflow": "manual: the TxFlow API (docs.txflow.com) has no points query (only referral rewards); points are shown on the TxFlow Points dashboard",
+    "variational": "manual: Variational documents no points API; the Omni points page needs a signed-in session",
+    "qfex": "manual: the QFEX API (api.qfex.com/openapi.yaml) has no points or season endpoint (only referral rewards); Season 0 points are not published yet",
+    "entropy": "rebates, not points: Entropy pays USDC/HYPE fee rebates every 2 weeks (claimable on the Entropy profile, no API); enter them as \"rebates\" by week",
+}
+KEEP = ("points", "pointsSrc", "rebates", "rebatesSrc")  # survive a recompute of the week from fills
+PENDING_GRACE = {"txflow": 86400}  # TxFlow credits points the Tuesday after the epoch (no time stated)
 
 
 def _utc_midnight(d):
@@ -145,6 +157,39 @@ def aggregate(fills, fundings, start_ms, end_ms):
             "trades": n, "makerShare": round(maker / v, 4) if v and known else None}
 
 
+def per_1k(points, volume):
+    """Efficiency: points per $1K of volume (None unless both are known and volume > 0)."""
+    if points is None or not volume or float(volume) <= 0:
+        return None
+    return round(float(points) / (float(volume) / 1000), 3)
+
+
+def points_state(pf, w, row, now_ts):
+    """entered | pending (drop still ahead) | missing (dropped, not entered yet) | rebates (Entropy: no points)."""
+    if SCHED[pf]["kind"] == "rebates":
+        return "rebates"
+    if row.get("points") is not None:
+        return "entered"
+    due = w["drop"] if w["drop"] is not None else w["end"] + PENDING_GRACE.get(pf, 0)
+    return "pending" if now_ts < due else "missing"
+
+
+def points_totals(pf, weeks, man):
+    """Season totals from the ledger (all stored weeks): points, the volume of the weeks that have points, pts/$1K; rebates."""
+    with_pts = [r for r in weeks.values() if r.get("points") is not None]
+    pts = round(sum(float(r["points"]) for r in with_pts), 4) if with_pts else None
+    vol = round(sum(float(r.get("volume") or 0) for r in with_pts), 2) if with_pts else None
+    reb = [float(r["rebates"]) for r in weeks.values() if r.get("rebates") is not None]
+    out = {"points": pts, "weeks": len(with_pts), "volume": vol, "ptsPer1k": per_1k(pts, vol),
+           "src": sorted({r.get("pointsSrc") or "manual" for r in with_pts}) or None,
+           "rebates": round(sum(reb), 4) if reb else None}
+    if man.get("pointsTotal") is not None:  # e.g. a season total read off the dashboard (overrides the sum)
+        out["points"], out["src"], out["ptsPer1k"] = float(man["pointsTotal"]), ["manual"], None
+    if man.get("rebatesTotal") is not None:
+        out["rebates"] = float(man["rebatesTotal"])
+    return out
+
+
 def update(ledger, activity, manual, now_ts):
     """Pure (tested). Mutates the ledger; returns the published "points" document."""
     ledger.setdefault("v", 1); ledger.setdefault("weeks", {}); ledger.setdefault("cov", {})
@@ -162,28 +207,36 @@ def update(ledger, activity, manual, now_ts):
                 w = window(pf, kk)
                 row = aggregate(act["fills"], act.get("fundings"), w["start"] * 1000, w["end"] * 1000)
                 old = weeks.get(str(w["start"])) or {}
-                weeks[str(w["start"])] = {**{x: old[x] for x in ("points",) if x in old}, **row, "src": act.get("src", "api"), "updated": now_ts}
+                weeks[str(w["start"])] = {**{x: old[x] for x in KEEP if x in old}, **row, "src": act.get("src", "api"), "updated": now_ts}
             ledger["cov"][pf] = min(int(ledger["cov"].get(pf) or frm), frm)
         elif isinstance(act.get("week"), dict):  # e.g. QFEX autotrader week totals (UTC Monday week = this tracking week)
             w = window(pf, kc)
             wk = act["week"]
-            weeks[str(w["start"])] = {"volume": round(float(wk.get("volume") or 0), 2), "fees": round(float(wk.get("fees") or 0), 4),
+            old = weeks.get(str(w["start"])) or {}
+            weeks[str(w["start"])] = {**{x: old[x] for x in KEEP if x in old}, "volume": round(float(wk.get("volume") or 0), 2), "fees": round(float(wk.get("fees") or 0), 4),
                                       "funding": None, "pnl": round(float(wk.get("pnl") or 0), 4), "trades": int(wk.get("trades") or 0),
                                       "makerShare": None, "src": act.get("src", "autotrader"), "updated": now_ts}
-        # manual entries by week number (or by window start unix)
+        # points from an official source, if one exists (none today): {window_start: points}
+        for key, val in (act.get("points") or {}).items():
+            row = weeks.setdefault(str(window(pf, window_index(pf, int(key)))["start"]), {"src": act.get("src", "api"), "updated": now_ts})
+            if val is not None and row.get("pointsSrc") != "manual":
+                row["points"], row["pointsSrc"] = float(val), "auto"
+        # manual entries by week number, window start (unix) or start date (YYYY-MM-DD, UTC)
         for key, vals in (man.get("weeks") or {}).items():
             kk = None
             for cand in range(kc - 60, kc + 1):
                 w = window(pf, cand)
-                if str(w["n"]) == str(key) or str(w["start"]) == str(key):
+                if str(key) in (str(w["n"]), str(w["start"]), datetime.fromtimestamp(w["start"], UTC).strftime("%Y-%m-%d"), w["label"]):
                     kk = cand; break
             if kk is None:
                 continue
             w = window(pf, kk)
             row = dict(weeks.get(str(w["start"])) or {})
-            for f in ("volume", "pnl", "fees", "points", "trades"):
+            for f in ("volume", "pnl", "fees", "points", "rebates", "trades"):
                 if vals.get(f) is not None:
                     row[f] = float(vals[f]); row.setdefault("manual", []); row["manual"] = sorted(set(row["manual"]) | {f})
+                    if f in ("points", "rebates"):
+                        row[f + "Src"] = "manual"
             row.setdefault("src", "manual"); row["updated"] = row.get("updated") or now_ts
             weeks[str(w["start"])] = row
         # trim
@@ -198,11 +251,13 @@ def update(ledger, activity, manual, now_ts):
                 continue
             w = window(pf, window_index(pf, st))
             r = weeks[key]
-            if st != cur["start"] and not r.get("trades") and not r.get("volume") and r.get("points") is None and r.get("pnl") in (None, 0, 0.0):
+            if st != cur["start"] and not r.get("trades") and not r.get("volume") and r.get("points") is None and r.get("rebates") is None and r.get("pnl") in (None, 0, 0.0):
                 continue  # empty past week (nothing traded): keep the table short
             hist.append({"n": w["n"], "label": w["label"], "start": w["start"], "end": w["end"], "drop": w["drop"], "current": st == cur["start"],
-                         **{f: weeks[key].get(f) for f in ("volume", "fees", "funding", "pnl", "trades", "points", "makerShare", "src", "manual")}})
+                         **{f: weeks[key].get(f) for f in ("volume", "fees", "funding", "pnl", "trades", "points", "pointsSrc", "rebates", "rebatesSrc", "makerShare", "src", "manual")},
+                         "pointsState": points_state(pf, w, r, now_ts), "ptsPer1k": per_1k(r.get("points"), r.get("volume"))})
         hist = hist[:HISTORY_KEEP]
+        earned = points_totals(pf, weeks, man)
         has_data = act.get("fills") is not None or isinstance(act.get("week"), dict)
         conn = bool(man) or act.get("connected", has_data)
         status = act.get("status") or ("ok" if has_data else "manual" if man else "not connected")
@@ -211,7 +266,7 @@ def update(ledger, activity, manual, now_ts):
                     "unverified": s["unverified"], "connected": bool(conn), "status": status,
                     "dataNote": act.get("note") or man.get("note"), "window": {k: cur[k] for k in ("n", "label", "start", "end", "drop")},
                     "upcoming": [{k: w[k] for k in ("n", "label", "start", "end", "drop")} for w in upcoming],
-                    "current": next((h for h in hist if h["current"]), None), "history": hist,
+                    "current": next((h for h in hist if h["current"]), None), "history": hist, "earned": earned, "pointsSource": POINTS_SRC[pf],
                     **({"apiNextDrop": act["apiNextDrop"]} if act.get("apiNextDrop") else {})})
     cur = [p["current"] for p in out if p["current"]]
     tot = {f: round(sum(float(c.get(f) or 0) for c in cur), 4) for f in ("volume", "fees", "pnl")} if cur else None
