@@ -1,0 +1,10 @@
+{
+  "_help": "Copy to points_manual.json (git-ignored, private). Week keys are the platform's own week/epoch numbers (Variational 'Week 45', TxFlow 'Epoch 2', Arcus 'Week 3'). Any field you set overrides the computed one. Points are not readable by any public API, so enter them from each platform's points page after a drop.",
+  "variational": {
+    "equity": 250.0,
+    "note": "from omni.variational.io portfolio",
+    "weeks": { "45": { "volume": 12000, "pnl": -3.2, "fees": 0, "points": 12.5 } }
+  },
+  "txflow": { "weeks": { "1": { "points": 210.4 } } },
+  "arcus": { "weeks": { "3": { "points": 0 } } }
+}

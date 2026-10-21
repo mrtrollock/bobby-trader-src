@@ -1,0 +1,109 @@
+// Points tab: per platform the current points week (Berlin time), a live countdown to the next points drop (or the end
+// of the epoch / tracking week when no drop time is published), volume / PnL / fees this week and past weeks.
+// Data: balances.enc.json -> "points" (written by points.py via balances.py, decrypted in the browser). No network calls.
+const BERLIN = 'Europe/Berlin';
+export const berlin = (t) => (t == null ? '—' : new Date(t * 1000).toLocaleString('en-GB', { timeZone: BERLIN, weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }));
+const money = (x, d = 2) => (x == null || !Number.isFinite(Number(x)) ? '—' : (Number(x) < 0 ? '-$' : '$') + Math.abs(Number(x)).toLocaleString('en-US', { minimumFractionDigits: d, maximumFractionDigits: d }));
+const signed = (x) => (x == null || !Number.isFinite(Number(x)) ? '—' : Number(x) === 0 ? '$0.00' : (Number(x) < 0 ? '-$' : '+$') + Math.abs(Number(x)).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
+export const kusd = (x) => (x == null || !Number.isFinite(Number(x)) ? '—' : Math.abs(x) >= 1e6 ? '$' + (x / 1e6).toFixed(2) + 'M' : Math.abs(x) >= 1e3 ? '$' + (x / 1e3).toFixed(1) + 'K' : '$' + Number(x).toFixed(0));
+const pts = (x) => (x == null ? '—' : Number(x).toLocaleString('en-US', { maximumFractionDigits: 1 }));
+const cls = (x) => (x == null ? '' : x >= 0 ? 'green' : 'redtxt');
+
+export function fmtCountdown(sec) {
+  if (!(sec > 0)) return 'now';
+  const d = Math.floor(sec / 86400), hh = Math.floor((sec % 86400) / 3600), mm = Math.floor((sec % 3600) / 60), ss = Math.floor(sec % 60);
+  const p2 = (n) => String(n).padStart(2, '0');
+  return (d ? `${d}d ` : '') + `${p2(hh)}:${p2(mm)}:${p2(ss)}`;
+}
+// The window that contains `now` (from the published current + upcoming windows; the data may be hours old).
+export function liveWindow(p, now) {
+  const all = [p.window, ...(p.upcoming || [])].filter(Boolean);
+  return all.find((w) => w.start <= now && now < w.end) || all.find((w) => w.end > now) || null;
+}
+// Countdown target: the next published drop that is still ahead, else the end of the live window.
+export function target(p, now) {
+  const all = [p.window, ...(p.upcoming || [])].filter(Boolean);
+  if (p.apiNextDrop && p.apiNextDrop > now) return { t: p.apiNextDrop, kind: 'drop' };
+  const d = all.map((w) => w.drop).filter((t) => t != null && t > now).sort((a, b) => a - b)[0];
+  if (d != null && !(p.endsBy && d > p.endsBy + 86400)) return { t: d, kind: 'drop' };
+  const w = liveWindow(p, now);
+  return w ? { t: w.end, kind: 'end' } : null;
+}
+export function targetLabel(p, kind) {
+  if (kind === 'drop') return 'Next points drop';
+  if (p.kind === 'points') return 'Epoch ends';
+  return 'Tracking week ends';
+}
+
+let timer = null;
+export function startCountdowns(doc = globalThis.document) {
+  if (timer) clearInterval(timer);
+  const tick = () => {
+    const els = doc.querySelectorAll('[data-cd]');
+    if (!els.length) { clearInterval(timer); timer = null; return; }
+    const now = Date.now() / 1000;
+    for (const el of els) el.textContent = fmtCountdown(Number(el.dataset.cd) - now);
+  };
+  tick(); timer = setInterval(tick, 1000);
+}
+
+export function viewPoints(app, { h, doc, refresh }) {
+  const P = doc && doc.points;
+  const card = h('section', { class: 'card' }, h('h2', {}, '🎯 Points weeks'),
+    h('div', { class: 'muted small' }, P ? `Updated ${berlin(P.generated)} (Berlin time) · countdowns are live` : 'Not published yet'));
+  app.append(card);
+  if (!P) { card.append(h('p', { class: 'muted' }, 'No points data yet. Run tools/publish.sh all on the box.')); return; }
+  const now = Date.now() / 1000;
+  // summary: one row per platform + total (this points week)
+  const rows = P.platforms.map((p) => {
+    const tg = target(p, now), c = p.current;
+    return h('tr', {}, h('th', {}, p.name),
+      h('td', {}, tg ? h('span', { 'data-cd': String(tg.t), class: 'cd' }, fmtCountdown(tg.t - now)) : '—'),
+      ...(p.connected ? [h('td', {}, kusd(c && c.volume)), h('td', { class: cls(c && c.pnl) }, signed(c && c.pnl)), h('td', {}, money(c && c.fees))]
+        : [h('td', { colspan: '3', class: 'muted' }, 'not connected')]));
+  });
+  if (P.total) rows.push(h('tr', { class: 'total' }, h('th', {}, 'Total'), h('td', {}, ''), h('td', {}, kusd(P.total.volume)),
+    h('td', { class: cls(P.total.pnl) }, signed(P.total.pnl)), h('td', {}, money(P.total.fees))));
+  card.append(h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'ptstable' },
+    h('thead', {}, h('tr', {}, ...['', 'Countdown', 'Volume', 'PnL', 'Fees'].map((t) => h('th', {}, t)))), h('tbody', {}, ...rows))),
+  h('p', { class: 'muted small' }, 'This points week per platform. PnL = realized PnL minus fees, plus funding where the API reports it. Countdown: next points drop, or the end of the epoch / tracking week when no drop time is published.'));
+
+  for (const p of P.platforms) {
+    const tg = target(p, now), w = liveWindow(p, now) || p.window, c = p.current;
+    const stale = w && p.window && w.start !== p.window.start;
+    const sec = h('section', { class: 'card pts', id: 'pts-' + p.id },
+      h('h2', {}, p.name, ' ', h('span', { class: 'badge' + (p.connected ? '' : ' warn') }, p.connected ? (p.status === 'manual' ? 'manual' : p.status === 'error' ? 'error' : 'connected') : 'not connected')),
+      h('div', { class: 'small' }, h('b', {}, p.program)),
+      h('div', { class: 'small muted' }, p.rule),
+      h('div', { class: 'small muted' }, 'Week: ' + p.windowRule),
+      kvTable(h, [
+        [w && w.n != null ? `${w.label}` : 'Tracking week', w ? `${berlin(w.start)} → ${berlin(w.end)}` : '—'],
+        tg ? [targetLabel(p, tg.kind), h('span', {}, berlin(tg.t), ' · in ', h('span', { 'data-cd': String(tg.t), class: 'cd' }, fmtCountdown(tg.t - now)))] : null,
+        p.kind === 'rebates' ? ['Rebate payout', 'every 2 weeks (date not published)'] : null,
+        p.kind === 'not announced' ? ['Points drop', 'not announced'] : null,
+        p.endsNote ? ['Program', p.endsNote] : null,
+        ...(p.connected ? [
+          ['Volume this week' + (stale ? ' (last week, data not refreshed yet)' : ''), kusd(c && c.volume)],
+          ['PnL this week (fees incl.)', h('span', { class: cls(c && c.pnl) }, signed(c && c.pnl))],
+          ['Fees this week', money(c && c.fees, 2) + (c && c.funding ? ` · funding ${signed(c.funding)}` : '')],
+          c && c.trades != null ? ['Fills', String(c.trades) + (c.makerShare != null ? ` · ${(c.makerShare * 100).toFixed(0)}% maker` : '')] : null,
+          c && c.points != null ? ['Points this week', pts(c.points)] : null,
+        ] : [['Data', 'not connected']]),
+      ]),
+      p.dataNote ? h('div', { class: 'small muted' }, p.dataNote) : null);
+    const hist = (p.history || []).filter((x) => !x.current);
+    if (hist.length) sec.append(h('h3', {}, 'Past weeks'), h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'ptshist-' + p.id },
+      h('thead', {}, h('tr', {}, ...['Week', 'Volume', 'PnL', 'Fees', 'Points'].map((t) => h('th', {}, t)))),
+      h('tbody', {}, ...hist.map((x) => h('tr', {}, h('th', {}, x.n != null ? x.label : berlin(x.start).replace(/, \d\d:\d\d$/, '')), h('td', {}, kusd(x.volume)),
+        h('td', { class: cls(x.pnl) }, signed(x.pnl)), h('td', {}, money(x.fees)), h('td', {}, pts(x.points))))))));
+    sec.append(h('details', { class: 'small muted' }, h('summary', {}, 'Sources' + ((p.unverified || []).length ? ' · unverified: ' + p.unverified.join(', ') : '')),
+      h('ul', {}, ...(p.sources || []).map((s) => h('li', {}, h('a', { href: s.url, target: '_blank', rel: 'noopener noreferrer' }, s.label)))),
+));
+    app.append(sec);
+  }
+  if (refresh) app.append(h('button', { class: 'btn ghost', onclick: refresh }, 'Refresh'));
+  startCountdowns();
+}
+function kvTable(h, rows) {
+  return h('table', { class: 'kv small' }, ...rows.filter(Boolean).map(([k, v]) => h('tr', {}, h('th', {}, k), h('td', {}, v))));
+}

@@ -11,6 +11,8 @@ clearinghouseState on BOBBY_HL_DEXES (BOBBY_HL_ADDRESS) + userNonFundingLedgerUp
 (best effort), TxFlow clearinghouseState (BOBBY_TXFLOW_ADDRESS), QFEX through `node autotrader/cli.js status --pf qfex`
 (QFEX key in the env; `deposit` tracks net transfers in/out of the account). A platform without data shows
 "not connected yet".
+Variational (no public per-address API) comes from points_manual.json; points weeks (volume / fees / PnL per points week,
+countdown schedule) are built by points.py and published inside the same encrypted file under "points".
 
 Ledger (git-ignored, chmod 600): the first reading of a platform becomes its starting balance; every run appends a
 snapshot. PnL = current - start - net deposits since start. Manual overrides (git-ignored) in balances_start.json:
@@ -21,11 +23,12 @@ import argparse, json, os, sys, time
 from pathlib import Path
 
 import briefing as B
+import points as PT
 import vaultpy
 
 HERE = Path(__file__).parent
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX"}
-ORDER = ("arcus", "entropy", "txflow", "qfex")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational")  # variational: manual (points_manual.json), no public per-address API
 f = lambda x: None if x in (None, "") else float(x)
 
 
@@ -80,11 +83,23 @@ def read_live(testnet, start):
 
     def txflow():
         st = B._tx(ep["txflow"], {"type": "clearinghouseState", "user": tx_addr, "accountType": "perp"}) or {}
-        return {"equity": f((st.get("marginSummary") or {}).get("accountValue"))}
+        out = {"equity": f((st.get("marginSummary") or {}).get("accountValue"))}
+        try:  # positions (+ SL/TP) and deposits/withdrawals since the start, all public by address
+            oo = B._tx(ep["txflow"], {"type": "frontendOpenOrders", "user": tx_addr, "limit": 200, "offset": 0}) or []
+            out["positions"] = PT.txflow_positions(st, oo.get("data", oo) if isinstance(oo, dict) else oo)
+            s0 = (start.get("txflow") or {}).get("t")
+            if s0:
+                ups = PT._paged_tx(B, ep["txflow"], {"type": "userNonFundingLedgerUpdates", "user": tx_addr, "startTimeMs": int(s0 * 1000)})
+                out["flowsSince"], out["flowsSrc"] = PT.txflow_flows(ups, tx_addr), "TxFlow ledger (public API)"
+        except Exception:  # noqa: BLE001 - equity alone is still useful
+            pass
+        return out
 
     def qfex():
-        q = B.fetch_qfex(testnet, int(time.time() * 1000))
-        return {"equity": f(q.get("equity")), "deposit": f(q.get("deposit")), "positions": positions_of(q), "volume": q.get("volume")}
+        since = PT.qfex_since(int(time.time()))
+        q = B.fetch_qfex(testnet, since * 1000)
+        return {"equity": f(q.get("equity")), "deposit": f(q.get("deposit")), "positions": positions_of(q), "volume": q.get("volume"),
+                "fills": q.get("fills"), "fillsFrom": since}
 
     out = {}
     for pf, ok, fn in (("arcus", addr, arcus), ("entropy", hl_addr, entropy), ("txflow", tx_addr, txflow), ("qfex", qkey, qfex)):
@@ -117,7 +132,9 @@ def update(ledger, readings, starts, now_ts):
         if r.get("deposit") is not None and st.get("deposit") is not None:
             auto, src = float(r["deposit"]) - float(st["deposit"]), "QFEX deposit field"
         elif r.get("flowsSince") is not None:
-            auto, src = float(r["flowsSince"]), "Hyperliquid ledger (best effort)"
+            auto, src = float(r["flowsSince"]), r.get("flowsSrc") or "Hyperliquid ledger (best effort)"
+        elif r.get("manual"):
+            auto, src = 0.0, "manual entry (points_manual.json; deposits in balances_start.json)"
         else:
             auto, src = 0.0, "not exposed by the API (use balances_start.json)"
         nd = auto + float(ov.get("netDeposits") or 0)
@@ -179,6 +196,8 @@ def main(argv=None):
     ap.add_argument("--ledger", default=str(HERE / "balances_ledger.json"))
     ap.add_argument("--starts", default=str(HERE / "balances_start.json"))
     ap.add_argument("--alerts", default=str(HERE / "autotrader" / "ALERT"), help="autotrader protection-guard alerts (JSON lines)")
+    ap.add_argument("--points-ledger", help="points weeks ledger (default: points_ledger.json next to --ledger)")
+    ap.add_argument("--points-manual", help="manual points/volume/balances (default: points_manual.json next to --ledger)")
     ap.add_argument("--mock"); ap.add_argument("--testnet", action="store_true"); ap.add_argument("--now", type=float)
     a = ap.parse_args(argv)
     vaultpy.passphrase()  # refuse before reading anything: the output is published
@@ -190,7 +209,14 @@ def main(argv=None):
         readings, secrets = json.loads(Path(a.mock).read_text()), []
     else:
         readings, secrets = read_live(a.testnet, ledger.get("start", {}))
+    # points weeks (points.py): Variational balance is manual; volume/PnL per points week go into the encrypted doc
+    pl_path = Path(a.points_ledger) if a.points_ledger else lp.with_name("points_ledger.json")
+    manual = PT.load_json(a.points_manual or lp.with_name("points_manual.json"))
+    readings.setdefault("variational", PT.manual_balance(manual, "variational"))
+    pledger = PT.load_json(pl_path)
+    activity = PT.mock_activity(readings) if a.mock else PT.collect_live(B, a.testnet, pledger, readings, now_ts, secrets)
     doc = update(ledger, readings, starts, now_ts)
+    doc["points"] = PT.update(pledger, activity, manual, now_ts)
     doc["network"] = "mock" if a.mock else ("testnet" if a.testnet else "mainnet")
     doc["alerts"] = read_alerts(Path(a.alerts))
     doc["positions"] = [{"pf": pf, **p} for pf in ORDER for p in ((readings.get(pf) or {}).get("positions") or [])]
@@ -199,6 +225,7 @@ def main(argv=None):
     if any(s and s.lower() in text.lower() for s in secrets):
         raise SystemExit("refusing to write: an address or key would be included")
     lp.write_text(json.dumps(ledger, indent=0)); os.chmod(lp, 0o600)
+    PT.save_ledger(pl_path, pledger)
     out = vaultpy.write_sealed(a.out, doc)
     dist = HERE / "dist"
     if dist.is_dir() and out.resolve() == (HERE / "public" / "balances.enc.json").resolve():

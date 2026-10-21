@@ -23,3 +23,6 @@ public/balances.json
 balances_ledger.json
 balances_start.json
 autotrader/ALERT
+# points weeks ledger + manual entries (private)
+points_ledger.json
+points_manual.json

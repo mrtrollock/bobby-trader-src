@@ -1,0 +1,71 @@
+// Headless Chrome check of the Points tab in dist/: balances.py --mock writes the encrypted balances.enc.json (with the
+// "points" section) using a throwaway passphrase; the page must decrypt it, render the per-platform points weeks with
+// live countdowns, and make no request outside the static site. Real data files are backed up and restored.
+// Usage: npm run build && node tests/e2e_points.mjs
+import puppeteer from 'puppeteer-core';
+import { spawn, execFileSync } from 'node:child_process';
+import { randomBytes } from 'node:crypto';
+import { writeFileSync, readFileSync, existsSync, rmSync, mkdtempSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { sealJson } from '../src/vault.js';
+
+const PORT = 8767, ORIGIN = `http://127.0.0.1:${PORT}`;
+const PASS = 'e2e-' + randomBytes(9).toString('hex');
+const FILES = ['proposals.enc.json', 'briefing.enc.json', 'balances.enc.json'];
+const backups = Object.fromEntries(FILES.map((f) => [f, existsSync('dist/' + f) ? readFileSync('dist/' + f, 'utf8') : null]));
+const restore = () => { for (const [f, v] of Object.entries(backups)) { if (v == null) rmSync('dist/' + f, { force: true }); else writeFileSync('dist/' + f, v); } };
+const seal = async (f, obj) => writeFileSync('dist/' + f, JSON.stringify(await sealJson(obj, PASS)));
+await seal('briefing.enc.json', { v: 1, platforms: [] });
+await seal('proposals.enc.json', { v: 1, updated: 0, batches: [] });
+const now = Math.floor(Date.now() / 1000), H = 3600e3, nowMs = now * 1000;
+const bt = mkdtempSync(join(tmpdir(), 'pts-'));
+const fills = [{ time: nowMs - 2 * H, px: '100', sz: '2', fee: '0.04', closedPnl: '0', tradeSide: 'Maker' }, { time: nowMs - H, px: '110', sz: '2', fee: '0.1', closedPnl: '20', tradeSide: 'Taker' },
+  { time: nowMs - 9 * 24 * H, px: '50', sz: '1', fee: '0.5', closedPnl: '-3', tradeSide: 'Taker' }];
+writeFileSync(join(bt, 'm.json'), JSON.stringify({ qfex: { equity: 100, deposit: 100, volume: { day: {}, week: { volume: 71500, fees: 1.5, pnl: -2.25, trades: 300 }, month: { volume: 71500 }, goal: 300000 } },
+  txflow: { equity: 518.7, activity: { fills, fundings: [], from: now - 30 * 86400 } } }));
+writeFileSync(join(bt, 'points_manual.json'), JSON.stringify({ variational: { equity: 250, weeks: {} } }));
+const pyEnv = { ...process.env, BOBBY_VIEW_PASSPHRASE: PASS, BOBBY_ACCOUNT_ADDRESS: '', BOBBY_HL_ADDRESS: '', BOBBY_TXFLOW_ADDRESS: '', BOBBY_VARIATIONAL_ADDRESS: '', QFEX_API_PUBLIC_KEY: '', QFEX_API_SECRET_KEY: '', QFEX_ACCOUNT_ID: '' };
+execFileSync('python3', ['balances.py', '--mock', join(bt, 'm.json'), '--ledger', join(bt, 'l.json'), '--starts', join(bt, 's.json'), '--alerts', join(bt, 'ALERT'), '--out', 'dist/balances.enc.json', '--now', String(now)], { env: pyEnv });
+const srv = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1', '-d', 'dist'], { stdio: 'ignore' });
+const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+await sleep(800);
+const browser = await puppeteer.launch({ executablePath: '/usr/bin/google-chrome', headless: true, args: ['--no-sandbox'] });
+const fail = [];
+try {
+  const page = await browser.newPage();
+  await page.setViewport({ width: 375, height: 812, isMobile: true, hasTouch: true });
+  const outside = [], logs = [];
+  page.on('pageerror', (e) => logs.push('pageerror: ' + e.message));
+  page.on('console', (m) => { if (m.type() === 'error') logs.push(m.text()); });
+  await page.setRequestInterception(true);
+  page.on('request', (r) => { if (r.url().startsWith(ORIGIN)) return r.continue(); outside.push(r.url()); r.abort(); });
+  await page.goto(ORIGIN + '/index.html', { waitUntil: 'networkidle0' });
+  const raw = await page.evaluate(async () => (await fetch('./balances.enc.json')).text());
+  if (/Epoch|Variational|TxFlow|points/i.test(raw) || Object.keys(JSON.parse(raw)).sort().join() !== 'aad,alg,ct,it,iv,kdf,salt,v') fail.push('served file not an opaque envelope');
+  await page.type('#viewpass', PASS); await page.click('#unlock');
+  await page.waitForSelector('nav.bottom', { timeout: 20000 });
+  const navOk = await page.evaluate(() => { const b = [...document.querySelectorAll('nav button')]; const p = b.find((x) => x.textContent.includes('Points')); if (p) p.click(); return { n: b.length, fits: b.every((x) => x.getBoundingClientRect().right <= window.innerWidth + 1) }; });
+  await page.waitForSelector('#ptstable', { timeout: 10000 });
+  const read = () => page.evaluate(() => ({ rows: [...document.querySelectorAll('#ptstable tbody tr')].map((r) => r.innerText.replace(/\s+/g, ' ').trim()),
+    cds: [...document.querySelectorAll('#ptstable [data-cd]')].map((e) => e.textContent), hist: [...document.querySelectorAll('#ptshist-txflow tbody tr')].map((r) => r.innerText.replace(/\s+/g, ' ').trim()),
+    cards: [...document.querySelectorAll('.card.pts')].map((c) => c.innerText.replace(/\s+/g, ' ').slice(0, 1500)), wide: document.documentElement.scrollWidth <= window.innerWidth + 1 }));
+  const a = await read(); await sleep(2100); const b = await read();
+  await page.screenshot({ path: 'tests/e2e_points.png', fullPage: true });
+  const rows = a.rows.join(' | ');
+  console.log(JSON.stringify({ navOk, rows: a.rows, cds: [a.cds, b.cds], hist: a.hist, cards: a.cards.map((c) => c.slice(0, 220)), outside, logs }, null, 1));
+  if (navOk.n !== 7 || !navOk.fits || !a.wide) fail.push('nav/mobile layout');
+  if (a.rows.length !== 6) fail.push('summary rows');
+  if (!/Arcus \d*d? ?\d\d:\d\d:\d\d not connected/.test(rows) || !/Entropy .* not connected/.test(rows)) fail.push('not connected rows with countdown');
+  if (!/TxFlow [\dd :]+ \$420 \+\$19\.86 \$0\.14/.test(rows)) fail.push('txflow week');
+  if (!/QFEX [\dd :]+ \$71\.5K -\$2\.25 \$1\.50/.test(rows)) fail.push('qfex week');
+  if (!/Variational [\dd :]+ — — —/.test(rows)) fail.push('variational manual');
+  if (!/Total \$71\.9K \+\$17\.61 \$1\.64/.test(rows)) fail.push('total row');
+  if (a.cds.length !== 5 || a.cds.join() === b.cds.join()) fail.push('countdowns not ticking');
+  if (!a.hist.some((x) => /-\$3\.50 \$0\.50/.test(x))) fail.push('txflow history');
+  const cards = a.cards.join(' ');
+  if (!/Season 1 · 250K points \/ week/.test(cards) || !/Next points drop/.test(cards) || !/Epoch ends/.test(cards) || !/every 2 weeks \(date not published\)/.test(cards) || !/Points drop not announced/.test(cards)) fail.push('cards');
+  if (outside.length || logs.length) fail.push('outside requests / page errors');
+} finally { await browser.close(); srv.kill(); restore(); }
+if (fail.length) { console.error('E2E POINTS FAIL: ' + fail.join(', ')); process.exit(1); }
+console.error('E2E POINTS OK');

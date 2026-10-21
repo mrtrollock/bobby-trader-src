@@ -9,6 +9,7 @@ import { extractToken, decodeProposal } from './proposal.js';
 import * as KS from './keystore.js';
 import { runTpslReplace, legLabel } from './replace.js';
 import { openJson } from './vault.js';
+import { viewPoints } from './points.js';
 
 const LAUNCH_URL = window.__LAUNCH_URL || location.href;
 const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.02, feeArcus: FEES.arcus, feeIo: FEES.hl_io,
@@ -319,14 +320,14 @@ function render() {
   const app = $app();
   if (!S.viewPass) { app.replaceChildren(); viewLock(app); return; } // nothing else renders until the passphrase decrypted the data
   app.replaceChildren(header());
-  const views = { briefing: viewBriefing, home: viewHome, inbox: viewInbox, balances: viewBalances, dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
+  const views = { briefing: viewBriefing, home: viewHome, inbox: viewInbox, balances: viewBalances, points: (a) => viewPoints(a, { h, doc: S.data && S.data.balances, refresh: async () => { try { await refreshData(); render(); } catch (e) { toast(e.message, 'err'); } } }), dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
   (views[S.view] || viewHome)(app);
   app.append(nav());
 }
 
 function nav() {
   const b = (v, ico, label) => h('button', { class: 'navbtn' + (S.view === v ? ' on' : ''), onclick: () => go(v, { result: null }) }, h('span', {}, ico), label);
-  return h('nav', { class: 'bottom' }, b('briefing', '📰', 'Briefing'), b('inbox', '📥', 'Proposals'), b('balances', '💰', 'Balances'), b('dash', '📈', 'Dashboard'), b('positions', '📊', 'Positions'), b('settings', '⚙️', 'Settings'));
+  return h('nav', { class: 'bottom' }, b('briefing', '📰', 'Briefing'), b('inbox', '📥', 'Proposals'), b('balances', '💰', 'Balances'), b('points', '🎯', 'Points'), b('dash', '📈', 'Dashboard'), b('positions', '📊', 'Positions'), b('settings', '⚙️', 'Settings'));
 }
 window.addEventListener('popstate', () => { if (S.view !== 'briefing') go('briefing', { result: null }); });
 

@@ -59,3 +59,10 @@ table.bal th:first-child,table.bal td:first-child{text-align:left}
 table.bal tr.total th,table.bal tr.total td{font-weight:700;border-top:2px solid #39404d}
 table.bal tr.muted td{text-align:left}
 svg.spark{width:100%;height:48px;display:block;margin:6px 0}
+
+/* points tab */
+.cd{font-variant-numeric:tabular-nums;font-weight:600}
+.card.pts .kv th{font-size:13px}.card.pts .kv td{font-size:13px}
+.card.pts details{margin-top:8px}.card.pts details a{color:var(--accent)}
+.card.pts h2 .badge{vertical-align:middle;font-weight:400}
+@media (max-width:420px){.navbtn{font-size:10.5px;padding:0 1px}.navbtn span{font-size:20px}}
