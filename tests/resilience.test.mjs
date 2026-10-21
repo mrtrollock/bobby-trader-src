@@ -89,3 +89,9 @@ test('readHealth.pace: slower ticks for 15 min after any read failure, normal sp
   const g = C.readHealth({ slowMs: 60e3, coolMs: 60e3 }); g.fail(t0, { partial: true });
   assert.equal(g.pace(t0 + 59e3), 60e3); assert.equal(g.pace(t0 + 61e3), 0);
 });
+
+test('isTransientError: a WebSocket handshake rejected with HTTP 403/5xx is transient (14:32Z key re-check abort)', () => {
+  assert.equal(C.isTransientError(new Error('QFEX: authentication failed (trade WebSocket refused the API key: Unexpected server response: 403)')), true);
+  assert.equal(C.isTransientError(new Error('QFEX: trade WebSocket read failed after retries (QFEX: authentication failed (trade WebSocket refused the API key: Unexpected server response: 503))')), true);
+  assert.equal(C.isTransientError(new Error('QFEX: this API key has all-accounts scope')), false);
+});

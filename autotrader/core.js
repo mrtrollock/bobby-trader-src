@@ -151,6 +151,9 @@ export function realNet(cfg) {
 export function isTransientError(e) {
   const m = String((e && e.message) || e || '');
   if (/HTTP (401|403|408|425|429|5\d\d)\b/.test(m)) return true;
+  // WebSocket handshake rejected with an HTTP status (QFEX edge; the API key is only checked AFTER connecting, in the auth
+  // message): same class as the REST 403s. The 30-min key re-check hit this and aborted the loop at 14:32Z.
+  if (/Unexpected server response: (401|403|408|425|429|5\d\d)\b/.test(m)) return true;
   return /fetch failed|timed? ?out|timeout|aborted|ECONN|ETIMEDOUT|EAI_AGAIN|ENOTFOUND|EPIPE|socket hang up|network|WebSocket (connect timeout|closed|error)|UND_ERR/i.test(m);
 }
 // Consecutive-failure tracker for the loop: exponential backoff (base, 2x, ... capped below the 5-min stall watchdog);
