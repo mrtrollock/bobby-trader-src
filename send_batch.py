@@ -128,16 +128,17 @@ def state_for(trades):
     for t in trades:
         need.add(venue(t))
     for v in need:
-        out[v] = arcus_state() if v == "arcus" else txflow_state() if v == "txflow" else hl_state(v[3:])
+        # QFEX account data is private (HMAC key on the box): execution is tracked by the autotrader, not here
+        out[v] = {"sizes": {}, "orders": []} if v == "qfex" else arcus_state() if v == "arcus" else txflow_state() if v == "txflow" else hl_state(v[3:])
     return out
 
 def venue(t):
-    if t["pf"] in ("arcus", "txflow"):
+    if t["pf"] in ("arcus", "txflow", "qfex"):
         return t["pf"]
     return "hl:" + (t["m"].split(":")[0] if ":" in t["m"] else "")
 
 def mkey(t):
-    return arcus_key(t["m"]) if t["pf"] == "arcus" else tx_key(t["m"]) if t["pf"] == "txflow" else t["m"]
+    return arcus_key(t["m"]) if t["pf"] in ("arcus", "qfex") else tx_key(t["m"]) if t["pf"] == "txflow" else t["m"]
 
 def baseline(t, st):
     s = st[venue(t)]
@@ -169,12 +170,12 @@ def executed(t, base, st):
 
 # ------------------------------------------------------------------ inbox rendering
 def group_of(t):
-    if t["pf"] in ("arcus", "txflow"):
+    if t["pf"] in ("arcus", "txflow", "qfex"):
         return t["pf"]
     return "entropy" if t["m"].startswith("io:") else "hl"
 
-TITLE = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "hl": "🤖 Hyperliquid", "txflow": "🌊 TxFlow (manual)"}
-ORDER = ("arcus", "entropy", "hl", "txflow")
+TITLE = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "hl": "🤖 Hyperliquid", "txflow": "🌊 TxFlow (manual)", "qfex": "📈 QFEX (autotrader)"}
+ORDER = ("arcus", "entropy", "hl", "txflow", "qfex")
 
 def short(m):
     return m.split(":")[-1].replace("-USD", "")

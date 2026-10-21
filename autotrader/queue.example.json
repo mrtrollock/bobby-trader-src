@@ -2,5 +2,7 @@
  {"id": "2026-10-21-arcus-tsla-1", "platform": "arcus", "market": "TSLA-USD", "side": "long", "type": "limit", "price": 395.5, "size": 0.2,
   "leverage": 1, "stopLoss": 386, "takeProfit": 412, "expiry": 1792600000, "refPrice": 398.1, "rationale": "pullback to support, maker entry"},
  {"id": "2026-10-21-entropy-anth-1", "pf": "entropy", "m": "io:ANTH", "sd": "short", "et": "limit", "px": 382.0, "sz": 0.3,
-  "lev": 1, "sl": 390.0, "tp": 370.0, "exp": 1792600000, "ref": 379.5, "n": "fade into resistance"}
+  "lev": 1, "sl": 390.0, "tp": 370.0, "exp": 1792600000, "ref": 379.5, "n": "fade into resistance"},
+ {"id": "2026-10-21-qfex-us100-1", "pf": "qfex", "m": "US100-USD", "sd": "long", "et": "limit", "px": 29580, "sz": 0.003,
+  "lev": 1, "sl": 29300, "tp": 30100, "exp": 1792600000, "ref": 29600, "n": "index (cheapest fee tier), maker bid under the mark"}
 ]

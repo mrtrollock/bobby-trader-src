@@ -13,7 +13,7 @@ const risk = (p, extra = {}) => computeRisk({ isLong: p.sd === 'long', size: p.s
 test('defaults: maker-only, 1x, mandatory SL, 1 % of $300 per trade, $50 weekly cap', () => {
   assert.equal(POLICY.makerOnly, true); assert.equal(POLICY.maxLeverage, 1); assert.equal(POLICY.requireStopLoss, true);
   assert.equal(POLICY.maxLossPct, 0.01); assert.equal(POLICY.weeklyLossCap, 50);
-  assert.deepEqual(POLICY.capital, { arcus: 300, hl: 300, txflow: 300 });
+  assert.deepEqual(POLICY.capital, { arcus: 300, hl: 300, txflow: 300, qfex: 300 });
 });
 test('a compliant post-only 1x trade with ~$2.5 at risk passes', () => {
   const r = risk(ok); const c = checkPolicy(ok, r, { weeklyLossUsed: 0 });

@@ -51,15 +51,15 @@ export function computeRisk(p) {
 // Every rule here is a HARD block (the approve button stays disabled), not a red warning.
 // Configurable from Settings; these are the defaults.
 export const POLICY = {
-  makerOnly: true,          // entries must be post-only limit orders (Arcus ALO / Hyperliquid & TxFlow Alo)
+  makerOnly: true,          // entries must be post-only limit orders (Arcus ALO / Hyperliquid & TxFlow Alo / QFEX ALO)
   maxLeverage: 1,           // 1x isolated: notional <= margin
   requireStopLoss: true,    // every new position carries a stop-loss
   maxLossPct: 0.01,         // max loss at SL (fees incl.) per trade, as a fraction of platform capital (1 % of $300 = $3)
   weeklyLossCap: 50,        // $ per platform per week (Mon 00:00 UTC); once used up, new proposals are blocked
-  capital: { arcus: 300, hl: 300, txflow: 300 }, // $ per platform (used for the % rule)
+  capital: { arcus: 300, hl: 300, txflow: 300, qfex: 300 }, // $ per platform (used for the % rule)
   marginAboveFreeBlocks: true,
 };
-export const PLATFORMS = ['arcus', 'hl', 'txflow'];
+export const PLATFORMS = ['arcus', 'hl', 'txflow', 'qfex'];
 
 // Start of the current week: Monday 00:00 UTC (also the TxFlow points epoch boundary).
 export function weekStartUtc(nowMs = Date.now()) {

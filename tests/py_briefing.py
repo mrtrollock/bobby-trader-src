@@ -67,4 +67,38 @@ for k in ("BOBBY_ACCOUNT_ADDRESS",):
 out3 = tmp / "b3.json"
 B.main(["--snapshots", str(tmp / "none.json"), "--out", str(out3), "--now", str(NOW)])
 assert json.loads(out3.read_text())["platforms"] == []
+# --- QFEX (private data via the autotrader's status; key never in the output)
+QK = {"QFEX_API_PUBLIC_KEY": "pk_test_public_abc", "QFEX_API_SECRET_KEY": "s3cr3t_" + "9" * 30, "QFEX_ACCOUNT_ID": "0b7c6a7e-1d2f-4c3b-9a8e-5f6d7c8b9a01"}
+qst = json.loads((FX / "briefing_qfex_status.json").read_text())
+os.environ.update(QK)
+calls = []
+B.fetch_qfex = lambda testnet, since_ms: calls.append((testnet, since_ms)) or qst
+out4 = tmp / "b4.json"
+B.main(["--snapshots", str(tmp / "q.json"), "--out", str(out4), "--now", str(NOW)])
+t4 = out4.read_text(); q = {p["id"]: p for p in json.loads(t4)["platforms"]}["qfex"]
+assert calls and q["name"] == "QFEX" and q["equity"] == 301.2 and q["positions"]["open"] == 2
+qi = {i["sym"]: i for i in q["items"]}
+assert qi["US100"]["sl"] == [29300] and qi["US100"]["tp"] == [30100] and abs(qi["US100"]["mark"] - 29880) < 1e-6 and not qi["US100"]["equityUnderlying"]
+assert qi["AAPL"]["equityUnderlying"] and "no SL" in qi["AAPL"]["auto"] and "AAPL has no stop-loss" in q["detail"]
+assert all(v not in t4 for v in QK.values())
+qst["stopsKnown"] = False
+B.main(["--snapshots", str(tmp / "q2.json"), "--out", str(out4), "--now", str(NOW)])
+q = {p["id"]: p for p in json.loads(out4.read_text())["platforms"]}["qfex"]
+assert "SL status unknown" in q["detail"] and {i["sym"]: i for i in q["items"]}["AAPL"]["auto"].startswith("SL status unknown")
+# PnL since the snapshot: second run compares with the stored snapshot
+qst["equity"] = 305.0
+B.main(["--snapshots", str(tmp / "q2.json"), "--out", str(out4), "--now", str(NOW + 3600)])
+q = {p["id"]: p for p in json.loads(out4.read_text())["platforms"]}["qfex"]
+assert abs(q["change"] - (305.0 - 301.2) / 301.2) < 1e-6, q
+# a fetch error is scrubbed of the account id / keys
+B.fetch_qfex = lambda testnet, since_ms: (_ for _ in ()).throw(RuntimeError("bad account " + QK["QFEX_ACCOUNT_ID"] + " key " + QK["QFEX_API_PUBLIC_KEY"]))
+B.main(["--snapshots", str(tmp / "q3.json"), "--out", str(out4), "--now", str(NOW)])
+t4 = out4.read_text(); assert "qfex" in t4 and all(v not in t4 for v in QK.values()), t4
+# no key + BOBBY_QFEX=1 -> "needs a QFEX API key" card, nothing fetched
+for k in QK:
+    os.environ.pop(k)
+os.environ["BOBBY_QFEX"] = "1"; calls.clear()
+B.main(["--snapshots", str(tmp / "q4.json"), "--out", str(out4), "--now", str(NOW)])
+q = {p["id"]: p for p in json.loads(out4.read_text())["platforms"]}["qfex"]
+assert q.get("needsKey") and "needs a QFEX API key" in q["error"] and not calls
 print(json.dumps({"ok": True}))

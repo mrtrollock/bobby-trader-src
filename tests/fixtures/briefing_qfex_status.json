@@ -1,0 +1,8 @@
+{"equity": 301.2, "free": 210.5, "weeklyLoss": 0,
+ "positions": [{"market": "US100-USD", "side": "long", "size": 0.003, "entry": 29580, "mark": null, "upnl": 0.9, "leverage": 1, "sl": [29300], "tp": [30100]},
+               {"market": "AAPL-USD", "side": "short", "size": 0.1, "entry": 331, "mark": null, "upnl": -0.2, "leverage": 1, "sl": [], "tp": []}],
+ "openOrders": [{"id": "sl-1", "market": "US100-USD", "side": "SELL", "kind": "SL", "px": null, "trig": 29300, "size": 0.003, "reduceOnly": true, "stop": true},
+                {"id": "tp-1", "market": "US100-USD", "side": "SELL", "kind": "TP", "px": null, "trig": 30100, "size": 0.003, "reduceOnly": true, "stop": true},
+                {"id": "o-9", "market": "GOLD-USD", "side": "BUY", "kind": "LIMIT", "px": 4000, "trig": null, "size": 0.01, "sl": 3990, "tp": 4020}],
+ "fills": [{"time": 1792800000000, "closedPnl": 0, "fee": 0.02, "m": "US100-USD", "px": 29580, "sz": 0.003, "side": "BUY", "type": "ALO"}],
+ "stopsKnown": true}

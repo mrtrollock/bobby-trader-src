@@ -1,7 +1,7 @@
 {
   "name": "bobby-trader",
   "version": "1.0.0",
-  "description": "Web app (PWA) that turns AI trade proposals into PIN-approved, device-signed orders on Arcus and Hyperliquid (Entropy), with a TxFlow manual mode",
+  "description": "Web app (PWA) that turns AI trade proposals into PIN-approved, device-signed orders on Arcus and Hyperliquid (Entropy), with a TxFlow manual mode; headless autotrader for Arcus, Entropy and QFEX",
   "main": "index.js",
   "scripts": {
     "test": "node --test tests/",
@@ -9,7 +9,10 @@
     "e2e": "node build.mjs && node tests/e2e_dryrun.mjs",
     "serve": "node build.mjs && python3 -m http.server 8080 --bind 127.0.0.1 -d dist",
     "autotrader": "node autotrader/cli.js",
-    "e2e:autotrader": "node tests/autotrader_e2e.mjs"
+    "e2e:autotrader": "node tests/autotrader_e2e.mjs",
+    "e2e:qfex": "node tests/qfex_e2e.mjs",
+    "smoke:qfex": "node tests/qfex_smoke_uat.mjs",
+    "e2e:qfex-app": "node build.mjs && node tests/e2e_qfex_app.mjs"
   },
   "keywords": [],
   "author": "",
@@ -19,7 +22,8 @@
     "@msgpack/msgpack": "^3.1.3",
     "@noble/curves": "^2.4.0",
     "@noble/hashes": "^2.4.0",
-    "esbuild": "^0.28.2"
+    "esbuild": "^0.28.2",
+    "ws": "^8.22.0"
   },
   "type": "module",
   "devDependencies": {

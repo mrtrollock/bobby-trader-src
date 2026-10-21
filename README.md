@@ -3,7 +3,9 @@
 A small **web app (PWA, add to home screen)** that turns AI-written trade proposals into **PIN-approved orders, signed on
 the user's own device**, on [Arcus](https://docs.arcus.xyz) and on Hyperliquid, including HIP-3 dexes such as
 **Entropy** (`io:` markets), plus a **TxFlow manual mode** (no signing: the order is placed in app.txflow.com and
-checked from public data). Works the same on a computer and a phone. The app UI is in English.
+checked from public data), plus **QFEX** (equity/index/commodity perps) through the headless autotrader: the app checks a
+QFEX proposal against the policy with live public prices and hands it to the autotrader queue (no QFEX key in the browser).
+Works the same on a computer and a phone. The app UI is in English.
 
 The AI assistant never holds trading keys and never places orders. It can only *propose*. The human reviews each
 proposal in the app, the app re-checks it against live market data and the risk policy, and only a PIN unlock on the
@@ -47,9 +49,9 @@ levels become public at the site URL**. Comments file: `{"arcus": {"detail": "..
 (keys arcus | entropy | txflow); a human comment replaces the generated one. Offline demo:
 `python3 briefing.py --mock tests/fixtures/briefing_mock.json --snapshots /tmp/s.json --out /tmp/b.json`.
 
-### Autotrader (Arcus + Entropy, headless)
+### Autotrader (Arcus + Entropy + QFEX, headless)
 
-`autotrader/` runs fully automatic, policy-gated maker trades on Arcus and Entropy (Hyperliquid dex `io`) from
+`autotrader/` runs fully automatic, policy-gated maker trades on Arcus, Entropy (Hyperliquid dex `io`) and QFEX from
 `autotrader/queue.json`, with the same signing and risk code as the app. Dry run and kill switch by default;
 see [autotrader/README.md](autotrader/README.md). TxFlow stays manual.
 
@@ -78,7 +80,17 @@ HIP-3 dexes (Entropy) set their own fees: the configured fallback is used. Hardc
   (PBKDF2-SHA256, 600k iterations → AES-256-GCM, WebCrypto) in this origin's IndexedDB. Auto-lock after inactivity.
 - Arcus: Ed25519 API signing key (trade-only when created through the public `createApiKey`). Hyperliquid: an
   *API/agent wallet* key (trade-only, cannot withdraw). TxFlow: **no key at all** (manual mode).
-- `connect-src` is limited to `'self'` (proposals.json) and the Arcus / Hyperliquid / TxFlow APIs.
+- `connect-src` is limited to `'self'` (proposals.json) and the Arcus / Hyperliquid / TxFlow APIs, plus the public QFEX
+  market-data WebSocket (`wss://mds.qfex.com`, `wss://mds.qfex.io`).
+
+### QFEX (`src/qfex.js`, see [autotrader/README.md](autotrader/README.md#qfex))
+- The app card (pf `qfex`, entries only) reads mark + best bid/ask from the public MDS WebSocket, prices fees from the
+  published Tier-5 schedule (stop leg = taker + slippage) and runs the hard policy. A compliant proposal shows a
+  `queue.json` entry for the autotrader, which re-checks everything with the private account data and sends it.
+- `briefing.py` shows a QFEX card when the autotrader key is in the environment (`node autotrader/cli.js status --pf qfex`),
+  or a "needs a QFEX API key" card with `BOBBY_QFEX=1`.
+- Tests: `node --test tests/qfex.test.mjs`, `npm run e2e:qfex` (mock WebSocket), `npm run smoke:qfex` (public UAT data),
+  `npm run e2e:qfex-app` (headless Chrome, public data only).
 - Default mode is **DRY RUN**: it signs and shows the payload but sends nothing. A testnet toggle is available.
 
 ### TxFlow (`src/txflow.js`)
@@ -100,8 +112,8 @@ No token or secret: only public addresses (`.env.example`). Baselines stay in `b
 On GitHub Pages, publishing new proposals = commit + push `public/proposals.json` (and rebuild/deploy `dist/`).
 
 ### Proposal format (v1)
-`id, pf (arcus|hl|txflow), m, act (open|tpsl|cancel), sd (long|short), sz, lev, et (market|limit), px, ref, sl, tp, exp, n`.
-HL markets: `BTC` (main dex) or `io:ANTH` (HIP-3 dex). Arcus markets: `TSLA-USD`. TxFlow: `BTC-USDC`. The hash only
+`id, pf (arcus|hl|txflow|qfex), m, act (open|tpsl|cancel; qfex: open only), sd (long|short), sz, lev, et (market|limit), px, ref, sl, tp, exp, n`.
+HL markets: `BTC` (main dex) or `io:ANTH` (HIP-3 dex). Arcus markets: `TSLA-USD`. TxFlow: `BTC-USDC`. QFEX: `US100-USD`, `GOLD-USD`. The hash only
 detects corruption. It is not a security boundary; the security boundary is the human approval plus the PIN.
 
 ## Layout

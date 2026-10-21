@@ -12,6 +12,9 @@ Reads PUBLIC account data only (no keys, nothing is signed or sent):
   Arcus    GET /v1/account, /v1/positions, /v1/openOrders, /v1/fills, /v1/markets  (address + accountIndex)
   Entropy  Hyperliquid POST /info clearinghouseState / frontendOpenOrders with dex "io", userFillsByTime
   TxFlow   POST /info perpMeta, clearinghouseState, frontendOpenOrders, userFills
+  QFEX     needs the API key (QFEX account data is private): read via `node autotrader/cli.js status --pf qfex`
+           when QFEX_API_PUBLIC_KEY + QFEX_API_SECRET_KEY are in the environment; with BOBBY_QFEX=1 and no key the
+           briefing shows a "needs a QFEX API key" card. The key never reaches this script's output.
 Env (.env, git-ignored, all public values): BOBBY_ACCOUNT_ADDRESS + ARCUS_ACCOUNT_INDEX (Arcus owner),
 BOBBY_HL_ADDRESS (Hyperliquid master for Entropy, default BOBBY_ACCOUNT_ADDRESS), BOBBY_HL_DEXES (default "io"; "main" = the main Hyperliquid dex),
 BOBBY_TXFLOW_ADDRESS (default BOBBY_ACCOUNT_ADDRESS). A platform with no address is skipped.
@@ -21,9 +24,9 @@ Snapshots (equity, positions, trigger orders) stay local in snapshots.json (git-
 latest snapshot taken 21:00-23:59 Europe/Berlin on an earlier day; otherwise the previous run.
 
 Comments file (optional, JSON): {"arcus": {"detail": "One-line note", "positions": {"TSLA": "I'm holding, ..."}}, ...}
-Keys: arcus | entropy | txflow. Symbols are short names (TSLA, ANTH, BTC). A human comment replaces the auto one.
+Keys: arcus | entropy | txflow | qfex. Symbols are short names (TSLA, ANTH, BTC). A human comment replaces the auto one.
 """
-import argparse, json, os, sys, time, urllib.parse, urllib.request
+import argparse, json, os, subprocess, sys, time, urllib.parse, urllib.request
 from datetime import datetime, timedelta, date
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -35,7 +38,10 @@ ENDPOINTS = {
     True: {"arcus": "https://api.testnet.arcus.xyz", "hl": "https://api.hyperliquid-testnet.xyz/info", "txflow": "https://rpc.txflow-testnet.xyz/info"},
 }
 TX_HEADERS = {"x-api-version": "2026-08-16"}
-PLATFORMS = {"arcus": ("🏹", "ARCUS"), "entropy": ("🤖", "ENTROPY"), "txflow": ("🌊", "TxFLOW")}
+PLATFORMS = {"arcus": ("🏹", "ARCUS"), "entropy": ("🤖", "ENTROPY"), "txflow": ("🌊", "TxFLOW"), "qfex": ("📈", "QFEX")}
+QFEX_NEEDS_KEY = "needs a QFEX API key: QFEX account data is private (set QFEX_API_PUBLIC_KEY / QFEX_API_SECRET_KEY on the box)"
+# QFEX index/commodity perps (everything else listed on QFEX is a US single stock / ETF)
+QFEX_NON_EQUITY = set("US100 US500 KOSPI NIKKEI HSI TAIEX CL NATGAS GOLD SILVER URANIUM COPPER".split())
 # US-listed stocks/ETFs that may appear on Hyperliquid/TxFlow without a category field (Arcus gives one per market).
 US_TICKERS = set("""AAPL MSFT NVDA TSLA AMZN GOOGL GOOG META NFLX AMD INTC COIN MSTR HOOD PLTR CRCL ORCL AVGO MU SMCI ARM UBER
 SPY QQQ IWM DIA GLD SLV USO TLT XLE XLF XLK SMH ARKK IBIT ETHA SPX NDX US500 US100 USTECH""".split())
@@ -195,7 +201,42 @@ def norm_txflow(raw):
     return {"equity": f((st.get("marginSummary") or {}).get("accountValue")), "positions": positions, "orders": orders,
             "fills": fills, "equityMarkets": eq, "rth": {}}
 
-NORM = {"arcus": norm_arcus, "entropy": norm_hl, "txflow": norm_txflow}
+def fetch_qfex(testnet, since_ms):
+    """Account data via the autotrader (it holds the HMAC key logic); returns its status JSON for QFEX."""
+    env = {**os.environ, "AUTOTRADER_NETWORK": "testnet" if testnet else "mainnet"}
+    for k in ("ARCUS_API_PRIVATE_KEY", "HL_AGENT_PRIVATE_KEY"):
+        env.pop(k, None)
+    r = subprocess.run(["node", str(HERE / "autotrader" / "cli.js"), "status", "--since", str(since_ms), "--pf", "qfex"],
+                       capture_output=True, text=True, env=env, timeout=90)
+    if r.returncode != 0:
+        raise RuntimeError("autotrader status failed")
+    q = (json.loads(r.stdout).get("platforms") or {}).get("qfex")
+    if not q:
+        raise RuntimeError("no QFEX data")
+    if q.get("error"):
+        raise RuntimeError(q["error"])
+    return q
+
+def norm_qfex(raw):
+    positions = []
+    for p in raw.get("positions") or []:
+        sz, entry, upnl = abs(float(p.get("size") or 0)), f(p.get("entry")), f(p.get("upnl"))
+        if not sz:
+            continue
+        mark = f(p.get("mark"))
+        if mark is None and entry is not None and upnl is not None:
+            mark = entry + (upnl / sz if p.get("side") == "long" else -upnl / sz)
+        m = str(p["market"]).upper()
+        positions.append({"m": m, "sym": short(m), "side": p.get("side"), "size": sz, "entry": entry, "mark": mark, "upnl": upnl})
+    orders = [{"id": str(o.get("id")), "m": str(o.get("market")).upper(), "kind": o.get("kind") or "LIMIT", "trig": f(o.get("trig")), "px": f(o.get("px")),
+               "side": str(o.get("side") or "").lower(), "position": bool(o.get("stop"))} for o in raw.get("openOrders") or []]
+    fills = [{"t": int(float(x.get("time") or 0)) // 1000, "m": str(x.get("m") or "").upper(), "side": str(x.get("side") or "").lower(),
+              "px": f(x.get("px")), "sz": f(x.get("sz")), "pnl": f(x.get("closedPnl")), "kind": _kind(x.get("type"))} for x in raw.get("fills") or []]
+    eq = {p["m"] for p in positions + orders if short(p["m"]) not in QFEX_NON_EQUITY}
+    return {"equity": f(raw.get("equity")), "positions": positions, "orders": orders, "fills": fills, "equityMarkets": eq, "rth": {},
+            "stopsKnown": raw.get("stopsKnown", True)}
+
+NORM = {"arcus": norm_arcus, "entropy": norm_hl, "txflow": norm_txflow, "qfex": norm_qfex}
 
 
 # ------------------------------------------------------------------ US market hours
@@ -285,11 +326,15 @@ def build_platform(pid, n, base, nightly, now_ts, comments):
         # the binding SL is the one closest to the mark
         sl = (max(sls) if p["side"] == "long" else min(sls)) if sls else None
         auto, in_profit, dist = sl_phrase(p, sl)
+        if sl is None and n.get("stopsKnown") is False:
+            auto = "SL status unknown (QFEX stop orders could not be read)"
         if n_sl > 1:
             extra = [x for x in sls if x != sl]
             notes.append(f"{p['sym']} has {n_sl} SL orders ({', '.join(fmt_px(x) for x in sls)})." + (
                 f" The one at {', '.join(fmt_px(x) for x in extra)} is a redundant second SL." if extra else " They are duplicates at the same level."))
-        if sl is None:
+        if sl is None and n.get("stopsKnown") is False:
+            notes.append(f"{p['sym']}: SL status unknown (stop orders could not be read).")
+        elif sl is None:
             notes.append(f"{p['sym']} has no stop-loss.")
         items.append({"sym": p["sym"], "market": p["m"], "side": p["side"], "size": p["size"], "entry": p["entry"], "mark": p["mark"],
                       "upnl": p["upnl"], "sl": sls, "tp": tps, "slActive": sl, "slInProfit": in_profit,
@@ -374,14 +419,16 @@ def main(argv=None):
     hl_addr = os.environ.get("BOBBY_HL_ADDRESS", "") or addr
     tx_addr = os.environ.get("BOBBY_TXFLOW_ADDRESS", "") or addr
     dexes = ["" if d.strip() == "main" else d.strip() for d in (os.environ.get("BOBBY_HL_DEXES") or "io").split(",") if d.strip()]
-    secrets = [addr, hl_addr, tx_addr]
+    secrets = [addr, hl_addr, tx_addr] + [os.environ.get(k, "") for k in ("QFEX_ACCOUNT_ID", "QFEX_API_PUBLIC_KEY", "QFEX_API_SECRET_KEY")]
+    qfex_key = bool(os.environ.get("QFEX_API_PUBLIC_KEY") and os.environ.get("QFEX_API_SECRET_KEY"))
     if a.mock:
         raw = json.loads(Path(a.mock).read_text())
     else:
         raw = {}
         for pid, ok, fn in (("arcus", addr, lambda: fetch_arcus(ep["arcus"], addr, int(os.environ.get("ARCUS_ACCOUNT_INDEX", "0") or 0), since_ms)),
                             ("entropy", hl_addr, lambda: fetch_hl(ep["hl"], hl_addr, dexes, since_ms)),
-                            ("txflow", tx_addr, lambda: fetch_txflow(ep["txflow"], tx_addr, since_ms))):
+                            ("txflow", tx_addr, lambda: fetch_txflow(ep["txflow"], tx_addr, since_ms)),
+                            ("qfex", qfex_key, lambda: fetch_qfex(a.testnet, since_ms))):
             if not ok:
                 continue
             try:
@@ -389,9 +436,15 @@ def main(argv=None):
             except Exception as e:  # noqa: BLE001
                 raw[pid] = {"error": scrub(f"{type(e).__name__}: {e}", secrets)[:200]}
 
+        if not qfex_key and os.environ.get("BOBBY_QFEX") == "1":
+            raw["qfex"] = {"needsKey": True}
+
     out, snap = [], {"t": now_ts, "platforms": {}}
     for pid in PLATFORMS:
         if pid not in raw:
+            continue
+        if raw[pid].get("needsKey"):
+            out.append({"id": pid, "emoji": PLATFORMS[pid][0], "name": PLATFORMS[pid][1], "error": QFEX_NEEDS_KEY, "needsKey": True, "items": []})
             continue
         if raw[pid].get("error"):
             out.append({"id": pid, "emoji": PLATFORMS[pid][0], "name": PLATFORMS[pid][1], "error": raw[pid]["error"], "items": []})

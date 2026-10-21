@@ -12,7 +12,8 @@ const pre = 'window.__LAUNCH_URL=location.href;';
 const sha = (s) => "'sha256-" + createHash('sha256').update(s, 'utf8').digest('base64') + "'";
 // 'self' = proposals.json next to the page. Every other host is a read/trade API; nothing else can be contacted.
 const CONNECT = ["'self'", 'https://api.arcus.xyz', 'https://api.hyperliquid.xyz', 'https://rpc.txflow.com',
-  'https://api.testnet.arcus.xyz', 'https://api.hyperliquid-testnet.xyz', 'https://rpc.txflow-testnet.xyz'];
+  'https://api.testnet.arcus.xyz', 'https://api.hyperliquid-testnet.xyz', 'https://rpc.txflow-testnet.xyz',
+  'wss://mds.qfex.com', 'wss://mds.qfex.io']; // QFEX: public market data only (no REST: no CORS; no trade socket: no key in the browser)
 const csp = [
   "default-src 'none'",
   `script-src ${sha(pre)} ${sha(js)}`,

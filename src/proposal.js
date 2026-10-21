@@ -43,7 +43,7 @@ export function validateProposal(p) {
   const err = (m) => { throw new Error('Invalid proposal: ' + m); };
   if (p.v !== 1) err('version');
   if (!p.id || typeof p.id !== 'string') err('id');
-  if (!['arcus', 'hl', 'txflow'].includes(p.pf)) err('platform');
+  if (!['arcus', 'hl', 'txflow', 'qfex'].includes(p.pf)) err('platform');
   if (!p.m || typeof p.m !== 'string') err('market');
   const act = p.act || 'open';
   if (!['open', 'tpsl', 'cancel'].includes(act)) err('action');
@@ -58,6 +58,9 @@ export function validateProposal(p) {
   }
   if (act === 'tpsl' && p.sl == null && p.tp == null) err('TP or SL required');
   if (p.pf === 'txflow' && act === 'tpsl') err('TxFlow TP/SL: set it in the TxFlow app');
+  // QFEX: entries only (stops are attached to the entry); cancels/closes are done by the autotrader CLI.
+  if (p.pf === 'qfex' && act !== 'open') err('QFEX: only new entries (with SL + TP) are supported in the app');
+  if (p.pf === 'qfex' && act === 'open' && (p.et !== 'limit' || p.sl == null || p.tp == null)) err('QFEX entries need a limit price, a stop-loss and a take-profit');
   if (p.exp != null && !(Number(p.exp) > 1e9)) err('expiry');
   return { ...p, act };
 }

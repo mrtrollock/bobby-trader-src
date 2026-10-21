@@ -1,11 +1,11 @@
 #!/usr/bin/env node
 // Bobby autotrader CLI. Keys come ONLY from the environment; nothing secret is written to disk or logs.
 //   node autotrader/cli.js verify                     # key-permission checks only
-//   node autotrader/cli.js status [--since UNIX_MS]   # JSON: equity, positions, open orders, SL/TP, fills since ts
+//   node autotrader/cli.js status [--since UNIX_MS] [--pf qfex]  # JSON: equity, positions, open orders, SL/TP, fills
 //   node autotrader/cli.js once                       # process autotrader/queue.json once
 //   node autotrader/cli.js loop                       # process every AUTOTRADER_INTERVAL_S (60) seconds
-//   node autotrader/cli.js cancel <arcus|entropy> <market> <orderId>
-//   node autotrader/cli.js close  <arcus|entropy> <market>
+//   node autotrader/cli.js cancel <arcus|entropy|qfex> <market> <orderId>
+//   node autotrader/cli.js close  <arcus|entropy|qfex> <market>
 import { existsSync, readFileSync, writeFileSync, mkdirSync, appendFileSync, renameSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
@@ -39,7 +39,7 @@ async function boot({ needKeys = true } = {}) {
   SECRETS = C.secretsOf(cfg);
   const net = C.realNet(cfg);
   if (needKeys) {
-    if (!cfg.arcus && !cfg.hl) throw new Error('no keys in env (ARCUS_API_PRIVATE_KEY and/or HL_AGENT_PRIVATE_KEY)');
+    if (!cfg.arcus && !cfg.hl && !cfg.qfex) throw new Error('no keys in env (ARCUS_API_PRIVATE_KEY, HL_AGENT_PRIVATE_KEY and/or QFEX_API_PUBLIC_KEY + QFEX_API_SECRET_KEY)');
     const v = await C.verifyKeys(cfg, net);
     log('INFO', `keys verified on ${cfg.network}`, v);
   }
@@ -96,26 +96,26 @@ async function once(ctx) {
   return out;
 }
 
-async function status(sinceMs) {
+async function status(sinceMs, only) {
   const cfg = C.loadConfig(process.env); SECRETS = C.secretsOf(cfg);
   const net = C.realNet(cfg);
   const out = { network: cfg.network, t: Date.now(), since: sinceMs ?? null, dryRun: !cfg.live, enabled: cfg.enabled, stop: existsSync(P.stop), platforms: {} };
-  for (const [pf, has] of [['arcus', cfg.arcusAddress], ['entropy', cfg.hlAddress]]) {
-    if (!has) continue;
+  for (const [pf, has] of [['arcus', cfg.arcusAddress], ['entropy', cfg.hlAddress], ['qfex', cfg.qfex]]) {
+    if (!has || (only && only !== pf)) continue;
     try {
       const st = await C.accountState(pf, cfg, net, { sinceMs: sinceMs ?? Date.now() - 86400e3 });
       const strip = (x) => { const { raw, ...rest } = x; return rest; };
       out.platforms[pf] = { equity: st.equity, free: st.free, weeklyLoss: st.weeklyLoss,
         positions: st.positions.map((p) => ({ ...strip(p), sl: st.orders.filter((o) => o.market === p.market && o.kind === 'SL').map((o) => o.trig),
           tp: st.orders.filter((o) => o.market === p.market && o.kind === 'TP').map((o) => o.trig) })),
-        openOrders: st.orders.map(strip), fills: st.fills };
+        openOrders: st.orders.map(strip), fills: st.fills, ...(st.stopsKnown !== undefined ? { stopsKnown: st.stopsKnown } : {}) };
     } catch (e) { out.platforms[pf] = { error: redact(e.message) }; }
   }
   console.log(JSON.stringify(out, null, 1));
 }
 
 async function reduceCmd(kind, pf, market, oid) {
-  if (!['arcus', 'entropy'].includes(pf)) throw new Error('platform must be arcus or entropy');
+  if (!C.PLATFORMS.includes(pf)) throw new Error('platform must be arcus, entropy or qfex');
   const { cfg, net } = await boot();
   const reqs = kind === 'cancel' ? await C.buildCancel(pf, market, oid, cfg, net) : await C.buildClose(pf, market, cfg, net);
   const kill = C.killReason(cfg, existsSync(P.stop));
@@ -137,7 +137,7 @@ async function loop() {
       await once(ctx);
     } catch (e) {
       log('ERROR', 'iteration failed: ' + e.message);
-      if (/key|agent|permission|approved|registered|expired/i.test(e.message)) { log('ERROR', 'key check failed, aborting loop'); process.exit(2); }
+      if (/key|agent|permission|approved|registered|expired|QFEX: (authentication|this API key|could not verify|set QFEX_KEY)/i.test(e.message)) { log('ERROR', 'key check failed, aborting loop'); process.exit(2); }
     }
     for (let t = 0; t < every && !stopping; t += 1000) await new Promise((r) => setTimeout(r, 1000));
   }
@@ -148,7 +148,7 @@ async function main(argv) {
   const flag = (n) => { const i = rest.indexOf(n); return i >= 0 ? rest[i + 1] : undefined; };
   switch (cmd) {
     case 'verify': await boot(); return;
-    case 'status': return status(flag('--since') != null ? Number(flag('--since')) : undefined);
+    case 'status': return status(flag('--since') != null ? Number(flag('--since')) : undefined, flag('--pf'));
     case 'once': { const r = await once(); console.log(JSON.stringify(r.map(({ requests, ...x }) => x))); return; }
     case 'loop': return loop();
     case 'cancel': return reduceCmd('cancel', rest[0], rest[1], rest[2]);

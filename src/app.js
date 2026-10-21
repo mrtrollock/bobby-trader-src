@@ -4,6 +4,7 @@ import * as API from './api.js';
 import { computeRisk, FEES, MAX_LOSS, POLICY, checkPolicy, weekStartUtc, weekEndUtc, realizedLoss } from './risk.js';
 import * as F from './fees.js';
 import * as T from './txflow.js';
+import * as Q from './qfex.js';
 import { extractToken, decodeProposal } from './proposal.js';
 import * as KS from './keystore.js';
 import { runTpslReplace, legLabel } from './replace.js';
@@ -13,10 +14,10 @@ const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.
   feeMain: FEES.hl_main, arcusAddress: '', arcusSub: 0, hlMaster: '', hlDexes: 'io', txflowAddress: '',
   // conservative farming policy (hard blocks), see src/risk.js POLICY
   polMakerOnly: POLICY.makerOnly, polMaxLev: POLICY.maxLeverage, polRequireSl: POLICY.requireStopLoss, polMaxLossPct: POLICY.maxLossPct,
-  polWeeklyCap: POLICY.weeklyLossCap, capArcus: POLICY.capital.arcus, capHl: POLICY.capital.hl, capTxflow: POLICY.capital.txflow };
+  polWeeklyCap: POLICY.weeklyLossCap, capArcus: POLICY.capital.arcus, capHl: POLICY.capital.hl, capTxflow: POLICY.capital.txflow, capQfex: POLICY.capital.qfex };
 const policy = () => { const st = S.settings; return { ...POLICY, makerOnly: !!st.polMakerOnly, maxLeverage: Number(st.polMaxLev), requireStopLoss: !!st.polRequireSl,
-  maxLossPct: Number(st.polMaxLossPct), weeklyLossCap: Number(st.polWeeklyCap), capital: { arcus: Number(st.capArcus), hl: Number(st.capHl), txflow: Number(st.capTxflow) } }; };
-const PF_NAME = { arcus: '🏹 Arcus', hl: '🤖 Entropy / Hyperliquid', txflow: '🌊 TxFlow' };
+  maxLossPct: Number(st.polMaxLossPct), weeklyLossCap: Number(st.polWeeklyCap), capital: { arcus: Number(st.capArcus), hl: Number(st.capHl), txflow: Number(st.capTxflow), qfex: Number(st.capQfex) } }; };
+const PF_NAME = { arcus: '🏹 Arcus', hl: '🤖 Entropy / Hyperliquid', txflow: '🌊 TxFlow', qfex: '📈 QFEX' };
 const S = { settings: { ...DEFAULTS }, secrets: null, lockTimer: null, log: [], view: 'briefing', proposal: null };
 const LOCK_MS = 5 * 60 * 1000;
 
@@ -55,7 +56,7 @@ async function addLog(entry) {
   S.log.unshift(entry); S.log = S.log.slice(0, 200);
   try { const b = await KS.deviceBackend(); await b.set('tgtrade_log', JSON.stringify(S.log)); } catch (e) { toast('Journal not saved: ' + e.message, 'err'); }
 }
-const base = () => ({ ...API.bases(S.settings.testnet), txflow: S.settings.testnet ? T.TESTNET : T.MAINNET });
+const base = () => ({ ...API.bases(S.settings.testnet), txflow: S.settings.testnet ? T.TESTNET : T.MAINNET, qfex: Q.bases(S.settings.testnet) });
 
 // ---------------------------------------------------------------- weekly realized loss per platform (Mon 00:00 UTC)
 const lossCache = {};
@@ -71,6 +72,8 @@ async function weeklyLoss(pf) {
     if (!st.hlMaster) return null;
     const rows = await API.hlInfo(base().hl, { type: 'userFillsByTime', user: st.hlMaster, startTime: from });
     v = realizedLoss(rows, from);
+  } else if (pf === 'qfex') {
+    return null; // private data: QFEX's weekly cap is enforced by the autotrader (it holds the key); here: local journal only
   } else {
     if (!st.txflowAddress) return null;
     v = realizedLoss(await T.fills(base().txflow, st.txflowAddress, from, Date.now() + 60e3), from);
@@ -133,6 +136,7 @@ async function loadContext(p) {
       order: p.act === 'cancel' ? (await API.arcusOpenOrders(base().arcus, st.arcusAddress, st.arcusSub)).find((o) => String(o.orderId) === String(p.oid)) || null : undefined };
   }
   if (p.pf === 'txflow') return loadTxflow(p);
+  if (p.pf === 'qfex') return loadQfex(p);
   const mk = await API.hlMarket(base().hl, p.m);
   let free = null, pos = null;
   if (st.hlMaster) {
@@ -162,13 +166,24 @@ async function loadTxflow(p) {
   return { pf: 'txflow', mk, mark: Number(ctx.markPx || (ctx.nodeCtx && ctx.nodeCtx.markPx)), maxLev: Number(mk.maxLeverage), fee: fr.taker, makerFee: fr.maker,
     feeSrc: fr.source, mmf: 1 / (2 * Number(mk.maxLeverage || 1)), size, free, chs, oo, halted: !!mk.haltTrading };
 }
+// QFEX in the browser: public mark + best bid/ask from the MDS WebSocket only (QFEX REST sends no CORS headers, and the
+// HMAC secret never enters the browser). Fees come from the published schedule; the stop leg is charged taker + slippage.
+async function loadQfex(p) {
+  const sym = Q.normSymbol(p.m), cat = Q.categoryOf(sym);
+  const q = await Q.mdsQuote(base().qfex, sym);
+  const fr = Q.rates(cat, null);
+  const maxLev = 10; // conservative (QFEX defaults: 10x stocks, up to 30x indices/commodities); only used for the liq. estimate at 1x
+  return { pf: 'qfex', sym, category: cat, mark: q.mark, bid: q.bid, ask: q.ask, maxLev, mmf: 1 / (2 * maxLev), fee: fr.stopRate, makerFee: fr.maker,
+    taker: fr.taker, slippage: fr.slippage, feeSrc: fr.source + ', ' + cat, size: Number(p.sz), free: null };
+}
 async function withPolicy(p, c, r) {
   let used = null, src = 'fills';
   try { used = await weeklyLoss(p.pf); } catch { used = null; }
   if (used == null) { used = journalRisk(p.pf); src = 'journal'; }
   const pol = checkPolicy(p, r, { policy: policy(), weeklyLossUsed: used, freeCollateral: c.free });
   r.blocks.push(...pol.blocks);
-  if (src === 'journal' && p.act === 'open') r.warns.push('Weekly losses could not be read: estimated from the local journal');
+  if (src === 'journal' && p.act === 'open') r.warns.push(p.pf === 'qfex' ? 'QFEX weekly losses are private: the autotrader checks the $' + policy().weeklyLossCap + ' cap from fills before sending (local journal estimate shown)'
+    : 'Weekly losses could not be read: estimated from the local journal');
   r.policy = { ...pol, src };
   return r;
 }
@@ -202,6 +217,15 @@ function riskFor(p, c) {
     if (c.minNotional && r.notional < c.minNotional) r.blocks.push(`Notional < minimum ($${c.minNotional})`);
   } else if (c.pf === 'txflow') {
     if (c.halted) r.blocks.push('TxFlow market halted');
+  } else if (c.pf === 'qfex') {
+    if (!(c.mark > 0)) r.blocks.push('No QFEX mark price');
+    if (p.et !== 'limit') r.blocks.push('QFEX: post-only limit (ALO) entries only');
+    if (p.sl == null || p.tp == null) r.blocks.push('QFEX: stop-loss and take-profit are both required');
+    if (Number(p.lev) !== 1) r.blocks.push('QFEX: 1× leverage only');
+    if (isLong ? c.ask != null && Number(p.px) >= c.ask : c.bid != null && Number(p.px) <= c.bid)
+      r.blocks.push('Maker policy: the limit price would cross the best ' + (isLong ? 'ask' : 'bid') + ' (ALO would be rejected)');
+    if (!Q.PREFERRED_CATEGORIES.includes(c.category)) r.warns.push(`QFEX single stock: fees are 2.5× higher than indices/commodities (maker ${fmt(c.makerFee * 100, 3)}%, stop leg ${fmt(c.fee * 100, 3)}%)`);
+    r.warns.push('Tick/lot rounding, price band, free collateral and the weekly loss from fills are re-checked by the autotrader before sending');
   } else if (c.mk.isDelisted) r.blocks.push('Market delisted');
   if (p.et === 'limit' && S.settings.polMakerOnly && c.mark) {
     const crosses = isLong ? Number(p.px) >= c.mark : Number(p.px) <= c.mark;
@@ -225,6 +249,7 @@ function buildRequests(p, c, sec, offsetMs) {
       { label: 'Order + TP/SL (entryTpsl)', d: A.entryTpsl(ctx, m, side, c.sizeStr, { type: p.et, limitPrice: p.px, takeProfit: p.tp, stopLoss: p.sl, slippage: st.slippage, postOnly: !!st.polMakerOnly }) },
     ];
   }
+  if (p.pf === 'qfex') throw new Error('QFEX: nothing is signed in the browser, use the autotrader queue');
   if (p.pf === 'txflow') throw new Error('TxFlow: manual mode, nothing is signed here');
   if (!sec.hl || !sec.hl.key) throw new Error('Hyperliquid key missing');
   const priv = H.keyFromHex(sec.hl.key), mk = c.mk, isMainnet = !st.testnet;
@@ -307,6 +332,7 @@ const usd0 = (x) => (x == null ? '—' : '$' + Number(x).toLocaleString('en-US',
 const signedUsd = (x) => (x == null ? '' : (x < 0 ? '-$' : '+$') + Math.abs(Number(x)).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 2 }));
 function briefingCard(p) {
   const card = h('section', { class: 'card brief' }, h('h2', {}, `${p.emoji || ''} ${p.name || p.id}`));
+  if (p.needsKey) { card.append(h('div', { class: 'alert warn' }, 'QFEX needs an API key: account data is private, so the briefing reads it through the autotrader on the box (QFEX_API_PUBLIC_KEY / QFEX_API_SECRET_KEY).')); return card; }
   if (p.error) { card.append(h('div', { class: 'alert warn' }, 'Could not read this account: ' + p.error)); return card; }
   const ch = p.change;
   card.append(h('div', { class: 'equity' }, 'Equity ', h('b', {}, usd0(p.equity)),
@@ -437,7 +463,7 @@ function viewConfirm(app) {
   const p = S.proposal;
   if (!p) return go('home');
   if (S.result) { app.append(h('section', { class: 'card' }, h('h1', {}, `${p.act} ${p.m}`))); return renderResult(app); }
-  const pfName = p.pf === 'arcus' ? '🏹 Arcus' : p.pf === 'txflow' ? '🌊 TxFlow (manual mode)' : (p.m.includes(':') ? '🤖 Hyperliquid ' + p.m.split(':')[0] : '🤖 Hyperliquid');
+  const pfName = p.pf === 'arcus' ? '🏹 Arcus' : p.pf === 'txflow' ? '🌊 TxFlow (manual mode)' : p.pf === 'qfex' ? '📈 QFEX (autotrader)' : (p.m.includes(':') ? '🤖 Hyperliquid ' + p.m.split(':')[0] : '🤖 Hyperliquid');
   const title = p.act === 'cancel' ? `❌ Cancel an order on ${p.m}` : p.act === 'tpsl' ? `TP/SL on ${p.m}` : `${p.sd === 'long' ? '🟢 LONG' : '🔴 SHORT'} ${p.m}`;
   const card = h('section', { class: 'card' }, h('div', { class: 'muted small' }, pfName + ' · id ' + p.id), h('h1', {}, title));
   if (p.n) card.append(h('p', { class: 'note' }, p.n));
@@ -463,7 +489,10 @@ function viewConfirm(app) {
         p.act === 'open' && ['Rounded size', String(c.size)], r.entry != null && [r.entryLabel, fmtPx(r.entry)],
         r.notional != null && ['Notional', '$' + fmt(r.notional)], p.act === 'open' && ['Margin', '$' + fmt(r.margin)],
         c.free != null && p.act === 'open' && ['Free collateral', '$' + fmt(c.free)],
-        ['Maker / taker fees', (c.makerFee != null ? fmt(c.makerFee * 100, 4) : '—') + ' / ' + fmt(c.fee * 100, 4) + '% (' + (c.feeSrc || '?') + ')'], ['Max leverage', c.maxLev + '×'],
+        c.pf === 'qfex' ? ['Maker fee / stop leg', fmt(c.makerFee * 100, 4) + '% / ' + fmt(c.fee * 100, 4) + '% (taker ' + fmt(c.taker * 100, 3) + '% + slippage ' + fmt(c.slippage * 100, 3) + '%; ' + c.feeSrc + ')']
+          : ['Maker / taker fees', (c.makerFee != null ? fmt(c.makerFee * 100, 4) : '—') + ' / ' + fmt(c.fee * 100, 4) + '% (' + (c.feeSrc || '?') + ')'],
+        c.pf === 'qfex' && ['Best bid / ask', (c.bid != null ? fmtPx(c.bid) : '—') + ' / ' + (c.ask != null ? fmtPx(c.ask) : '—')],
+        c.pf !== 'qfex' && ['Max leverage', c.maxLev + '×'],
         r.policy && r.policy.maxLoss != null && p.act === 'open' && ['Loss cap per trade', '$' + fmt(r.policy.maxLoss)],
         r.policy && ['Weekly losses (' + r.policy.src + ')', '$' + fmt(r.policy.used) + ' / $' + fmt(policy().weeklyLossCap, 0)],
         r.slLocked != null ? ['Locked gain at SL (incl. fees)', '+$' + '' + fmt(r.slLocked), 'green']
@@ -475,6 +504,7 @@ function viewConfirm(app) {
       for (const w of r.warns) box.append(h('div', { class: 'alert warn' }, '⚠️ ' + w));
       live.append(box);
       if (p.pf === 'txflow') { live.append(txflowManual(p, c, r)); return; }
+      if (p.pf === 'qfex') { live.append(qfexAutotrader(p, c, r)); return; }
       const approve = h('button', { class: 'btn approve', disabled: r.blocks.length > 0 || r.warns.length > 0 ? true : null, onclick: () => approveFlow(approve) },
         S.settings.dryRun ? 'Approve (dry run, nothing is sent)' : 'Approve and send');
       if (r.blocks.length) approve.textContent = 'Blocked';
@@ -517,6 +547,24 @@ function txflowManual(p, c, r) {
   };
   wrap.append(h('button', { class: 'btn ghost', onclick: check }, 'Check execution (public read)'), out,
     h('button', { class: 'btn ghost', onclick: () => go('inbox') }, 'Back to proposals'));
+  return wrap;
+}
+
+// QFEX: nothing is signed in the browser (the HMAC secret stays on the box). A compliant proposal is handed to the
+// headless autotrader as a queue.json entry; it re-runs every check with live private data before sending.
+function qfexAutotrader(p, c, r) {
+  const wrap = h('div');
+  const ok = r.blocks.length === 0;
+  wrap.append(h('div', { class: ok ? 'alert ok' : 'alert block' }, ok ? '✅ Policy compliant: queue it for the QFEX autotrader' : '⛔ Do not queue this trade'));
+  if (ok) {
+    const entry = { id: p.id, pf: 'qfex', m: c.sym, sd: p.sd, et: 'limit', px: Number(p.px), sz: Number(p.sz), lev: 1, sl: Number(p.sl), tp: Number(p.tp),
+      exp: p.exp, ref: p.ref != null ? Number(p.ref) : c.mark, n: p.n || '' };
+    const txt = JSON.stringify(entry);
+    wrap.append(h('h3', {}, 'Autotrader queue entry (autotrader/queue.json)'), h('pre', { class: 'small' }, txt),
+      h('button', { class: 'btn primary', onclick: async () => { try { await navigator.clipboard.writeText(txt); toast('Copied'); } catch { toast('Copy failed: select the text', 'err'); } } }, 'Copy queue entry'),
+      h('p', { class: 'muted small' }, 'Order sent by the autotrader: leverage set to 1×, then a post-only ALO GTC limit with the stop-loss and take-profit attached. Dry run until AUTOTRADER_LIVE=1.'));
+  }
+  wrap.append(h('button', { class: 'btn ghost', onclick: () => go('inbox') }, 'Back to proposals'));
   return wrap;
 }
 
@@ -740,7 +788,7 @@ function viewSettings(app) {
       tog('polMakerOnly', 'Maker-only entries (post-only limit)'), tog('polRequireSl', 'Stop-loss required'),
       num('polMaxLev', 'Max leverage (×)', '1'), num('polMaxLossPct', 'Max loss at SL per trade (0.01 = 1% of capital)', '0.001'),
       num('polWeeklyCap', 'Weekly loss cap per platform ($)', '1'),
-      num('capArcus', 'Arcus capital ($)', '1'), num('capHl', 'Entropy / Hyperliquid capital ($)', '1'), num('capTxflow', 'TxFlow capital ($)', '1'),
+      num('capArcus', 'Arcus capital ($)', '1'), num('capHl', 'Entropy / Hyperliquid capital ($)', '1'), num('capTxflow', 'TxFlow capital ($)', '1'), num('capQfex', 'QFEX capital ($)', '1'),
       h('p', { class: 'muted small' }, 'Week = Monday 00:00 UTC. This app never builds deposits, withdrawals, transfers or vault actions.')),
     h('section', { class: 'card' }, h('h2', {}, '🌊 TxFlow (manual mode)'), h('label', { class: 'field' }, 'Account address (public)', f.tAddr),
       h('button', { class: 'btn ghost', onclick: async () => { const v = f.tAddr.value.trim(); if (v && !/^0x[0-9a-fA-F]{40}$/.test(v)) return toast('Invalid TxFlow address', 'err'); st.txflowAddress = v; await saveSettings(); toast('TxFlow address saved'); } }, 'Save address'),

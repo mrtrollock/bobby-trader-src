@@ -1,6 +1,7 @@
-# Bobby autotrader (Arcus + Entropy, headless)
+# Bobby autotrader (Arcus + Entropy + QFEX, headless)
 
-Fully automatic, policy-gated **maker** trading on **Arcus** and **Entropy** (Hyperliquid HIP-3 dex `io`).
+Fully automatic, policy-gated **maker** trading on **Arcus**, **Entropy** (Hyperliquid HIP-3 dex `io`) and **QFEX**
+(equity/index/commodity perps, `src/qfex.js`).
 TxFlow stays manual (web app). Runs on this box with Node 20; reuses the web app's signing (`src/arcus.js`,
 `src/hl.js`), policy (`src/risk.js`) and fee (`src/fees.js`) code.
 
@@ -14,21 +15,28 @@ TxFlow stays manual (web app). Runs on this box with Node 20; reuses the web app
     `ARCUS_ACCOUNT_INDEX` (or all subaccounts), with **no extra `permissions`** (e.g. `withdraw` ⇒ abort).
   * Hyperliquid: `POST /info {type:"userRole", user:<agent>}` must be `agent` of `HL_ACCOUNT_ADDRESS`;
     the main account key itself is refused.
+  * QFEX: see [QFEX](#qfex) — `QFEX_KEY_SINGLE_ACCOUNT_ACK=1` is mandatory, a key that can read a second account
+    ("All accounts" scope, the only scope that can hold `deposit_withdraw`) is refused, and so is the main account.
 * **Never moves funds.** withdraw / transfer / vault actions are refused by `assertTradeOnly` in the shared signers
-  and network layer (`src/risk.js`), and no code path builds them.
+  and network layer (`src/risk.js`), and no code path builds them. QFEX: `assertQfexRest` only allows a handful of GET
+  reads + `POST /user/leverage` on `api.qfex.*` (the funding host `banker.qfex.*` is never contacted), and
+  `assertQfexMessage` only allows auth/subscribe/reads, ALO+GTC entries carrying SL **and** TP, cancel by order id,
+  `close_position`, and `cancel_on_disconnect:false`.
 * Keys are read **only from the environment**, never written to disk, and redacted from logs and the journal.
 
 ## Hard policy (every rule rejects; rejections are logged with reasons)
-post-only entry (Arcus `ALO`, Hyperliquid `Alo`) at a limit that does not cross the mark · 1× isolated ·
+post-only entry (Arcus `ALO`, Hyperliquid `Alo`, QFEX `ALO`) at a limit that does not cross the mark (QFEX: nor the best bid/ask) · 1× isolated ·
 SL **and** TP attached to the entry (Arcus `entryTpsl`, HL `normalTpsl`) · loss at SL incl. fees ≤ **1 % of live
 platform equity** · weekly realized loss < **$50 per platform** (Mon 00:00 UTC, from public fills; also blocks a trade
 whose SL could cross the cap) · margin ≤ free collateral · max **3** concurrent positions/resting entries per platform,
 one per market · drift between `ref` and live mark ≤ 1 % · not expired · Entropy markets must be on dex `io` · TxFlow refused.
+QFEX: leverage is set to 1× with `POST /user/leverage` before every entry (the entry is not sent unless the API answers
+`leverage: 1`); the SL loss assumes the stop fills as a **taker** plus slippage (see [QFEX](#qfex)).
 All `computeRisk` warnings (SL past liquidation, etc.) are hard blocks here too.
 
 ## Queue (`autotrader/queue.json`, written by the AI, git-ignored)
 JSON array (or `{"proposals": [...]}`), see `queue.example.json`. Fields (short or long names):
-`id`, `platform|pf` (`arcus` | `entropy`), `market|m` (`TSLA-USD`, `io:ANTH`), `side|sd` (`long|short`),
+`id`, `platform|pf` (`arcus` | `entropy` | `qfex`), `market|m` (`TSLA-USD`, `io:ANTH`, `US100-USD`), `side|sd` (`long|short`),
 `type|et` (`limit`), `price|px`, `size|sz`, `leverage|lev` (1), `stopLoss|sl`, `takeProfit|tp`,
 `expiry|exp` (unix s), `refPrice|ref`, `rationale|n`. Each id is processed once per mode (dry/live);
 held trades (kill switch) are re-evaluated next run. State: `autotrader/state.json`. Logs: `autotrader/logs/autotrader.log`
@@ -40,8 +48,10 @@ node autotrader/cli.js verify                    # key checks only
 node autotrader/cli.js status [--since UNIX_MS]  # JSON: equity, free, weekly loss, positions + SL/TP, open orders, fills
 node autotrader/cli.js once                      # process the queue once
 node autotrader/cli.js loop                      # every AUTOTRADER_INTERVAL_S (default 60 s)
-node autotrader/cli.js cancel <arcus|entropy> <market> <orderId>   # refuses to cancel the only SL of a position
-node autotrader/cli.js close  <arcus|entropy> <market>             # reduce-only IOC close
+node autotrader/cli.js cancel <arcus|entropy|qfex> <market> <orderId>   # refuses to cancel the only SL (QFEX: any SL/TP)
+node autotrader/cli.js close  <arcus|entropy|qfex> <market>             # reduce-only IOC close (QFEX: close_position)
+npm run e2e:qfex      # offline QFEX dry run over a local mock WebSocket (no network, no order)
+npm run smoke:qfex    # public UAT market data (refdata + mark/BBO), no key
 ```
 Start in the background (after testing in dry run):
 ```bash
@@ -60,7 +70,12 @@ nohup node autotrader/cli.js loop >> autotrader/logs/nohup.out 2>&1 &
 | `ARCUS_ACCOUNT_INDEX` | subaccount, default 0 |
 | `HL_AGENT_PRIVATE_KEY` | Hyperliquid **agent (API) wallet** private key, 0x + 64 hex |
 | `HL_ACCOUNT_ADDRESS` | Hyperliquid master account address (the one that holds funds on `io`) |
+| `QFEX_API_PUBLIC_KEY` | QFEX API public key (key scoped to ONE subaccount, Execute orders + View only) |
+| `QFEX_API_SECRET_KEY` | QFEX API secret key (HMAC-SHA256; never leaves the box, never in the browser) |
+| `QFEX_ACCOUNT_ID` | UUID of the subaccount the key is scoped to (required if the key sees more than one account) |
+| `QFEX_KEY_SINGLE_ACCOUNT_ACK` | must be `1`: you confirm the key is single-account, withdraw unticked, created in Developer Settings |
 | optional | `AUTOTRADER_HL_DEXES` (default `io`), `AUTOTRADER_INTERVAL_S` (60), `AUTOTRADER_MAX_POSITIONS` (3), `AUTOTRADER_QUEUE` |
+| optional QFEX | `QFEX_CATEGORIES` (default `INDEX,COMMODITY,EQUITY`; FX is always refused), `QFEX_SL_SLIPPAGE` (fraction, overrides the per-category default), `QFEX_ALLOW_MAIN_ACCOUNT` (`1` to allow the main account; not recommended) |
 
 ## Creating the keys
 * **Arcus trade-only API key** — in the Arcus web app (API keys section) generate and register a key, or generate an
@@ -72,3 +87,51 @@ nohup node autotrader/cli.js loop >> autotrader/logs/nohup.out 2>&1 &
   e.g. `bobby`), copy its private key, and approve it with your main wallet. Agents can sign orders/cancels for the
   master account on every perp dex (including `io`) but cannot withdraw or transfer. Use a fresh agent per process.
   Docs: https://hyperliquid.gitbook.io/hyperliquid-docs/for-developers/api/nonces-and-api-wallets
+
+## QFEX
+QFEX (https://qfex.com, docs https://docs.qfex.com) is an off-chain CLOB for perps on US stocks, indices, commodities.
+Collateral is USDC (deposits on Arbitrum One). `AUTOTRADER_NETWORK=testnet` uses UAT (`api.qfex.io`, `wss://trade.qfex.io`,
+`wss://mds.qfex.io`); `mainnet` uses `api.qfex.com`, `wss://trade.qfex.com`, `wss://mds.qfex.com`.
+
+* **Auth**: HMAC-SHA256 of `"<nonce>:<unix_ts>"` with the secret key; REST headers `x-qfex-public-key`,
+  `x-qfex-hmac-signature`, `x-qfex-nonce`, `x-qfex-timestamp` (+ `x-qfex-requested-account-id`); WebSocket `auth`
+  message with the same HMAC (+ `account_id`). No builder code, no wallet (SIWE) sign-in, no JWT is ever used.
+* **Reads**: `GET /user/subaccounts/balance` (equity, free), `/user/positions`, `/user/trade` (weekly realized loss =
+  `realised_pnl_change − fee`, conservative), `/user/fees`, public `/refdata`; mark price + best bid/ask from the MDS
+  WebSocket; open orders (`get_user_orders`) and stop orders (`stop_orders` subscription) from the trade WebSocket.
+* **Entry** (in this order, stops at the first failure): `POST /user/leverage {symbol, leverage:1}` → must answer `1`;
+  `cancel_on_disconnect:false` (the resting entry and its stops must survive the bot disconnecting); `add_order` with
+  `order_type:"ALO"`, `order_time_in_force:"GTC"`, `stop_loss` **and** `take_profit`. The `order_response` must be `ACK`
+  and echo non-zero `stop_loss`/`take_profit`, otherwise the entry is cancelled immediately. A timeout is reported as
+  "state unknown" and never retried automatically (run `status`).
+* **Rounding**: size down to `lot_size`; prices to `tick_size` in the safe direction (entry more passive, SL and TP
+  closer to the entry); the entry must lie inside the refdata price band; `min_quantity` enforced; market must be `ACTIVE`
+  and accept `ALO`.
+* **Fees / risk**: live `GET /user/fees` when sane, else the Tier-5 schedule (maker 0.02 % index/commodity, 0.05 % stocks;
+  taker 0.05 % / 0.10 %). QFEX TP/SL fire as **market** orders on the mark, so the loss at SL = price move + maker entry fee
+  + stop leg at `max(taker, floor) + slippage` with floor 0.10 % stocks / 0.05 % index+commodity and default slippage
+  0.10 % stocks / 0.05 % index+commodity (`QFEX_SL_SLIPPAGE`). The total must be ≤ 1 % of live equity (~$3 on $300).
+  **Prefer INDEX and COMMODITY markets** (half the fees): e.g. `US100-USD`, `US500-USD`, `GOLD-USD`, `SILVER-USD`,
+  `CL-USD`, `NATGAS-USD`, `COPPER-USD`, `NIKKEI-USD`, `KOSPI-USD`, `HSI-USD`. FX is refused (no published fee row).
+  `QFEX_CATEGORIES=INDEX,COMMODITY` blocks single stocks entirely. Note `min_quantity` (US100: 0.001 ≈ $30).
+* **Cancel/close**: only resting entries can be cancelled by the bot; QFEX stop orders (SL/TP) are **never** cancelled or
+  modified (there is no stop-order cancel path in the code); `close` uses `close_position` (the engine sends an IOC on the
+  opposite side sized to the position, so it can only reduce).
+* **Stops unknown**: QFEX has no "list stop orders" request; they are read from the `stop_orders` subscription. If a
+  position exists and no stop can be read, new entries are refused and `status` reports `stopsKnown:false`.
+
+### QFEX key: one subaccount, Execute + View only
+1. Create a QFEX account with a **separate email / fresh wallet** — never the TxFlow/main wallet. Complete KYC/T&Cs if asked
+   and enable 2FA.
+2. Deposit USDC on **Arbitrum One** to the address shown in the QFEX UI (deposits land in the main account).
+3. Create a **subaccount** (e.g. `bobby`) and transfer ~$300 to it in the UI. Copy its account UUID.
+4. Developer Settings → *Generate public and secret API keys* → name `bobby-autotrader`, **Account access: that specific
+   subaccount** (not "All accounts"), permissions **Execute orders, View orders, View positions, View balance** only —
+   *Deposit and withdraw* unticked (QFEX forces it off for single-account keys anyway). Copy both keys (shown once).
+5. Put `QFEX_API_PUBLIC_KEY`, `QFEX_API_SECRET_KEY`, `QFEX_ACCOUNT_ID` and `QFEX_KEY_SINGLE_ACCOUNT_ACK=1` in the
+   chmod 600 env file outside the repo, then `node autotrader/cli.js verify` and a dry-run `once`.
+
+Never create keys through "builder wallet registration" / wallet sign-in: those keys are main-account keys that can withdraw
+to registered addresses. The bot refuses the main account (`is_master`) for that reason. QFEX cannot report a key's
+permissions, so withdraw capability is not directly detectable; what is enforced: the ack, single-account scope (a key that
+can read another of your accounts is refused), subaccount only, and a code path that cannot reach any funding endpoint.
