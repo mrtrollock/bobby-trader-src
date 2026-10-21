@@ -17,7 +17,7 @@ const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.
 const policy = () => { const st = S.settings; return { ...POLICY, makerOnly: !!st.polMakerOnly, maxLeverage: Number(st.polMaxLev), requireStopLoss: !!st.polRequireSl,
   maxLossPct: Number(st.polMaxLossPct), weeklyLossCap: Number(st.polWeeklyCap), capital: { arcus: Number(st.capArcus), hl: Number(st.capHl), txflow: Number(st.capTxflow) } }; };
 const PF_NAME = { arcus: '🏹 Arcus', hl: '🤖 Entropy / Hyperliquid', txflow: '🌊 TxFlow' };
-const S = { settings: { ...DEFAULTS }, secrets: null, lockTimer: null, log: [], view: 'home', proposal: null };
+const S = { settings: { ...DEFAULTS }, secrets: null, lockTimer: null, log: [], view: 'briefing', proposal: null };
 const LOCK_MS = 5 * 60 * 1000;
 
 // ---------------------------------------------------------------- tiny DOM helper
@@ -287,19 +287,54 @@ function header() {
     h('div', { class: 'badges' }, st.dryRun ? h('span', { class: 'badge warn' }, 'DRY RUN') : h('span', { class: 'badge live' }, 'LIVE'),
       st.testnet ? h('span', { class: 'badge' }, 'TESTNET') : null, h('span', { class: 'badge' }, S.secrets ? '🔓' : '🔒')));
 }
-function go(v, extra) { if (v !== 'home' && S.view === 'home') { try { history.pushState({ v }, ''); } catch { /* */ } } S.view = v; Object.assign(S, extra || {}); render(); window.scrollTo(0, 0); }
+function go(v, extra) { if (v !== 'home' && v !== 'briefing' && (S.view === 'home' || S.view === 'briefing')) { try { history.pushState({ v }, ''); } catch { /* */ } } S.view = v; Object.assign(S, extra || {}); render(); window.scrollTo(0, 0); }
 function render() {
   const app = $app(); app.replaceChildren(header());
-  const views = { home: viewHome, inbox: viewInbox, dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
+  const views = { briefing: viewBriefing, home: viewHome, inbox: viewInbox, dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
   (views[S.view] || viewHome)(app);
   app.append(nav());
 }
 
 function nav() {
   const b = (v, ico, label) => h('button', { class: 'navbtn' + (S.view === v ? ' on' : ''), onclick: () => go(v, { result: null }) }, h('span', {}, ico), label);
-  return h('nav', { class: 'bottom' }, b('inbox', '📥', 'Proposals'), b('dash', '📈', 'Dashboard'), b('positions', '📊', 'Positions'), b('settings', '⚙️', 'Settings'));
+  return h('nav', { class: 'bottom' }, b('briefing', '📰', 'Briefing'), b('inbox', '📥', 'Proposals'), b('dash', '📈', 'Dashboard'), b('positions', '📊', 'Positions'), b('settings', '⚙️', 'Settings'));
 }
-window.addEventListener('popstate', () => { if (S.view !== 'home') go('home', { result: null }); });
+window.addEventListener('popstate', () => { if (S.view !== 'briefing') go('briefing', { result: null }); });
+
+// ---------------------------------------------------------------- briefing (briefing.json next to the page, written by briefing.py)
+const berlinTime = (t) => new Date(t * 1000).toLocaleString('en-GB', { timeZone: 'Europe/Berlin', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' });
+const usd0 = (x) => (x == null ? '—' : '$' + Number(x).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 1000 ? 0 : 2, minimumFractionDigits: Math.abs(x) >= 1000 ? 0 : 2 }));
+const signedUsd = (x) => (x == null ? '' : (x < 0 ? '-$' : '+$') + Math.abs(Number(x)).toLocaleString('en-US', { maximumFractionDigits: Math.abs(x) >= 100 ? 0 : 2 }));
+function briefingCard(p) {
+  const card = h('section', { class: 'card brief' }, h('h2', {}, `${p.emoji || ''} ${p.name || p.id}`));
+  if (p.error) { card.append(h('div', { class: 'alert warn' }, 'Could not read this account: ' + p.error)); return card; }
+  const ch = p.change;
+  card.append(h('div', { class: 'equity' }, 'Equity ', h('b', {}, usd0(p.equity)),
+    ch != null ? h('span', { class: 'dot ' + (ch >= 0 ? 'up' : 'down') }, ' ● ') : null,
+    ch != null ? h('span', { class: ch >= 0 ? 'green' : 'redtxt' }, (ch >= 0 ? '+' : '') + (ch * 100).toFixed(1) + '% ' + (p.changeLabel || '')) : null));
+  if (p.summary) card.append(h('p', { class: 'summary' }, p.summary));
+  if ((p.items || []).length) card.append(h('ul', { class: 'bullets' }, ...p.items.map((i) => h('li', {},
+    h('b', {}, `${i.sym} ${i.side} `), h('b', { class: Number(i.upnl) < 0 ? 'redtxt' : 'green' }, signedUsd(i.upnl)), ': ' + (i.comment || i.auto || '')))));
+  if (p.detail) card.append(h('p', { class: 'detail' }, /^one detail/i.test(p.detail) ? p.detail : 'One detail: ' + p.detail));
+  return card;
+}
+function viewBriefing(app) {
+  const box = h('section', { class: 'card' }, h('div', { class: 'spin' }), ' Loading briefing…');
+  app.append(box);
+  (async () => {
+    let j = null;
+    try { const r = await fetch('./briefing.json?t=' + Date.now(), { cache: 'no-store' }); if (r.ok) j = await r.json(); } catch { /* */ }
+    const plats = (j && j.platforms) || [];
+    const head = h('div', { class: 'card' }, h('h2', {}, '📰 Briefing'), h('div', { class: 'muted small' },
+      j && j.generated ? `${berlinTime(j.generated)} (Berlin time)${j.network && j.network !== 'mainnet' ? ' · ' + j.network : ''}` : 'Not published yet'));
+    if (!plats.length) {
+      head.append(h('p', { class: 'muted' }, 'No briefing yet. Run briefing.py, then commit and push public/briefing.json.'));
+      box.replaceWith(head); return;
+    }
+    const frag = [head, ...plats.map(briefingCard), h('button', { class: 'btn ghost', onclick: () => render() }, 'Refresh')];
+    box.replaceWith(...frag);
+  })();
+}
 
 // ---------------------------------------------------------------- proposals inbox (proposals.json next to the page)
 const STATUS = { done: ['✅', 'executed'], expired: ['⌛', 'expired'], pending: ['•', 'to review'] };

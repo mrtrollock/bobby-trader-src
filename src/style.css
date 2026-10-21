@@ -44,3 +44,7 @@ a.btn{text-align:center;text-decoration:none;line-height:36px}
 .bar .fill.warn{background:var(--orange)}.bar .fill.red{background:var(--red)}
 .toast{bottom:calc(84px + env(safe-area-inset-bottom))}
 @media (min-width:720px){#app{max-width:640px}}
+
+.brief .equity{font-size:16px;margin-bottom:6px}.dot.up{color:var(--green)}.dot.down{color:var(--red)}.redtxt{color:var(--red)}
+.brief .summary{margin:6px 0 8px}.bullets{margin:0;padding-left:20px}.bullets li{margin:6px 0}.brief .detail{background:var(--bg);padding:8px 10px;border-radius:10px;margin:10px 0 0}
+nav.bottom .navbtn{min-width:0}

@@ -1,0 +1,226 @@
+{
+ "arcus": {
+  "account": {
+   "equity": "2381.40",
+   "freeCollateral": "900"
+  },
+  "positions": {
+   "positions": [
+    {
+     "marketDisplayName": "TSLA-USD",
+     "side": "LONG",
+     "size": "0.5",
+     "averageEntryPrice": "150",
+     "markPrice": "348",
+     "unrealizedPnl": "99"
+    },
+    {
+     "marketDisplayName": "QQQ-USD",
+     "side": "LONG",
+     "size": "0.2",
+     "averageEntryPrice": "720",
+     "markPrice": "700",
+     "unrealizedPnl": "-4"
+    },
+    {
+     "marketDisplayName": "NVDA-USD",
+     "side": "SHORT",
+     "size": "1",
+     "averageEntryPrice": "190",
+     "markPrice": "185",
+     "unrealizedPnl": "5"
+    }
+   ]
+  },
+  "openOrders": {
+   "orders": [
+    {
+     "orderId": "a1",
+     "marketDisplayName": "TSLA-USD",
+     "side": "SELL",
+     "tpslType": "STOP_LOSS",
+     "triggerPrice": "157",
+     "price": "0",
+     "isPositionTPSL": true
+    },
+    {
+     "orderId": "a2",
+     "marketDisplayName": "QQQ-USD",
+     "side": "SELL",
+     "tpslType": "STOP_LOSS",
+     "triggerPrice": "698.5",
+     "price": "0",
+     "isPositionTPSL": true
+    },
+    {
+     "orderId": "a3",
+     "marketDisplayName": "NVDA-USD",
+     "side": "BUY",
+     "tpslType": "STOP_LOSS",
+     "triggerPrice": "200",
+     "price": "0",
+     "isPositionTPSL": true
+    },
+    {
+     "orderId": "a4",
+     "marketDisplayName": "NVDA-USD",
+     "side": "BUY",
+     "tpslType": "STOP_LOSS",
+     "triggerPrice": "205",
+     "price": "0",
+     "isPositionTPSL": false
+    },
+    {
+     "orderId": "a5",
+     "marketDisplayName": "NVDA-USD",
+     "side": "BUY",
+     "tpslType": "TAKE_PROFIT",
+     "triggerPrice": "170",
+     "price": "0",
+     "isPositionTPSL": true
+    }
+   ]
+  },
+  "fills": {
+   "fills": []
+  },
+  "markets": {
+   "markets": [
+    {
+     "marketDisplayName": "TSLA-USD",
+     "category": "EQUITIES",
+     "markPrice": "1",
+     "regularTradingHours": {
+      "startSecondsOfDay": 14400,
+      "endSecondsOfDay": 72000,
+      "timezone": "America/New_York",
+      "isOvernight": false
+     }
+    },
+    {
+     "marketDisplayName": "QQQ-USD",
+     "category": "EQUITIES",
+     "markPrice": "1",
+     "regularTradingHours": {
+      "startSecondsOfDay": 14400,
+      "endSecondsOfDay": 72000,
+      "timezone": "America/New_York",
+      "isOvernight": false
+     }
+    },
+    {
+     "marketDisplayName": "NVDA-USD",
+     "category": "EQUITIES",
+     "markPrice": "1",
+     "regularTradingHours": {
+      "startSecondsOfDay": 14400,
+      "endSecondsOfDay": 72000,
+      "timezone": "America/New_York",
+      "isOvernight": false
+     }
+    }
+   ]
+  }
+ },
+ "entropy": {
+  "dexes": {
+   "io": {
+    "state": {
+     "marginSummary": {
+      "accountValue": "298.10"
+     },
+     "withdrawable": "200",
+     "assetPositions": [
+      {
+       "type": "oneWay",
+       "position": {
+        "coin": "io:ANTH",
+        "szi": "-2",
+        "entryPx": "380",
+        "positionValue": "740",
+        "unrealizedPnl": "20",
+        "liquidationPx": "700"
+       }
+      }
+     ]
+    },
+    "openOrders": [
+     {
+      "coin": "io:ANTH",
+      "side": "B",
+      "oid": 11,
+      "orderType": "Stop Market",
+      "isTrigger": true,
+      "triggerPx": "374.4",
+      "limitPx": "380",
+      "sz": "2",
+      "isPositionTpsl": true
+     }
+    ]
+   }
+  },
+  "fills": [
+   {
+    "coin": "io:ANTH",
+    "px": "375",
+    "sz": "1",
+    "side": "B",
+    "time": 1792819800000,
+    "closedPnl": "5",
+    "dir": "Close Short"
+   }
+  ]
+ },
+ "txflow": {
+  "meta": {
+   "universe": [
+    {
+     "index": 0,
+     "name": "BTC-USDC"
+    },
+    {
+     "index": 1,
+     "name": "ETH-USDC"
+    }
+   ]
+  },
+  "state": {
+   "marginSummary": {
+    "accountValue": "301.50"
+   },
+   "withdrawable": "250",
+   "assetPositions": [
+    {
+     "position": {
+      "asset": 0,
+      "coin": "0",
+      "szi": "0.001",
+      "entryPx": "100000",
+      "positionValue": "101",
+      "unrealizedPnl": "1.0"
+     },
+     "tpsl": [
+      {
+       "slTriggerPrice": "98000",
+       "tpTriggerPrice": "0"
+      }
+     ]
+    }
+   ]
+  },
+  "openOrders": [
+   {
+    "asset": 1,
+    "coin": "1",
+    "side": "A",
+    "oid": 7,
+    "orderType": "Stop Market",
+    "isTrigger": true,
+    "triggerPx": "2500",
+    "limitPx": "2490",
+    "sz": "0.1"
+   }
+  ],
+  "fills": []
+ }
+}

@@ -8,3 +8,5 @@ tests/e2e_journal.png
 __pycache__/
 tests/e2e_*.png
 *.tmp
+snapshots.json
+.briefing_comments.json

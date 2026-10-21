@@ -1,0 +1,50 @@
+[
+ {
+  "t": 1792785600,
+  "platforms": {
+   "arcus": {
+    "equity": 2376.6,
+    "positions": {
+     "TSLA-USD": 0.5,
+     "QQQ-USD": 0.2,
+     "NVDA-USD": -1
+    },
+    "orders": [
+     {
+      "id": "a1",
+      "m": "TSLA-USD",
+      "kind": "SL",
+      "trig": 157
+     }
+    ]
+   },
+   "entropy": {
+    "equity": 290.0,
+    "positions": {
+     "io:ANTH": -3
+    },
+    "orders": [
+     {
+      "id": "10",
+      "m": "io:ANTH",
+      "kind": "TP",
+      "trig": 375
+     },
+     {
+      "id": "11",
+      "m": "io:ANTH",
+      "kind": "SL",
+      "trig": 374.4
+     }
+    ]
+   },
+   "txflow": {
+    "equity": 305.0,
+    "positions": {
+     "BTC-USDC": 0.001
+    },
+    "orders": []
+   }
+  }
+ }
+]

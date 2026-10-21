@@ -28,6 +28,25 @@ Built with **Grok Bot**.
                  send_batch.py check ──► reads public account state, marks each trade done / expired in proposals.json
 ```
 
+### Briefing (📰 first tab)
+
+`briefing.py` writes `public/briefing.json`, which the Briefing tab renders per platform (🏹 ARCUS, 🤖 ENTROPY, 🌊 TxFLOW):
+equity with % change since last night, positions kept / nothing triggered, US market hours for stock/ETF underlyings,
+one bullet per position (uPnL + comment) and an optional "One detail:" note (duplicate SL, stray SL/TP, missing SL).
+
+```bash
+cp .env.example .env              # fill in PUBLIC addresses only
+python3 briefing.py --snapshot-only   # cron at ~22:00 Europe/Berlin: the "last night" baseline
+python3 briefing.py [--comments my_comments.json]   # morning: write public/briefing.json (+ a new snapshot)
+git add public/briefing.json && git commit -m briefing && git push fork web-app   # publishes in ~1 min
+```
+
+Only public read endpoints are used, nothing is signed. Snapshots stay local in `snapshots.json` (git-ignored).
+The JSON never contains an address (the script refuses to write if it would), **but equity, positions, PnL and SL/TP
+levels become public at the site URL**. Comments file: `{"arcus": {"detail": "...", "positions": {"TSLA": "I'm holding, ..."}}}`
+(keys arcus | entropy | txflow); a human comment replaces the generated one. Offline demo:
+`python3 briefing.py --mock tests/fixtures/briefing_mock.json --snapshots /tmp/s.json --out /tmp/b.json`.
+
 ### Risk policy (`src/risk.js` `POLICY`, editable in Settings) — hard blocks, the approve button stays disabled
 - **Maker only**: new positions must be **post-only limit** entries (Arcus `ALO`, Hyperliquid / TxFlow `Alo`); a limit
   that would cross the book is blocked. Market entries are refused (closing a position stays possible).
