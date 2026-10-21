@@ -222,6 +222,7 @@ def main(argv=None):
     ap.add_argument("--alerts", default=str(HERE / "autotrader" / "ALERT"), help="autotrader protection-guard alerts (JSON lines)")
     ap.add_argument("--points-ledger", help="points weeks ledger (default: points_ledger.json next to --ledger)")
     ap.add_argument("--points-manual", help="manual points/volume/balances (default: points_manual.json next to --ledger)")
+    ap.add_argument("--valuation", help="airdrop valuation research inputs (default: valuation_inputs.json next to --ledger)")
     ap.add_argument("--mock"); ap.add_argument("--testnet", action="store_true"); ap.add_argument("--now", type=float)
     a = ap.parse_args(argv)
     vaultpy.passphrase()  # refuse before reading anything: the output is published
@@ -241,6 +242,7 @@ def main(argv=None):
     activity = PT.mock_activity(readings) if a.mock else PT.collect_live(B, a.testnet, pledger, readings, now_ts, secrets)
     doc = update(ledger, readings, starts, now_ts)
     doc["points"] = PT.update(pledger, activity, manual, now_ts)
+    doc["valuation"] = PT.valuation_inputs(PT.load_json(a.valuation or lp.with_name("valuation_inputs.json")))  # encrypted with the rest
     # weekly + daily loss caps per platform (limits.py; usage from the autotrader's own accounting)
     caps, statuses = LM.collect_mock(readings) if a.mock else LM.collect_live(readings, lambda t: B.scrub(t, secrets))
     doc["limits"] = LM.build(caps, statuses, activity, manual, now_ts)

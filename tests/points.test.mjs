@@ -56,3 +56,19 @@ test('points.js: Extended (ended program) has no countdown; small Variational va
   assert.equal(pointsText({ points: 0.146345, pointsSrc: 'manual' }, { kind: 'points' }, 100), '0.146345 · ✍ manual');
   assert.equal(pointsText({ points: 4064.9, pointsSrc: 'manual' }, { kind: 'points' }, 100), '4,064.9 · ✍ manual');
 });
+
+import { scenarios, perPoint, userPointsFor, fdvLabel } from '../src/valuation.js';
+test('valuation.js: $ per point and user $ from the CURRENT points total (research figures reproduced)', () => {
+  const ext = scenarios({ airdropPct: 0.3, totalPoints: 70e6 }, 4064.9);
+  assert.deepEqual(ext.map((x) => fdvLabel(x.fdv)), ['$250M', '$500M', '$1B', '$2B', '$3B']);
+  assert.equal(ext[0].perPoint.toFixed(4), '1.0714'); assert.equal(ext[0].user.toFixed(2), '4355.25'); assert.equal(ext[4].user.toFixed(0), '52263');
+  const v = scenarios({ airdropPct: 0.32, totalPoints: 11.2e6 }, 538.77);
+  assert.equal(v[0].user.toFixed(2), '3848.36'); assert.equal(v[2].perPoint.toFixed(4), '28.5714');
+  assert.equal(scenarios({ airdropPct: 0.1, totalPoints: 36380800 }, 137)[0].user.toFixed(2), '94.14');
+  assert.equal(scenarios({ airdropPct: 0.1, totalPoints: 9.75e6 }, 1.7)[1].user.toFixed(2), '8.72');
+  assert.equal(perPoint(1e9, null, 1), null); assert.equal(scenarios({ airdropPct: 0.3, totalPoints: 70e6 }, null)[0].user, null);
+  const doc = { platforms: [{ id: 'txflow', earned: { points: 137 } }, { id: 'arcus', earned: { points: null } }] };
+  assert.equal(userPointsFor(doc, 'txflow'), 137); assert.equal(userPointsFor(doc, 'arcus'), null); assert.equal(userPointsFor(doc, 'x'), null);
+  // a new manual entry raises the total -> user $ follows
+  assert.equal(scenarios({ airdropPct: 0.1, totalPoints: 36380800 }, userPointsFor({ platforms: [{ id: 'txflow', earned: { points: 274 } }] }, 'txflow'))[0].user.toFixed(2), '188.29');
+});

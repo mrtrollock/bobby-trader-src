@@ -29,8 +29,13 @@ writeFileSync(join(bt, 'm.json'), JSON.stringify({ switches: { enabled: true, qf
 const mon = (t) => { const d = Math.floor(t / 86400); return (d - ((d + 3) % 7)) * 86400; }; // Monday 00:00 UTC
 writeFileSync(join(bt, 'points_manual.json'), JSON.stringify({ variational: { equity: 250, weeks: {} }, txflow: { weeks: { [String(mon(now - 9 * 86400))]: { points: 250 } }, retro: { label: 'Retroactive (pre-Season 1)', points: null } },
   extended: { weeks: { 66: { points: 6.3 } }, pointsTotal: 4064.9, profile: { asOf: 'test', items: [['Total rank', '#1,890']] } } }));
+writeFileSync(join(bt, 'v.json'), JSON.stringify({ generatedAt: '2026-10-21', disclaimer: 'Illustrative only: points carry no guaranteed token rights.', platforms: [
+  { id: 'extended', tgeStatus: 'announced, no date', airdropPct: 0.3, airdropBadge: 'official', airdropUrl: 'https://docs.extended.exchange/', totalPoints: 70e6, totalPointsBadge: 'official', valuable: true, marketReference: 'Polymarket >$150M 67%', userPoints: 1, scenarios: {} },
+  { id: 'txflow', tgeStatus: 'unknown', airdropPct: 0.1, airdropBadge: 'assumed', totalPoints: 36380800, totalPointsBadge: 'projected', valuable: true, warning: 'txflowtoken.com is NOT an official TxFlow site' },
+  { id: 'qfex', tgeStatus: 'unknown', valuable: false, cannotValue: "no token/points announced: can't value" },
+  { id: 'entropy', tgeStatus: 'none', valuable: false, cannotValue: "no token/points announced: can't value (Entropy pays cashback: USDC fee rebates)" }] }));
 const pyEnv = { ...process.env, BOBBY_VIEW_PASSPHRASE: PASS, BOBBY_ACCOUNT_ADDRESS: '', BOBBY_HL_ADDRESS: '', BOBBY_TXFLOW_ADDRESS: '', BOBBY_VARIATIONAL_ADDRESS: '', QFEX_API_PUBLIC_KEY: '', QFEX_API_SECRET_KEY: '', QFEX_ACCOUNT_ID: '' };
-execFileSync('python3', ['balances.py', '--mock', join(bt, 'm.json'), '--ledger', join(bt, 'l.json'), '--starts', join(bt, 's.json'), '--alerts', join(bt, 'ALERT'), '--out', 'dist/balances.enc.json', '--now', String(now)], { env: pyEnv });
+execFileSync('python3', ['balances.py', '--mock', join(bt, 'm.json'), '--ledger', join(bt, 'l.json'), '--starts', join(bt, 's.json'), '--alerts', join(bt, 'ALERT'), '--out', 'dist/balances.enc.json', '--valuation', join(bt, 'v.json'), '--now', String(now)], { env: pyEnv });
 const srv = spawn('python3', ['-m', 'http.server', String(PORT), '--bind', '127.0.0.1', '-d', 'dist'], { stdio: 'ignore' });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 await sleep(800);
@@ -46,7 +51,7 @@ try {
   page.on('request', (r) => { if (r.url().startsWith(ORIGIN)) return r.continue(); outside.push(r.url()); r.abort(); });
   await page.goto(ORIGIN + '/index.html', { waitUntil: 'networkidle0' });
   const raw = await page.evaluate(async () => (await fetch('./balances.enc.json')).text());
-  if (/Epoch|Variational|TxFlow|points|weeklyCap|halted/i.test(raw) || Object.keys(JSON.parse(raw)).sort().join() !== 'aad,alg,ct,it,iv,kdf,salt,v') fail.push('served file not an opaque envelope');
+  if (/Epoch|Variational|TxFlow|points|weeklyCap|halted|airdrop/i.test(raw) || Object.keys(JSON.parse(raw)).sort().join() !== 'aad,alg,ct,it,iv,kdf,salt,v') fail.push('served file not an opaque envelope');
   await page.type('#viewpass', PASS); await page.click('#unlock');
   await page.waitForSelector('nav.bottom', { timeout: 20000 });
   const navOk = await page.evaluate(() => { const b = [...document.querySelectorAll('nav button')]; const p = b.find((x) => x.textContent.includes('Points')); if (p) p.click(); return { n: b.length, fits: b.every((x) => x.getBoundingClientRect().right <= window.innerWidth + 1) }; });
@@ -75,6 +80,16 @@ try {
   const exCard = a.cards.find((c) => c.startsWith('♟')) || '';
   if (!/tracking only · not farmed/.test(exCard) || !/weekly distributions ended/.test(exCard) || !/Total rank #1,890/.test(exCard) || !/Extended Epoch 66: 6\.3 · ✍ manual 4,064\.9 · ✍ dashboard —/.test(E)) fail.push('extended');
   if (!/Retroactive \(pre-Season 1\) pending/.test(txCard)) fail.push('txflow retro');
+  const val = await page.evaluate(() => ({ disc: (document.querySelector('#valdisclaimer') || {}).textContent || '',
+    t: Object.fromEntries([...document.querySelectorAll('#valcard .val')].map((e) => [e.id, e.innerText.replace(/\s+/g, ' ')])),
+    ext: [...document.querySelectorAll('#valtable-extended tbody tr')].map((r) => r.innerText.replace(/\s+/g, ' ').trim()),
+    tx: [...document.querySelectorAll('#valtable-txflow tbody tr')].map((r) => r.innerText.replace(/\s+/g, ' ').trim()) }));
+  console.log(JSON.stringify({ val }, null, 1));
+  if (!/no guaranteed token rights/.test(val.disc)) fail.push('valuation disclaimer');
+  if (val.ext.join(' | ') !== '$ / point $1.0714 $2.1429 $4.2857 $8.5714 $12.86 | Your $ $4,355 $8,711 $17,421 $34,842 $52,263') fail.push('extended valuation');
+  if (val.tx.join(' | ') !== '$ / point $0.6872 $1.3744 $2.7487 $5.4974 $8.2461 | Your $ $172 $344 $687 $1,374 $2,062') fail.push('txflow valuation (250 pts)');
+  if (!/30% official/.test(val.t['val-extended'] || '') || !/Market hint: Polymarket/.test(val.t['val-extended'] || '') || !/NOT an official TxFlow site/.test(val.t['val-txflow'] || '') || !/assumed/.test(val.t['val-txflow'] || '')) fail.push('valuation badges/notes');
+  if (!/can't value/.test(val.t['val-qfex'] || '') || !/cashback/.test(val.t['val-entropy'] || '')) fail.push('cannot value');
   if (!/Points this week pending/.test(txCard) || !/Points season total 250 over 1 week\(s\) · 5,000 pts \/ \$1K/.test(txCard)) fail.push('txflow card points');
   const cards = a.cards.join(' ');
   if (!/Season 1 · 250K points \/ week/.test(cards) || !/Next points drop/.test(cards) || !/Epoch ends/.test(cards) || !/every 2 weeks \(date not published\)/.test(cards) || !/Points drop not announced/.test(cards)) fail.push('cards');

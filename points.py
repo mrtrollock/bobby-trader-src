@@ -7,7 +7,7 @@ frontendOpenOrders), Hyperliquid /info (userFillsByTime, Entropy dexes), Variati
 QFEX fills from the autotrader status (HMAC key stays in the autotrader). No private key is ever read.
 
 Schedules (primary sources, checked 2026-10-21):
-  arcus        Season 1: 250K points/week, distributed Wednesdays 3 PM ET (America/New_York, DST-aware).
+  arcus        Season 1: 250K points/week, distributed Wednesdays 19:00 UTC (Arcus Points page; the blog says 3 PM ET).
                arcus.xyz/blog/introducing-arcus-points; x.com/arcus_xyz/status/2106278949915681229 (+ weekly posts)
   txflow       Season 1: 1.25M trader points/epoch, epochs Monday -> Monday 00:00 UTC, credited the Tuesday after.
                docs.txflow.com/points/how-points-work; x.com/TxFlow_L1/status/2112605558079635890
@@ -61,15 +61,15 @@ def _utc_midnight(d):
 SCHED = {
     "arcus": {
         "kind": "points", "program": "Season 1 · 250K points / week", "unit": "Week",
-        "boundary": lambda k: int(datetime.combine(date(2026, 10, 7) + timedelta(days=7 * k), dtime(15), tzinfo=ET).timestamp()),
+        "boundary": lambda k: _utc_midnight(date(2026, 10, 7) + timedelta(days=7 * k)) + 19 * 3600,
         "number": lambda k: k + 2, "drop": lambda s, e: e, "dropExact": True,
-        "rule": "Points drop every Wednesday 3 PM New York time (usually 21:00 Berlin; 20:00 on 28 Oct 2026, when only Europe has switched to winter time)",
-        "window": "Drop to drop, Wednesday 3 PM ET → Wednesday 3 PM ET (Arcus does not publish the exact activity cut-off: assumed)",
+        "rule": "Points drop every Wednesday 19:00 UTC, as stated on the Arcus Points page (\"Points distributed at 19:00:00 UTC every Wednesday\"; 21:00 Berlin now, 20:00 from 25 Oct). Note: the Arcus blog says 3 PM ET, which is 20:00 UTC from 1 Nov",
+        "window": "Drop to drop, Wednesday 19:00 UTC → Wednesday 19:00 UTC (Arcus does not publish the exact activity cut-off: assumed)",
         "endsBy": int(datetime(2027, 7, 1, tzinfo=ET).timestamp()), "endsNote": "Program ends no later than end of H1 2027",
         "sources": [["Arcus blog: Introducing Arcus Points", "https://arcus.xyz/blog/introducing-arcus-points"],
                     ["@arcus_xyz: definitive points update (Wed 3PM)", "https://x.com/arcus_xyz/status/2106278949915681229"],
                     ["@arcus_xyz: Season 1 Week 2 complete", "https://x.com/arcus_xyz/status/2110449661031129363"]],
-        "unverified": ["activity window (assumed drop-to-drop)", "drop time after 1 Nov: the Points Dashboard says 19:00 UTC every Wednesday, the blog says 3 PM ET (= 20:00 UTC in US winter time)"],
+        "unverified": ["activity window (assumed drop-to-drop)", "blog says 3 PM ET (20:00 UTC after 1 Nov); the Points page's 19:00 UTC is used"],
     },
     "txflow": {
         "kind": "points", "program": "Season 1 · 1.25M trader points / epoch", "unit": "Epoch",
@@ -172,6 +172,24 @@ def aggregate(fills, fundings, start_ms, end_ms):
             fund += float(x.get("amount") if x.get("amount") not in (None, "") else x.get("usdc") or 0)
     return {"volume": round(v, 2), "fees": round(fees, 4), "funding": round(fund, 4), "pnl": round(closed - fees + fund, 4),
             "trades": n, "makerShare": round(maker / v, 4) if v and known else None}
+
+
+VAL_FIELDS = ("id", "platform", "tgeStatus", "tgeDate", "token", "airdropPct", "airdropBadge", "airdropPctSource", "airdropUrl", "totalPoints", "totalPointsBadge",
+              "totalPointsSource", "raiseValuation", "marketReference", "notes", "warning", "valuable", "cannotValue", "sources")
+VAL_FDVS = (250e6, 500e6, 1e9, 2e9, 3e9)
+
+
+def valuation_inputs(raw):
+    """Research inputs for the Valuation block (private file -> encrypted doc). Only research fields are kept: the user's
+    points are NOT taken from here (the app uses the current points total), and precomputed scenarios are dropped."""
+    if not isinstance(raw, dict) or not isinstance(raw.get("platforms"), list):
+        return None
+    out = []
+    for p in raw["platforms"]:
+        if isinstance(p, dict) and p.get("id") in SCHED:
+            out.append({k: p.get(k) for k in VAL_FIELDS if k in p})
+    return {"v": 1, "asOf": raw.get("generatedAt"), "formula": raw.get("formula"), "disclaimer": raw.get("disclaimer"),
+            "fdvs": list(raw.get("fdvs") or VAL_FDVS), "platforms": out}
 
 
 def per_1k(points, volume):

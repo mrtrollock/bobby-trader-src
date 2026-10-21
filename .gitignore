@@ -27,3 +27,5 @@ autotrader/ALERT
 points_ledger.json
 points_manual.json
 autotrader/STOP_VOLUME
+# airdrop valuation research inputs (private; published only inside the encrypted balances file)
+valuation_inputs.json

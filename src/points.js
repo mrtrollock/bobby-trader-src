@@ -1,3 +1,4 @@
+import { valuationCard } from './valuation.js';
 // Points tab: per platform the current points week (Berlin time), a live countdown to the next points drop (or the end
 // of the epoch / tracking week when no drop time is published), volume / PnL / fees this week and past weeks.
 // Data: balances.enc.json -> "points" (written by points.py via balances.py, decrypted in the browser). No network calls.
@@ -97,6 +98,8 @@ export function viewPoints(app, { h, doc, refresh }) {
     h('div', { class: 'scroll' }, h('table', { class: 'bal', id: 'ptsearned' },
       h('thead', {}, h('tr', {}, ...['', 'Last week', 'Season', 'Pts/$1K'].map((t) => h('th', {}, t)))), h('tbody', {}, ...er))),
     h('p', { class: 'muted small' }, 'Volume, PnL and fees are read automatically from each platform\'s API. No platform offers a documented API for your points, so points are entered by hand in points_manual.json (✍ manual) and kept per week in the private points ledger; "auto" would mark points read from an official API. "not entered yet" = the week has dropped but no number was entered (it is not 0). Season total = sum of the entered weeks; pts / $1K = season points ÷ volume of those weeks. Points of different platforms are not added up (different programs).')));
+
+  app.append(valuationCard(h, doc));
 
   for (const p of P.platforms) {
     const tg = target(p, now), w = liveWindow(p, now) || p.window, c = p.current;

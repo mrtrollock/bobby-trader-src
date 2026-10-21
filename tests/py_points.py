@@ -13,10 +13,10 @@ import vaultpy  # noqa: E402
 
 U = lambda *a: int(datetime(*a, tzinfo=timezone.utc).timestamp())
 NOW = U(2026, 10, 21, 12, 30)  # Wed 14:30 Berlin
-# Arcus: Wed 3 PM New York -> 19:00 UTC (EDT), 20:00 UTC after US DST ends (Nov 1)
+# Arcus: Wednesday 19:00 UTC per the Arcus Points page
 w = PT.window("arcus", PT.window_index("arcus", NOW))
 assert (w["n"], w["start"], w["end"], w["drop"]) == (3, U(2026, 10, 14, 19), U(2026, 10, 21, 19), U(2026, 10, 21, 19)), w
-assert PT.window("arcus", PT.window_index("arcus", U(2026, 11, 2)))["drop"] == U(2026, 11, 4, 20)
+assert PT.window("arcus", PT.window_index("arcus", U(2026, 11, 2)))["drop"] == U(2026, 11, 4, 19)  # Points page: 19:00 UTC all year (blog: 3 PM ET)
 assert PT.window("arcus", PT.window_index("arcus", U(2026, 10, 7, 18, 59)))["n"] == 1  # Week 1 dropped Oct 7
 # TxFlow: Epoch 2 = Mon 19 Oct -> Mon 26 Oct 00:00 UTC, no exact drop time
 w = PT.window("txflow", PT.window_index("txflow", NOW))
@@ -158,4 +158,13 @@ assert x8["history"][0]["start"] == U(2026, 9, 29) and x8["earned"]["points"] ==
 # removed from the manual file -> still in the ledger
 P9 = {p["id"]: p for p in PT.update(L8, {}, {}, NOW + 86400)["platforms"]}
 assert len(P9["variational"]["bonus"]) == 2 and P9["variational"]["history"][0]["points"] == 2.907816 and P9["txflow"]["retro"]["label"].startswith("Retro") and P9["variational"]["profile"]["rank"] == "3014"
+# valuation inputs: research fields only (no user points / precomputed scenarios), unknown platforms dropped; encrypted in balances
+VI = {"generatedAt": "2026-10-21", "disclaimer": "d", "platforms": [{"id": "extended", "airdropPct": 0.3, "totalPoints": 70000000, "userPoints": 4064.9, "scenarios": {"1B": 1}, "valuable": True},
+      {"id": "nope", "airdropPct": 1}, {"id": "qfex", "valuable": False, "cannotValue": "x"}]}
+vi = PT.valuation_inputs(VI)
+assert [p["id"] for p in vi["platforms"]] == ["extended", "qfex"] and "userPoints" not in vi["platforms"][0] and "scenarios" not in vi["platforms"][0] and vi["fdvs"] == [250e6, 500e6, 1e9, 2e9, 3e9]
+assert PT.valuation_inputs({}) is None and PT.valuation_inputs([]) is None
+tmpv = Path(tempfile.mkdtemp()); (tmpv / "valuation_inputs.json").write_text(json.dumps(VI)); (tmpv / "m.json").write_text(json.dumps({"txflow": {"equity": 1}}))
+assert BL.main(["--mock", str(tmpv / "m.json"), "--ledger", str(tmpv / "l.json"), "--starts", str(tmpv / "s.json"), "--out", str(tmpv / "b.enc.json"), "--alerts", str(tmpv / "none"), "--now", str(NOW)]) == 0
+assert "airdropPct" not in (tmpv / "b.enc.json").read_text() and vaultpy.read_sealed(tmpv / "b.enc.json")["valuation"]["platforms"][0]["totalPoints"] == 70000000
 print(json.dumps({"ok": True}))
