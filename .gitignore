@@ -34,3 +34,6 @@ autotrader/STOP_ENTROPY
 valuation_inputs.json
 *.bak*
 public/positions.json
+# airdrop / TGE announcements (private; published only as public/announcements.enc.json)
+announcements.json
+public/announcements.json

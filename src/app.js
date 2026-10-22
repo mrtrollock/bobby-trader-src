@@ -12,6 +12,7 @@ import { openJson } from './vault.js';
 import { viewPoints } from './points.js';
 import { limitsCard } from './limits.js';
 import * as PV from './positions.js';
+import * as AN from './announce.js';
 
 const LAUNCH_URL = window.__LAUNCH_URL || location.href;
 const DEFAULTS = { dryRun: true, testnet: false, maxLoss: MAX_LOSS, slippage: 0.02, feeArcus: FEES.arcus, feeIo: FEES.hl_io,
@@ -323,10 +324,28 @@ function render() {
   const app = $app();
   if (!S.viewPass) { app.replaceChildren(); viewLock(app); return; } // nothing else renders until the passphrase decrypted the data
   app.replaceChildren(header());
-  const views = { briefing: viewBriefing, home: viewHome, inbox: viewInbox, balances: viewBalances, points: (a) => viewPoints(a, { h, doc: S.data && S.data.balances, refresh: async () => { try { await refreshData(); render(); } catch (e) { toast(e.message, 'err'); } } }), dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
+  const ban = annBanner(); if (ban) app.prepend(ban); // airdrop / TGE news: sticky at the very top of every tab
+  const views = { briefing: viewBriefing, home: viewHome, inbox: viewInbox, balances: viewBalances, points: (a) => { viewPoints(a, { h, doc: S.data && S.data.balances, refresh: async () => { try { await refreshData(); render(); } catch (e) { toast(e.message, 'err'); } } }); a.append(annCard()); }, dash: viewDash, confirm: viewConfirm, settings: viewSettings, positions: viewPositions, log: viewLog };
   (views[S.view] || viewHome)(app);
   app.append(nav());
 }
+
+// ---------------------------------------------------------------- announcements (announcements.enc.json, written by tools/announce.py)
+const ANN = { expanded: false };
+const annDoc = () => S.data && S.data.announcements;
+function annDismiss(id) { AN.saveDismissed([...AN.loadDismissed(), id]); render(); }
+function annRestore(id) { AN.saveDismissed(AN.loadDismissed().filter((x) => x !== id)); render(); }
+function annBanner() {
+  return AN.bannerEl(h, annDoc(), { dismissed: AN.loadDismissed(), expanded: ANN.expanded, onDismiss: annDismiss, onToggle: () => { ANN.expanded = !ANN.expanded; render(); } });
+}
+function annCard() { return AN.announcementsCard(h, annDoc(), { dismissed: AN.loadDismissed(), onRestore: annRestore }); }
+// keep deadline countdowns current and drop items whose deadline passed, without re-rendering the whole view
+setInterval(() => {
+  const old = document.getElementById('annbanner');
+  if (!S.viewPass || (!old && !(annDoc() && AN.itemsOf(annDoc()).length))) return;
+  const fresh = annBanner();
+  if (old && fresh) old.replaceWith(fresh); else if (old) old.remove(); else if (fresh) $app().prepend(fresh);
+}, 60000);
 
 function nav() {
   const b = (v, ico, label) => h('button', { class: 'navbtn' + (S.view === v ? ' on' : ''), onclick: () => go(v, { result: null }) }, h('span', {}, ico), label);
@@ -335,7 +354,8 @@ function nav() {
 window.addEventListener('popstate', () => { if (S.view !== 'briefing') go('briefing', { result: null }); });
 
 // ---------------------------------------------------------------- private data: every published file is *.enc.json (passphrase vault)
-const DATA_FILES = { briefing: 'briefing.enc.json', proposals: 'proposals.enc.json', balances: 'balances.enc.json', positions: 'positions.enc.json' };
+const DATA_FILES = { briefing: 'briefing.enc.json', proposals: 'proposals.enc.json', balances: 'balances.enc.json', positions: 'positions.enc.json', announcements: 'announcements.enc.json' };
+const OPTIONAL_FILES = new Set(['announcements']); // never blocks the unlock: a missing / unreadable one just shows no banner
 const VP_KEY = 'bobby_viewpass_v1'; // optional "remember on this device": the passphrase encrypted with a PIN (same PBKDF2/AES-GCM as the keystore)
 async function fetchSealed(name) {
   const r = await fetch('./' + name + '?t=' + Date.now(), { cache: 'no-store' });
@@ -347,8 +367,9 @@ async function fetchSealed(name) {
 async function loadVault(pass) {
   const out = {}; let found = 0;
   for (const [k, f] of Object.entries(DATA_FILES)) {
-    const env = await fetchSealed(f);
+    const env = OPTIONAL_FILES.has(k) ? await fetchSealed(f).catch(() => undefined) : await fetchSealed(f);
     if (env === undefined) { out[k] = null; continue; }
+    if (OPTIONAL_FILES.has(k)) { try { out[k] = await openJson(env, pass); } catch { out[k] = null; } continue; }
     found++; out[k] = await openJson(env, pass);
   }
   if (!found) throw new Error('Nothing published yet (no encrypted data files on the site).');

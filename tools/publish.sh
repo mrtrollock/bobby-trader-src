@@ -2,7 +2,8 @@
 # Refresh + ENCRYPT + publish the private web-app data. Only *.enc.json files are ever committed.
 #   tools/publish.sh            # balances only (python3 balances.py) -> public/balances.enc.json
 #   tools/publish.sh briefing   # briefing only (python3 briefing.py) -> public/briefing.enc.json
-#   tools/publish.sh all        # balances + briefing (+ public/proposals.enc.json if send_batch.py changed it)
+#   tools/publish.sh all        # balances + briefing + announcements (+ public/proposals.enc.json if send_batch.py changed it)
+#   tools/publish.sh announcements  # airdrop/TGE banner only (tools/announce.py seal) -> public/announcements.enc.json
 #   tools/publish.sh inbox      # just commit/push public/proposals.enc.json written by send_batch.py
 #   tools/publish.sh positions  # open positions + Bobby status only (python3 positions.py) -> public/positions.enc.json
 #   (balances / all also refresh public/positions.enc.json; tools/positions_loop.sh publishes it every 5 min from a separate worktree)
@@ -19,9 +20,10 @@ case "$what" in
   balances) python3 balances.py; files=(public/balances.enc.json public/positions.enc.json) ;;
   positions) python3 positions.py; files=(public/positions.enc.json) ;;
   briefing) python3 briefing.py; files=(public/briefing.enc.json) ;;
-  all)      python3 balances.py; python3 briefing.py; files=(public/balances.enc.json public/briefing.enc.json public/proposals.enc.json public/positions.enc.json) ;;
+  all)      python3 balances.py; python3 briefing.py; python3 tools/announce.py seal; files=(public/balances.enc.json public/briefing.enc.json public/proposals.enc.json public/positions.enc.json public/announcements.enc.json) ;;
+  announcements) python3 tools/announce.py seal; files=(public/announcements.enc.json) ;;
   inbox)    files=(public/proposals.enc.json) ;;
-  *) echo "usage: tools/publish.sh [balances|briefing|all|inbox|positions]" >&2; exit 64 ;;
+  *) echo "usage: tools/publish.sh [balances|briefing|all|inbox|positions|announcements]" >&2; exit 64 ;;
 esac
 # guard: every file must be an encrypted envelope (nothing else is allowed onto the public site)
 python3 - "${files[@]}" <<'PY'

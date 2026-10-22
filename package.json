@@ -13,7 +13,8 @@
     "e2e:qfex": "node tests/qfex_e2e.mjs",
     "smoke:qfex": "node tests/qfex_smoke_uat.mjs",
     "e2e:qfex-app": "node build.mjs && node tests/e2e_qfex_app.mjs",
-    "e2e:points": "node build.mjs && node tests/e2e_points.mjs"
+    "e2e:points": "node build.mjs && node tests/e2e_points.mjs",
+    "e2e:announce": "node build.mjs && node tests/e2e_announce.mjs"
   },
   "keywords": [],
   "author": "",

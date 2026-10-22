@@ -78,3 +78,20 @@ header{flex-wrap:wrap;gap:6px}.badges{flex-wrap:wrap;justify-content:flex-end}
 .grid2 .kv th,.grid2 .kv td{font-size:13px;padding:4px 0}.grid2 .kv td{white-space:nowrap;padding-left:6px}
 @media (max-width:480px){.grid2{gap:6px}.grid2>.card{padding:10px}.grid2 h2{font-size:15px}.grid2 .kv th,.grid2 .kv td{font-size:12px}}
 @media (min-width:720px){#app:has(#balgrid){max-width:960px}}
+/* announcements banner (airdrop / TGE news): sticky at the top of every tab */
+.annbanner{position:sticky;top:env(safe-area-inset-top);z-index:6;margin:0 0 10px;border-radius:12px;padding:10px 12px;box-shadow:0 4px 14px rgba(0,0,0,.45);max-height:70vh;overflow-y:auto}
+.annbanner.action{background:#3b1d0d;color:#fed7aa;border-left:4px solid var(--red)}
+.annbanner.info{background:#0f2238;color:#cfe3ff;border-left:4px solid var(--accent)}
+.annitem+.annitem{border-top:1px solid rgba(255,255,255,.12);margin-top:8px;padding-top:8px}
+.annbanner .annitem.info{color:#cfe3ff}.annbanner .annitem.action{color:#fed7aa}
+.annhead{display:flex;align-items:center;gap:8px;font-size:12px}
+.anntag{font-weight:700;text-transform:uppercase;letter-spacing:.03em}.annitem.action .anntag{color:#fca5a5}.annitem.info .anntag{color:#93c5fd}
+.annpf{opacity:.85}
+.anndismiss{margin-left:auto;border:0;background:transparent;color:inherit;font-size:16px;line-height:1;padding:4px 6px;cursor:pointer;opacity:.75;min-width:32px;min-height:32px}
+.anntitle{font-weight:700;font-size:15px;margin:2px 0}.anntext{font-size:13px;opacity:.95}
+.anndl{font-size:13px;font-weight:600;margin-top:4px;font-variant-numeric:tabular-nums}.anndl.soon{color:#fca5a5}
+.annlinks{display:flex;flex-wrap:wrap;gap:12px;margin-top:4px;font-size:13px}.annlinks a{color:#93c5fd;font-weight:600}.annlinks a.claim{color:#fdba74}
+.annmore{display:block;width:100%;border:0;background:rgba(255,255,255,.07);color:inherit;border-radius:8px;margin-top:8px;padding:6px;font-size:13px;cursor:pointer}
+.card.ann .annitem{border-radius:10px;padding:8px 10px;margin-top:8px;background:var(--bg)}
+.card.ann .annitem.action{border-left:4px solid var(--red)}.card.ann .annitem.info{border-left:4px solid var(--accent)}
+.card.ann .annitem+.annitem{border-top:0}.annrestore{margin-left:6px}
