@@ -282,8 +282,11 @@ export async function openSession(b, creds, { WS, timeoutMs = 10000 } = {}) {
   checkCreds(creds);
   const Ctor = WS || await wsCtor();
   const ws = new Ctor(b.trade + '?api_key=' + encodeURIComponent(creds.pub));
-  await new Promise((res, rej) => { const t = setTimeout(() => rej(new Error('QFEX: WebSocket connect timeout')), timeoutMs);
-    const ok = () => { clearTimeout(t); res(); }, ko = (e) => { clearTimeout(t); const m = (e && e.message) || '';
+  if (ws.on) ws.on('error', () => {}); // a late socket error must never crash the loop (waits time out instead)
+  // a socket that never opened is torn down (it must not linger and fire late events into a later tick)
+  const kill = () => { try { if (ws.terminate) ws.terminate(); else ws.close(); } catch { /* */ } };
+  await new Promise((res, rej) => { const t = setTimeout(() => { kill(); rej(new Error('QFEX: WebSocket connect timeout')); }, timeoutMs);
+    const ok = () => { clearTimeout(t); res(); }, ko = (e) => { clearTimeout(t); kill(); const m = (e && e.message) || '';
       rej(new Error(/\b40[13]\b/.test(m) ? 'QFEX: authentication failed (trade WebSocket refused the API key: ' + m + ')' : 'QFEX: WebSocket error ' + m)); };
     if (ws.once) { ws.once('open', ok); ws.once('error', ko); } else { ws.addEventListener('open', ok); ws.addEventListener('error', ko); } });
   const s = new Session(ws);

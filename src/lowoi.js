@@ -89,7 +89,8 @@ async function pool(items, n, fn) {
   await Promise.all(Array.from({ length: Math.min(n, items.length) }, async () => { while (i < items.length) { const k = i++; try { out[k] = await fn(items[k]); } catch { out[k] = null; } } }));
   return out;
 }
-const jget = async (f, url, init) => { const r = await f(url, init); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
+// bounded (15 s): a hanging public-data request must never freeze the autotrader loop
+const jget = async (f, url, init = {}) => { const r = await f(url, { ...init, signal: init.signal || AbortSignal.timeout(15000) }); if (!r.ok) throw new Error('HTTP ' + r.status); return r.json(); };
 const hlLevels = (lv) => (lv || []).map((x) => [x.px, x.sz]);
 
 export const arcusBook = async (base, market, f = fetch) => { const b = await jget(f, `${base}/v1/l2OrderBook/${encodeURIComponent(market)}?nLevels=50`); return { bids: b.bids || [], asks: b.asks || [] }; };

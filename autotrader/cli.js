@@ -239,27 +239,52 @@ async function loop() {
   log('INFO', `loop started (${ctx.cfg.network}, ${ctx.cfg.live ? 'LIVE' : 'DRY RUN'}, every ${every / 1000}s, QFEX volume mode ${ctx.cfg.qfexVol && ctx.cfg.qfexVol.enabled ? 'ON (' + ctx.cfg.qfexVol.leverage + 'x)' : 'off'})`);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; log('INFO', 'stopping on ' + sig); });
   const health = C.readHealth();
+  // tick watchdog: a tick running longer than AUTOTRADER_TICK_TIMEOUT_S (240) is abandoned (its remaining sends are
+  // refused), the loop waits up to AUTOTRADER_TICK_GRACE_S (60) for its bounded reads to settle, then carries on; if it
+  // still has not settled the process exits (code 3) and tools/supervise.sh restarts it, which reconciles from the
+  // exchange state on start. Heartbeat: AUTOTRADER_HEARTBEAT_FILE (autotrader/logs/heartbeat) after every finished tick.
+  const tickMax = Math.max(60, Number(process.env.AUTOTRADER_TICK_TIMEOUT_S || 240)) * 1000;
+  const tickGrace = Math.max(10, Number(process.env.AUTOTRADER_TICK_GRACE_S || 60)) * 1000;
+  const hbFile = process.env.AUTOTRADER_HEARTBEAT_FILE || join(P.logs, 'heartbeat');
+  const beat = () => { try { mkdirSync(dirname(hbFile), { recursive: true }); writeFileSync(hbFile, new Date().toISOString() + ' ' + process.pid + '\n'); } catch { /* best effort */ } };
+  beat();
   let lastDone = Date.now(); const wdMemo = {};
   const wd = setInterval(() => {
-    const w = C.stallCheck(wdMemo, lastDone, Date.now());
-    if (w && w.stalled) { const msg = `STALL: no loop tick has completed for ${Math.round(w.idleMs / 60e3)} min (a request may be hanging)`; log('ERROR', msg); alert({ pf: 'loop', kind: 'stall', reason: msg }); }
+    const w = C.watchdogStep(wdMemo, lastDone, Date.now());
+    if (w && w.suspended) log('WARN', `timers were frozen for ${Math.round(w.gapMs / 60e3)} min: the machine/process was suspended (not a hung request); the exchange-side stops stayed in place, resuming`);
+    else if (w && w.stalled) { const msg = `STALL: no loop tick has completed for ${Math.round(w.idleMs / 60e3)} min (a request may be hanging)`; log('ERROR', msg); alert({ pf: 'loop', kind: 'stall', reason: msg }); }
     else if (w && w.recovered) log('INFO', `loop ticking again after ${Math.round(w.idleMs / 1000)}s`);
   }, 30e3);
   if (wd.unref) wd.unref();
+  const runTick = async (fn, what) => {
+    const token = {}, tctx = { cfg: ctx.cfg, net: C.gatedNet(ctx.net, token) };
+    const r = await C.withDeadline(fn(tctx), tickMax);
+    if (r.done) return r.value;
+    if (!r.timedOut) throw r.error;
+    token.abandoned = true;
+    const msg = `${what} exceeded ${Math.round(tickMax / 1000)}s: abandoned (no further orders from it), exchange-side stops untouched`;
+    log('ERROR', 'WATCHDOG: ' + msg); alert({ pf: 'loop', kind: 'tick-timeout', reason: msg });
+    const settled = await C.withDeadline(r.pending, tickGrace);
+    if (settled.timedOut) {
+      const m2 = `abandoned tick still not settled after ${Math.round(tickGrace / 1000)}s more: exiting so the supervisor restarts a clean process`;
+      log('ERROR', 'WATCHDOG: ' + m2); alert({ pf: 'loop', kind: 'tick-hung-exit', reason: m2 }); process.exit(3);
+    }
+    const e = new Error('tick timed out (watchdog)'); e.timeout = true; throw e;
+  };
   while (!stopping) {
     let failure = null;
     try {
       if (Date.now() - verifiedAt > 30 * 60e3) {
-        try { ctx = await boot(); verifiedAt = Date.now(); }
+        try { const b = await runTick(() => boot(), 'key re-check'); ctx = b; verifiedAt = Date.now(); }
         catch (e) { if (!C.isTransientError(e)) throw e; failure = e; log('WARN', 'periodic key re-check failed (transient, keeping the verified config): ' + redact(e.message)); }
       }
-      if (!failure) { const r = await once(ctx, { degraded: health.degraded }); hot = !!(r && r.hot); volTick = r && r.tickMs; failure = (r && r.readError) || null; }
+      if (!failure) { const r = await runTick((t) => once(t, { degraded: health.degraded }), 'loop tick'); hot = !!(r && r.hot); volTick = r && r.tickMs; failure = (r && r.readError) || null; }
     } catch (e) {
       log('ERROR', 'iteration failed: ' + redact(e.message));
       if (C.isTransientError(e)) failure = e;
       else if (KEY_ERR.test(e.message)) { log('ERROR', 'key check failed, aborting loop'); alert({ pf: 'loop', kind: 'abort', reason: redact(e.message) }); process.exit(2); }
     }
-    lastDone = Date.now();
+    lastDone = Date.now(); beat();
     let wait = Math.min(hot ? Math.min(every, 20000) : every, volTick || Infinity);
     wait = Math.max(wait, health.pace(Date.now())); // slower while 403s were seen in the last 15 min
     if (failure) {
@@ -280,6 +305,8 @@ async function loop() {
     for (let t = 0; t < wait && !stopping; t += 1000) await new Promise((r) => setTimeout(r, 1000));
   }
   clearInterval(wd);
+  log('INFO', 'loop stopped');
+  process.exit(0); // nothing may keep a stopped loop alive (the supervisor waits for the exit)
 }
 
 async function main(argv) {

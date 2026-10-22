@@ -133,6 +133,9 @@ export function decideVolume({ vc, st, refs, fees, quotes, vstate, now, rng = Ma
     const m = mkt(s), { pos, orders } = byMarket(s), ref = refs[s], q = quotes[s] || {};
     const entries = orders.filter(isVolEntry), exits = orders.filter(isVolExit), vstops = orders.filter(isVolStop);
     if (pos) {
+      // restart reconciliation: the phase update of a send can be lost (process killed between send and state save);
+      // a position that carries this mode's own tagged stops/exit IS ours: adopt it (managed, never re-entered)
+      if (!['entry', 'pos'].includes(m.phase) && (vstops.length || exits.length)) { m.phase = 'pos'; m.filledAt ||= now; m.risk ||= limits.perTrade; notes.push(`${s}: volume-mode position adopted from the exchange state`); }
       if (!['entry', 'pos'].includes(m.phase)) { notes.push(`${s}: position not opened by volume mode, left alone`); continue; }
       active += 1; openRisk += m.risk || 0;
       if (m.phase === 'entry') { m.phase = 'pos'; m.filledAt = now; }
@@ -253,6 +256,9 @@ async function refsAndFees(cfg, net) {
 export const _resetCache = () => { cache.refs = null; cache.fees = null; };
 
 // io = { live, kill, log, journal, alert, guardOk, accountState, rng }
+// an entry whose LAST request (the order itself) was sent but got no answer in time: state unknown on the exchange
+export const uncertainEntry = (reqs, res) => res.length === reqs.length && res.length > 0 && !res[res.length - 1].ok
+  && (res[res.length - 1].uncertain === true || /state unknown/i.test(String(res[res.length - 1].error || '')));
 export async function volumeTick(cfg, net, vstate, io) {
   const vc = cfg.qfexVol;
   if (!vc || !vc.enabled) return { enabled: false };
@@ -288,6 +294,13 @@ export async function volumeTick(cfg, net, vstate, io) {
     const err = res.map((x) => x.error).filter(Boolean).join(' | ');
     if (a.kind === 'enter') {
       if (ok) Object.assign(m, { phase: 'entry', since: now, lastSide: a.side, risk: a.risk.worstLoss, margin: a.risk.margin, cancelled: false, seenResting: false });
+      else if (uncertainEntry(reqs, res)) {
+        // the entry request timed out after it was sent: it may be resting (or filled) on the exchange. Track it as an
+        // entry so the next tick adopts whatever the exchange shows (resting order / position with its SL+TP) instead
+        // of ignoring it; if nothing is there it is treated as cancelled. Never re-sent blindly (market blocked 2 min).
+        Object.assign(m, { phase: 'entry', since: now, lastSide: a.side, risk: a.risk.worstLoss, margin: a.risk.margin, cancelled: true, seenResting: false, uncertain: now });
+        m.blockedUntil = now + 2 * 60e3; io.log('WARN', `volume enter ${a.market}: result unknown (${err}); re-reading the exchange next tick before anything is re-sent`);
+      }
       else { m.blockedUntil = now + 10 * 60e3; io.alert({ pf: 'qfex', market: a.market, kind: 'volume-entry-failed', ok: false, reason: err }); }
       io.journal({ id: 'vol-' + a.market + '-' + now, decision: ok ? 'placed' : 'failed', volume: true, plan: { pf: 'qfex', market: a.market, side: a.side, size: a.qty, px: a.px, sl: a.sl, tp: a.tp },
         risk: a.risk, lev: a.lev, results: res.map(({ label, status, ok: o, error }) => ({ label, status, ok: o, error })), mode: 'live' });

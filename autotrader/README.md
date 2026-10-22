@@ -56,11 +56,24 @@ node autotrader/cli.js close  <arcus|entropy|qfex> <market>             # reduce
 npm run e2e:qfex      # offline QFEX dry run over a local mock WebSocket (no network, no order)
 npm run smoke:qfex    # public UAT market data (refdata + mark/BBO), no key
 ```
-Start in the background (after testing in dry run):
+Start in the background (after testing in dry run), always under the supervisor:
 ```bash
-set -a; . ~/.bobby-autotrader.env; set +a          # chmod 600 file OUTSIDE the repo
-nohup node autotrader/cli.js loop >> autotrader/logs/nohup.out 2>&1 &
+setsid nohup bash tools/supervise.sh >> autotrader/logs/supervisor.out 2>&1 < /dev/null &
+# loads ~/.bobby-autotrader.env itself (BOBBY_ENV_FILE; chmod 600, OUTSIDE the repo); loop output -> autotrader/logs/loop.out
+# stop: kill $(cat autotrader/logs/supervisor.pid)   (graceful: the loop finishes its current tick first)
 ```
+Stall protection (incident 2026-10-21/22):
+- every request is bounded: QFEX REST 15 s (`QFEX_HTTP_TIMEOUT_MS`), QFEX WebSocket connect/auth/answers 10 s, Hyperliquid
+  and Arcus reads 15 s (`HTTP_READ_TIMEOUT_MS`), order/cancel sends 20 s (`HTTP_SEND_TIMEOUT_MS`), public market data 15 s.
+  A send that times out is "state unknown": never retried blindly; the next tick re-reads orders/positions and adopts
+  what is there (an entry is tracked so a resting order or a filled position with its SL/TP is managed, not duplicated).
+- tick watchdog: a tick over `AUTOTRADER_TICK_TIMEOUT_S` (240) is abandoned (its remaining sends are refused locally), the
+  loop waits `AUTOTRADER_TICK_GRACE_S` (60) for it to settle and goes on; if it never settles the process exits (3).
+- `tools/supervise.sh` restarts the loop when it exits or when `AUTOTRADER_HEARTBEAT_FILE` (autotrader/logs/heartbeat,
+  written after each tick) is older than `BOBBY_STALL_RESTART_S` (600). Exit 2 (key check failed) is not restarted.
+  A suspended machine (frozen timers) is logged as a suspension, not a stall, and does not trigger a restart.
+- restart = reconcile: state.json + the live exchange state decide; positions carrying Bobby's tagged stops/exits are
+  adopted, resting Bobby entries are tracked, busy markets get no new entry, exchange SL/TP are never removed.
 
 ## Environment
 | var | meaning |

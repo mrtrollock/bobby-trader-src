@@ -5,6 +5,25 @@ import { assertTradeOnly } from './risk.js';
 
 export const bases = (testnet) => ({ arcus: testnet ? A.TESTNET : A.MAINNET, hl: testnet ? H.TESTNET : H.MAINNET });
 
+// Every request is bounded (an unanswered request must never freeze the autotrader loop): reads HTTP_READ_TIMEOUT_MS
+// (15 s), order/cancel sends HTTP_SEND_TIMEOUT_MS (20 s). A send that times out may still have reached the exchange:
+// it is reported as "state unknown" (uncertain) and NEVER retried blindly; the next tick re-reads open orders and
+// positions first, so nothing is ever submitted twice.
+const envMs = (k, d) => { const v = typeof process !== 'undefined' && process.env ? Number(process.env[k]) : NaN; return v > 0 ? v : d; };
+export const readTimeoutMs = () => envMs('HTTP_READ_TIMEOUT_MS', 15000);
+export const sendTimeoutMs = () => envMs('HTTP_SEND_TIMEOUT_MS', 20000);
+const isAbort = (e) => e && (e.name === 'TimeoutError' || e.name === 'AbortError' || /aborted due to timeout/i.test(String(e.message)));
+export async function timedFetch(url, init = {}, ms = readTimeoutMs(), { send = false, what = 'request' } = {}) {
+  try {
+    const r = await fetch(url, { ...init, signal: init.signal || AbortSignal.timeout(ms) });
+    return await j(r);
+  } catch (e) {
+    if (!isAbort(e)) throw e;
+    const err = new Error(`${what} timed out after ${Math.round(ms / 1000)}s` + (send ? ' (state unknown: the next tick re-reads orders/positions before anything is re-sent)' : ''));
+    err.timeout = true; if (send) err.uncertain = true;
+    throw err;
+  }
+}
 async function j(r) {
   const text = await r.text();
   let body; try { body = text ? JSON.parse(text) : {}; } catch { body = { raw: text.slice(0, 500) }; }
@@ -13,15 +32,16 @@ async function j(r) {
 export async function sendArcus(base, d) {
   assertTradeOnly('arcus', d);
   const qs = d.query ? '?' + new URLSearchParams(d.query).toString() : '';
-  return j(await fetch(base + d.path + qs, { method: d.method, headers: d.headers, body: d.body ?? undefined }));
+  const send = d.method && d.method !== 'GET';
+  return timedFetch(base + d.path + qs, { method: d.method, headers: d.headers, body: d.body ?? undefined }, send ? sendTimeoutMs() : readTimeoutMs(), { send, what: 'Arcus ' + (d.method || 'GET') + ' ' + d.path });
 }
 export async function sendHl(base, d) {
-  return j(await fetch(base + d.path, { method: 'POST', headers: d.headers, body: d.body }));
+  return timedFetch(base + d.path, { method: 'POST', headers: d.headers, body: d.body }, sendTimeoutMs(), { send: true, what: 'HL ' + d.path });
 }
 // ---------------- Arcus reads (public)
 export async function arcusGet(base, path, params = {}) {
   const q = Object.entries(params).filter(([, v]) => v != null);
-  const r = await j(await fetch(base + path + (q.length ? '?' + new URLSearchParams(q).toString() : '')));
+  const r = await timedFetch(base + path + (q.length ? '?' + new URLSearchParams(q).toString() : ''), {}, readTimeoutMs(), { what: 'Arcus GET ' + path });
   if (!r.ok) throw new Error(`Arcus HTTP ${r.status}: ${JSON.stringify(r.body).slice(0, 200)}`);
   return r.body;
 }
@@ -45,7 +65,7 @@ export const arcusOpenOrders = async (base, address, ai) => (await arcusGet(base
 export const arcusApiKeys = async (base, address) => (await arcusGet(base, '/v1/apiKeys', { address })).apiKeys || [];
 // ---------------- Hyperliquid reads
 export async function hlInfo(base, body) {
-  const r = await j(await fetch(base + '/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }));
+  const r = await timedFetch(base + '/info', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }, readTimeoutMs(), { what: 'HL info ' + (body && body.type) });
   if (!r.ok) throw new Error(`HL HTTP ${r.status}: ${JSON.stringify(r.body).slice(0, 200)}`);
   return r.body;
 }

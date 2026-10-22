@@ -136,6 +136,8 @@ export function decideHlVolume({ vc, st, mk, quotes, pool, vstate, now, rng = Ma
     const entries = orders.filter(isHvEntry), exits = orders.filter(isHvExit), trig = orders.filter(isTrigger);
     const foreign = orders.filter((o) => !isHvEntry(o) && !isHvExit(o) && !isTrigger(o));
     if (pos) {
+      // restart reconciliation: a position with this mode's own tagged exit (cloid) is ours: adopt it (never re-entered)
+      if (!['entry', 'pos'].includes(m.phase) && exits.length) { m.phase = 'pos'; m.filledAt ||= now; m.risk ||= limits.perTrade; notes.push(`${s}: volume-mode position adopted from the exchange state`); }
       if (!['entry', 'pos'].includes(m.phase)) { notes.push(`${s}: position not opened by volume mode, left alone`); continue; }
       active += 1; openRisk += m.risk || 0;
       if (m.phase === 'entry') { m.phase = 'pos'; m.filledAt = now; }
@@ -262,6 +264,9 @@ async function tradeCount(net, coin, vc, now) {
 }
 
 // io = { live, kill, log, journal, alert, canEnter, accountState, rng, env }
+// an entry whose LAST request (the order itself) was sent but got no answer in time: state unknown on the exchange
+export const uncertainEntry = (reqs, res) => res.length === reqs.length && res.length > 0 && !res[res.length - 1].ok
+  && (res[res.length - 1].uncertain === true || /state unknown/i.test(String(res[res.length - 1].error || '')));
 export async function hlVolumeTick(cfg, net, vstate, io) {
   const vc = cfg.hlVol;
   if (!vc || !vc.enabled) return { enabled: false };
@@ -305,6 +310,13 @@ export async function hlVolumeTick(cfg, net, vstate, io) {
     if (a.kind === 'enter') {
       if (ok) Object.assign(m, { phase: 'entry', since: now, lastSide: a.side, risk: a.risk.worstLoss, margin: a.risk.margin, cancelled: false });
       else if (/post only|immediately match/i.test(err)) m.cooldownUntil = now + 5e3; // Alo would have crossed: re-quote soon, no alert
+      else if (uncertainEntry(reqs, res)) {
+        // the entry request timed out after it was sent: it may be resting (or filled) on the exchange. Track it as an
+        // entry so the next tick adopts whatever the exchange shows (resting order / position with its SL+TP) instead
+        // of ignoring it; if nothing is there it is treated as cancelled. Never re-sent blindly (market blocked 2 min).
+        Object.assign(m, { phase: 'entry', since: now, lastSide: a.side, risk: a.risk.worstLoss, margin: a.risk.margin, cancelled: true, uncertain: now });
+        m.blockedUntil = now + 2 * 60e3; io.log('WARN', `entropy volume enter ${a.market}: result unknown (${err}); re-reading the exchange next tick before anything is re-sent`);
+      }
       else { m.blockedUntil = now + 10 * 60e3; io.alert({ pf: 'entropy', market: a.market, kind: 'volume-entry-failed', ok: false, reason: err }); }
       io.journal({ id: 'hvol-' + a.market + '-' + now, decision: ok ? 'placed' : 'failed', volume: true, plan: { pf: 'entropy', market: a.market, side: a.side, size: a.qty, px: a.px, sl: a.sl, tp: a.tp },
         risk: a.risk, lev: a.lev, results: res.map(({ label, status, ok: o, error }) => ({ label, status, ok: o, error })), mode: 'live' });

@@ -178,6 +178,34 @@ export function readHealth({ baseMs = 15e3, capMs = 120e3, maxDownMs = 10 * 60e3
     ok(t) { const r = h.since == null ? null : { downMs: t - h.since, n: h.n, alerted: h.alertedAt != null }; h.since = null; h.n = 0; h.alertedAt = null; return r; } };
   return h;
 }
+// ---------------------------------------------------------------- tick watchdog
+// Per-tick send gate: once the watchdog abandons a tick, every further order/cancel of THAT tick is refused locally
+// (reads may still finish; each is bounded by its own timeout). The next tick starts only after the abandoned one has
+// settled, so two ticks never act at the same time and nothing is double-submitted.
+export function gatedNet(net, token) {
+  const refuse = () => { const e = new Error('tick abandoned by the watchdog: not sent'); e.notSent = true; return e; };
+  const g = { ...net,
+    sendHl: async (d) => { if (token.abandoned) throw refuse(); return net.sendHl(d); },
+    sendArcus: async (d) => { if (token.abandoned) throw refuse(); return net.sendArcus(d); } };
+  if (net.qfex) g.qfex = { ...net.qfex, send: async (reqs) => (token.abandoned ? [{ label: 'gate', ok: false, error: refuse().message, notSent: true }] : net.qfex.send(reqs)) };
+  return g;
+}
+// Race a tick against a deadline: { done: true, value } | { done: false, error } | { timedOut: true, pending }.
+export function withDeadline(promise, ms) {
+  let t;
+  const timer = new Promise((r) => { t = setTimeout(() => r({ timedOut: true }), ms); });
+  const run = promise.then((value) => ({ done: true, value }), (error) => ({ done: false, error }));
+  return Promise.race([run, timer]).then((r) => { clearTimeout(t); return r.timedOut ? { timedOut: true, pending: run } : r; });
+}
+// Watchdog beat (every beatMs): a beat that comes far too late means the timers themselves were frozen, i.e. the box or
+// the process was suspended (seen 2026-10-21/22: 43-264 min gaps, every STALL logged only at the moment of resume) and
+// not a hung request. That gap is reported as a suspension and not counted as a stall.
+export function watchdogStep(memo, lastDone, now, { beatMs = 30e3, suspendFactor = 4, ...stallOpts } = {}) {
+  const gap = memo.lastBeat ? now - memo.lastBeat : 0; memo.lastBeat = now;
+  if (gap > beatMs * suspendFactor) { memo.resumedAt = now; memo.stalledSince = null; memo.alertedAt = 0; return { suspended: true, gapMs: gap }; }
+  return stallCheck(memo, Math.max(lastDone, memo.resumedAt || 0), now, stallOpts);
+}
+
 // Stall watchdog: no tick finished for > limitMs -> one message, repeated every repeatMs while it lasts.
 export function stallCheck(memo, lastDone, now, { limitMs = 5 * 60e3, repeatMs = 15 * 60e3 } = {}) {
   const idle = now - lastDone;
@@ -675,7 +703,14 @@ export async function send(pf, reqs, net) {
   if (pf === 'qfex') return net.qfex.send(reqs);
   const out = [];
   for (const r of reqs) {
-    const res = pf === 'arcus' ? await net.sendArcus(r.d) : await net.sendHl(r.d);
+    let res;
+    try { res = pf === 'arcus' ? await net.sendArcus(r.d) : await net.sendHl(r.d); }
+    catch (e) {
+      // a network failure / timeout of a send is reported, never retried here: the request may have reached the exchange
+      // (uncertain), so the next tick re-reads open orders + positions before anything is sent again
+      if (!(e && (e.timeout || e.notSent || isTransientError(e)))) throw e;
+      out.push({ label: r.label, ok: false, error: e.message, uncertain: !e.notSent }); break;
+    }
     const err = pf === 'arcus' ? arcusError(res) : hlError(res);
     out.push({ label: r.label, status: res.status, ok: !err, error: err, body: res.body });
     if (err) break; // never place the order if the leverage step failed
