@@ -6,11 +6,11 @@ Pure functions (tested) + small public readers. Unknown values stay None and car
   TxFlow:     TxFlow userNonFundingLedgerUpdates from the beginning (bridge deposits/withdrawals, transfers, vault moves)
   QFEX:       balance `deposit` (net deposited; separate totals are not exposed to a single-account key)
   RiseX:      public transfer history (deposits / withdrawals summed from the beginning; tracking only, not traded)
-  Variational / Extended: manual (points_manual.json "<pf>": {"flows": {"deposits", "withdrawals"}}) or not tracked
+  Variational / Extended / Metric: manual (points_manual.json "<pf>": {"flows": {"deposits", "withdrawals"}}) or not tracked
 """
 STABLES = ("USDC", "USDT0", "USDT", "USDH", "USDE")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "🟣 Extended", "risex": "⚡ RiseX"}
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "🟣 Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric")
 _f = lambda x: float(x or 0)
 
 
@@ -123,8 +123,12 @@ def build(readings, manual):
             rows.append(row(pf, eq, {**{k: (None if m.get(k) is None else round(float(m[k]), 2)) for k in ("deposits", "withdrawals")}, "src": "manual entry"}))
         elif pf == "variational":
             rows.append(row(pf, eq, None, reason="manual / not available yet (send the Variational Transfers CSV export)"))
-        else:
+        elif pf == "extended":
             rows.append(row(pf, eq, None, reason="not tracked (needs an Extended API key)"))
+        elif pf == "metric":
+            rows.append(row(pf, eq, None, reason="not tracked (no public balances API; enter flows/points by hand from the Metric app)"))
+        else:
+            rows.append(row(pf, eq, None, reason="not tracked"))
     known = [x for x in rows if x["net"] is not None and x["current"] is not None]
     tot = None
     if known:

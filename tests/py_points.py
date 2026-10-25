@@ -167,4 +167,11 @@ assert PT.valuation_inputs({}) is None and PT.valuation_inputs([]) is None
 tmpv = Path(tempfile.mkdtemp()); (tmpv / "valuation_inputs.json").write_text(json.dumps(VI)); (tmpv / "m.json").write_text(json.dumps({"txflow": {"equity": 1}}))
 assert BL.main(["--mock", str(tmpv / "m.json"), "--ledger", str(tmpv / "l.json"), "--starts", str(tmpv / "s.json"), "--out", str(tmpv / "b.enc.json"), "--alerts", str(tmpv / "none"), "--now", str(NOW)]) == 0
 assert "airdropPct" not in (tmpv / "b.enc.json").read_text() and vaultpy.read_sealed(tmpv / "b.enc.json")["valuation"]["platforms"][0]["totalPoints"] == 70000000
+# Metric: tracking only, points formula not announced (like QFEX schedule shape)
+M10 = {"metric": {"weeks": {"2026-10-19": {"points": 12.5}}, "pointsTotal": 12.5}}
+P10 = {p["id"]: p for p in PT.update({}, {}, M10, NOW)["platforms"]}
+m10 = P10["metric"]
+assert m10["tracking"] and m10["kind"] == "not announced" and m10["earned"]["points"] == 12.5 and "Metric" in m10["name"]
+assert PT.valuation_inputs({"platforms": [{"id": "metric", "valuable": False, "cannotValue": "x", "userPoints": 1}]})["platforms"][0]["id"] == "metric"
+
 print(json.dumps({"ok": True}))

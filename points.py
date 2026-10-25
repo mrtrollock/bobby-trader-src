@@ -26,6 +26,10 @@ Schedules (primary sources, checked 2026-10-21):
                docs.risechain.com/docs/risex/rewards/points; blog.risechain.com (Season 1 guide); GET api.rise.trade/v1/points/epoch/current
                (public: "Week 14 (19-25 Oct UTC)", distribution_at Tue 27 Oct 14:00 UTC). Volume/fees/PnL per week from the public
                trade history; wallet points need a wallet-signed JWT -> manual.
+  metric       TRACKING ONLY (not farmed). Spot propAMM DEX (metric.xyz) for tokenized stocks/crypto on Ethereum, BNB Chain
+               and Robinhood Chain. Points UI exists but no official formula, season schedule or token/TGE announced (as of Oct 2026).
+               Referrals are live; wash trading / self-deals banned (terms). No public per-address points/balances API -> manual
+               (screenshots). Genuine swap volume on Metric's own quotes is what scores; farming plan is a separate build.
 
 Ledger (git-ignored, chmod 600) points_ledger.json: {"v": 1, "weeks": {pf: {"<window start unix>": row}}, "cov": {pf: unix}}.
 Manual entries (git-ignored) points_manual.json, see points_manual.example.json: per platform "equity" (balance for
@@ -38,8 +42,8 @@ from zoneinfo import ZoneInfo
 
 UTC, ET = timezone.utc, ZoneInfo("America/New_York")
 DAY = 86400
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended", "risex": "⚡ RiseX"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric"}
 VARIATIONAL_NEXT_DROP = "https://omni.variational.io/api/points/next_drop_ts"
 HISTORY_KEEP = 60
 # Where the points numbers come from. Checked 2026-10-21: no documented API exposes a user's points on any platform, so
@@ -52,6 +56,7 @@ POINTS_SRC = {
     "qfex": "manual: the QFEX API (api.qfex.com/openapi.yaml) has no points or season endpoint (only referral rewards); Season 0 points are not published yet",
     "extended": "manual: Extended's points (GET /api/v1/user/rewards/earned) and account volume/PnL are only readable with an Extended API key, which Bobby does not have and does not request (tracking only)",
     "risex": "manual: RiseX documents wallet points endpoints (GET /v1/points/..., developer.rise.trade) but they need a JWT from a wallet-signed login; Bobby has no RiseX signer and does not request one (tracking only). Points are shown on rise.trade/points",
+    "metric": "manual: Metric (metric.xyz) shows points in the app UI only; no documented public points/balances API and Bobby does not hold a Metric trading key (tracking only). Enter points from screenshots / the app",
     "entropy": "rebates, not points: Entropy pays USDC/HYPE fee rebates every 2 weeks (claimable on the Entropy profile, no API); enter them as \"rebates\" by week",
 }
 KEEP = ("points", "pointsSrc", "rebates", "rebatesSrc")  # survive a recompute of the week from fills
@@ -135,6 +140,19 @@ SCHED = {
                     ["RiseX API docs", "https://developer.rise.trade/reference/general-information"],
                     ["@risextrade on X (weekly drop posts)", "https://x.com/risextrade"]],
         "unverified": [],
+    },
+    "metric": {
+        "kind": "not announced", "tracking": True, "program": "Points UI live · schedule / formula not announced", "unit": "Week",
+        "boundary": lambda k: _utc_midnight(date(2026, 10, 12) + timedelta(days=7 * k)),
+        "number": lambda k: None, "drop": lambda s, e: None, "dropExact": False,
+        "rule": "Metric shows a points balance in the app, but no official season, drop day or scoring formula is published. Referrals are live. Counted activity (per public posts / terms): genuine swaps that take Metric's own propAMM quote (not 0x/Kyber routes). Wash trading and self-deals are banned",
+        "window": "No official points week yet: tracking week Monday 00:00 → Monday 00:00 UTC",
+        "endsBy": None, "endsNote": None,
+        "sources": [["Metric", "https://metric.xyz/"],
+                    ["Metric app", "https://app.metric.xyz/"],
+                    ["@metricxyz on X", "https://x.com/metricxyz"],
+                    ["@metricxyz: referrals live", "https://x.com/metricxyz/status/2112922190349844551"]],
+        "unverified": ["points formula / season schedule / drop time", "token / TGE / airdrop share"],
     },
     "qfex": {
         "kind": "not announced", "program": "Season 0 announced · schedule not announced", "unit": "Week",

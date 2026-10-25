@@ -2,10 +2,47 @@
   "_help": "Copy to valuation_inputs.json next to balances_ledger.json (git-ignored, private; published only inside the encrypted balances.enc.json). The user's points are NOT entered here: the Points tab uses the current points total. Badges: airdropBadge official|assumed, totalPointsBadge official|projected|assumed. valuable=false + cannotValue for platforms without token/points.",
   "generatedAt": "YYYY-MM-DD",
   "disclaimer": "Illustrative only: points carry no guaranteed token rights.",
-  "fdvs": [250000000, 500000000, 1000000000, 2000000000, 3000000000],
+  "fdvs": [
+    250000000,
+    500000000,
+    1000000000,
+    2000000000,
+    3000000000
+  ],
   "platforms": [
-    {"id": "extended", "tgeStatus": "…", "tgeDate": "…", "token": "…", "airdropPct": 0.3, "airdropBadge": "official", "airdropPctSource": "…", "airdropUrl": "https://…",
-     "totalPoints": 70000000, "totalPointsBadge": "official", "totalPointsSource": "…", "raiseValuation": "…", "marketReference": "…", "notes": "…", "warning": null, "valuable": true, "sources": ["https://…"]},
-    {"id": "qfex", "tgeStatus": "…", "valuable": false, "cannotValue": "no token/points announced: can't value"}
+    {
+      "id": "extended",
+      "tgeStatus": "\u2026",
+      "tgeDate": "\u2026",
+      "token": "\u2026",
+      "airdropPct": 0.3,
+      "airdropBadge": "official",
+      "airdropPctSource": "\u2026",
+      "airdropUrl": "https://\u2026",
+      "totalPoints": 70000000,
+      "totalPointsBadge": "official",
+      "totalPointsSource": "\u2026",
+      "raiseValuation": "\u2026",
+      "marketReference": "\u2026",
+      "notes": "\u2026",
+      "warning": null,
+      "valuable": true,
+      "sources": [
+        "https://\u2026"
+      ]
+    },
+    {
+      "id": "qfex",
+      "tgeStatus": "\u2026",
+      "valuable": false,
+      "cannotValue": "no token/points announced: can't value"
+    },
+    {
+      "id": "metric",
+      "tgeStatus": "not announced",
+      "valuable": false,
+      "cannotValue": "no token/points formula announced: can't value",
+      "notes": "TRACKING ONLY"
+    }
   ]
 }

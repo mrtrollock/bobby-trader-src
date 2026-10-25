@@ -27,7 +27,7 @@ r = {x["id"]: x for x in doc["rows"]}
 assert r["arcus"]["pnl"] == -152.78 and r["arcus"]["deposits"] is None and "net only" in r["arcus"]["note"]
 assert r["entropy"]["pnl"] == round(300.19 - 336.08, 2)
 assert r["txflow"]["net"] is None and r["txflow"]["pnl"] is None and r["txflow"]["reason"]
-assert "CSV" in r["variational"]["reason"] and "API key" in r["extended"]["reason"]
+assert "CSV" in r["variational"]["reason"] and "API key" in r["extended"]["reason"] and "Metric" in r["metric"]["reason"]
 assert doc["total"]["platforms"] == ["arcus", "entropy", "qfex"] and doc["total"]["deposits"] is None
 assert doc["total"]["pnl"] == round(-152.78 + (300.19 - 336.08) - 2, 2), doc["total"]
 # --- Arcus: netDeposits are deposits, not PnL; an old start without a deposit is re-based once
@@ -62,5 +62,5 @@ assert b["platforms"][0]["state"] == "stopped" and not b["live"]
 b = POS.bobby_status({**env, "AUTOTRADER_LIVE": "0"}, {}, {"state": "active"}, None, True, {}, 0)
 assert "dry run" in b["platforms"][0]["detail"]
 fin = POS.finish(pos, orders, meta, b, 5, {"variational": {"positions": [{"market": "BTC", "side": "long", "size": 0.1}]}})
-assert fin["platforms"]["variational"]["count"] == 1 and fin["platforms"]["extended"]["status"] == "manual"
+assert fin["platforms"]["variational"]["count"] == 1 and fin["platforms"]["extended"]["status"] == "manual" and fin["platforms"]["metric"]["status"] == "manual" and "tracking only" in fin["platforms"]["metric"]["note"]
 print(json.dumps({"ok": True}))

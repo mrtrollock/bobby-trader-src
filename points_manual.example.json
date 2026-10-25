@@ -64,5 +64,10 @@
         ]
       ]
     }
+  },
+  "metric": {
+    "weeks": {},
+    "pointsTotal": null,
+    "note": "TRACKING ONLY. Enter pointsTotal / weeks from app.metric.xyz screenshots. No API."
   }
 }
