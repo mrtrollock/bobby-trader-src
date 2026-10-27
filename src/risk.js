@@ -55,7 +55,7 @@ export const POLICY = {
   maxLeverage: 1,           // 1x isolated: notional <= margin
   requireStopLoss: true,    // every new position carries a stop-loss
   maxLossPct: 0.01,         // max loss at SL (fees incl.) per trade, as a fraction of platform capital (1 % of $300 = $3)
-  weeklyLossCap: 50,        // $ per platform per week (Mon 00:00 UTC); once used up, new proposals are blocked
+  weeklyLossCap: 50,        // $ per platform per week (Mon 00:00 UTC). QFEX volume taker may use up to $100 via QFEX_VOL_TAKER_WEEKLY_LOSS_CAP_USD / QFEX_WEEKLY_LOSS_CAP_USD (see QFEX_WEEKLY_CAP_CEILING).
   capital: { arcus: 300, hl: 300, txflow: 300, qfex: 100 }, // QFEX: user's starting size; the autotrader uses live equity // $ per platform (used for the % rule)
   marginAboveFreeBlocks: true,
   // per-platform overrides (absolute $ instead of % of capital). QFEX: user's choice 2026-10-21; per-trade loss is also

@@ -74,8 +74,8 @@ test('QFEX stop order: reduce-only side, no nested stops, allowed by policy; ent
   assert.deepEqual(s, { type: 'add_order', params: { symbol: 'US100-USD', side: 'SELL', order_type: 'STOP_LOSS', order_time_in_force: 'GTC', quantity: 0.003, price: 29300 } });
   assert.equal(Q.buildStopOrder({ symbol: 'US100-USD', positionIsLong: false, kind: 'TP', qty: 1, trig: 5 }).params.side, 'BUY');
   assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: { ...s.params, stop_loss: 1 } }), /no further stops/);
-  assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: { symbol: 'US100-USD', side: 'BUY', order_type: 'LIMIT', order_time_in_force: 'GTC', quantity: 1, price: 1, stop_loss: 0.5, take_profit: 2 } }), /post-only/);
-  assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: { symbol: 'US100-USD', side: 'BUY', order_type: 'MARKET', order_time_in_force: 'IOC', quantity: 1 } }), /post-only/);
+  assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: { symbol: 'US100-USD', side: 'BUY', order_type: 'LIMIT', order_time_in_force: 'GTC', quantity: 1, price: 1, stop_loss: 0.5, take_profit: 2 } }), /ALO GTC \(maker\) or LIMIT IOC \(taker\)/);
+  assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: { symbol: 'US100-USD', side: 'BUY', order_type: 'MARKET', order_time_in_force: 'IOC', quantity: 1 } }), /ALO GTC \(maker\) or LIMIT IOC \(taker\)/);
 });
 
 test('QFEX guard live: unprotected position -> grace -> attach SL+TP at the planned levels -> protected next tick; alert written', async () => {

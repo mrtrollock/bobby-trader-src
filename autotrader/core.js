@@ -18,6 +18,9 @@ export const PLATFORMS = ['arcus', 'entropy', 'qfex'];
 const KEY_OF = { arcus: 'arcus', entropy: 'hl', qfex: 'qfex' };
 const POL_PF = { arcus: 'arcus', entropy: 'hl', qfex: 'qfex' };
 
+// QFEX-only weekly-cap ceiling (Loss Refunds taker $75–$100). Other platforms keep POLICY.weeklyLossCap ($50).
+export const QFEX_WEEKLY_CAP_CEILING = 100;
+
 // ---------------------------------------------------------------- config from env (keys never leave this object)
 export function loadConfig(env = process.env) {
   const net = env.AUTOTRADER_NETWORK;
@@ -63,8 +66,9 @@ export function loadConfig(env = process.env) {
   if (cfg.qfex) {
     Q.checkCreds(cfg.qfex);
     if (cfg.qfex.slippage != null && !(cfg.qfex.slippage >= 0 && cfg.qfex.slippage < 0.02)) throw new Error('QFEX_SL_SLIPPAGE must be a fraction between 0 and 0.02');
-    // hard ceilings: the weekly cap can never exceed the standing $50/platform policy; one trade can never exceed the week
-    if (!(cfg.qfex.weeklyLossCap > 0 && cfg.qfex.weeklyLossCap <= POLICY.weeklyLossCap)) throw new Error(`QFEX_WEEKLY_LOSS_CAP_USD must be > 0 and <= ${POLICY.weeklyLossCap}`);
+    // hard ceilings: QFEX weekly may go up to QFEX_WEEKLY_CAP_CEILING ($100) for Loss Refunds taker; maker env stays ~$30.
+    // One trade can never exceed the week.
+    if (!(cfg.qfex.weeklyLossCap > 0 && cfg.qfex.weeklyLossCap <= QFEX_WEEKLY_CAP_CEILING)) throw new Error(`QFEX_WEEKLY_LOSS_CAP_USD must be > 0 and <= ${QFEX_WEEKLY_CAP_CEILING}`);
     if (!(cfg.qfex.maxTradeLossUsd > 0 && cfg.qfex.maxTradeLossUsd <= cfg.qfex.weeklyLossCap)) throw new Error('QFEX_MAX_TRADE_LOSS_USD must be > 0 and <= the weekly cap');
   }
   cfg.capital = { arcus: env.ARCUS_CAPITAL_USD ? Number(env.ARCUS_CAPITAL_USD) : POLICY.capital.arcus, hl: env.HL_CAPITAL_USD ? Number(env.HL_CAPITAL_USD) : POLICY.capital.hl };
@@ -401,11 +405,22 @@ export const dayStartUtc = (ms) => { const d = new Date(ms); return Date.UTC(d.g
 export const monthStartUtc = (ms) => { const d = new Date(ms); return Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), 1); };
 // fills: Q.tradeRows -> { day, week, month: {volume $, fees $, pnl $ (realised - fees), trades}, goal, monthPct }
 export function volumeStats(fills, nowMs, { goal = VOLUME_GOAL_MONTH } = {}) {
-  const per = (from) => { const r = { volume: 0, fees: 0, pnl: 0, trades: 0 };
-    for (const f of fills || []) { if (!(f.time >= from)) continue; r.volume += Math.abs(Number(f.px || 0) * Number(f.sz || 0)); r.fees += Number(f.fee || 0); r.pnl += Number(f.closedPnl || 0) - Number(f.fee || 0); r.trades += 1; }
-    return { volume: +r.volume.toFixed(2), fees: +r.fees.toFixed(4), pnl: +r.pnl.toFixed(4), trades: r.trades }; };
+  // QFEX tradeRows.type = order_type: ALO ≈ maker; LIMIT/MARKET/STOP* ≈ taker (Loss Refunds cares about taker notional).
+  const isMaker = (f) => String(f.type || f.order_type || '').toUpperCase() === 'ALO';
+  const per = (from) => {
+    const r = { volume: 0, fees: 0, pnl: 0, trades: 0, makerVolume: 0, takerVolume: 0, makerTrades: 0, takerTrades: 0 };
+    for (const f of fills || []) {
+      if (!(f.time >= from)) continue;
+      const n = Math.abs(Number(f.px || 0) * Number(f.sz || 0));
+      r.volume += n; r.fees += Number(f.fee || 0); r.pnl += Number(f.closedPnl || 0) - Number(f.fee || 0); r.trades += 1;
+      if (isMaker(f)) { r.makerVolume += n; r.makerTrades += 1; } else { r.takerVolume += n; r.takerTrades += 1; }
+    }
+    return { volume: +r.volume.toFixed(2), fees: +r.fees.toFixed(4), pnl: +r.pnl.toFixed(4), trades: r.trades,
+      makerVolume: +r.makerVolume.toFixed(2), takerVolume: +r.takerVolume.toFixed(2), makerTrades: r.makerTrades, takerTrades: r.takerTrades };
+  };
   const month = per(monthStartUtc(nowMs));
-  return { day: per(dayStartUtc(nowMs)), week: per(weekStartUtc(nowMs)), month, goal, monthPct: +(100 * month.volume / goal).toFixed(2), periods: 'UTC (week from Monday 00:00 UTC)' };
+  return { day: per(dayStartUtc(nowMs)), week: per(weekStartUtc(nowMs)), month, goal, monthPct: +(100 * month.volume / goal).toFixed(2),
+    periods: 'UTC (week from Monday 00:00 UTC)' };
 }
 async function qfexState(cfg, net, { sinceMs } = {}) {
   const q = cfg.qfex;

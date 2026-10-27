@@ -70,7 +70,14 @@ test('order construction: ALO GTC entry with SL+TP, safe tick/lot rounding, guar
   assert.throws(() => Q.buildEntry({ symbol: 'US100-USD', isLong: true, qty: 0.003, px: 29590, sl: 29700, tp: 30100 }), /wrong side/);
   for (const bad of [{ ...e, params: { ...e.params, order_type: 'LIMIT' } }, { ...e, params: { ...e.params, order_type: 'MARKET', order_time_in_force: 'IOC' } },
     { ...e, params: { ...e.params, stop_loss: 0 } }, { ...e, params: { ...e.params, take_profit: undefined } }])
-    assert.throws(() => Q.assertQfexMessage(bad), /post-only|mandatory/);
+    assert.throws(() => Q.assertQfexMessage(bad), /ALO GTC|LIMIT IOC|mandatory|post-only/);
+  // taker Loss Refunds entry: LIMIT IOC with SL+TP allowed
+  const te = Q.buildTakerEntry({ symbol: 'CL', isLong: true, qty: 1, px: 98.01, sl: 97.5, tp: 99, clientOrderId: 'b-vol-t1' });
+  assert.deepEqual([te.params.order_type, te.params.order_time_in_force], ['LIMIT', 'IOC']);
+  Q.assertQfexMessage(te);
+  const tx = Q.buildTakerExit({ symbol: 'CL', positionIsLong: true, qty: 1, px: 97.99, clientOrderId: 'b-vx-t1' });
+  assert.deepEqual([tx.params.order_type, tx.params.order_time_in_force, tx.params.reduce_only], ['LIMIT', 'IOC', true]);
+  Q.assertQfexMessage(tx);
   for (const t of ['modify_order', 'cancel_all_orders', 'modify_stop_order', 'add_twap', 'transfer', 'withdraw', 'set_user_leverage'])
     assert.throws(() => Q.assertQfexMessage({ type: t, params: {} }), /forbidden/);
   // cancel_stop_order exists only for the volume mode's ORPHAN stops and needs an id
@@ -80,7 +87,7 @@ test('order construction: ALO GTC entry with SL+TP, safe tick/lot rounding, guar
   const x = Q.buildExit({ symbol: 'us100', positionIsLong: true, qty: 0.003, px: 29620, clientOrderId: 'b-vx-1' });
   assert.deepEqual(x.params, { symbol: 'US100-USD', side: 'SELL', order_type: 'ALO', order_time_in_force: 'GTC', quantity: 0.003, price: 29620, take_profit: 0, stop_loss: 0, reduce_only: true, client_order_id: 'b-vx-1' });
   for (const bad of [{ ...x.params, order_type: 'LIMIT' }, { ...x.params, order_type: 'MARKET', order_time_in_force: 'IOC' }, { ...x.params, stop_loss: 29000 }, { ...x.params, price: 0 }])
-    assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: bad }), /post-only|no stops|price/);
+    assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: bad }), /ALO GTC|LIMIT IOC|no stops|price|post-only/);
   assert.throws(() => Q.assertQfexMessage({ type: 'add_order', params: { ...e.params, reduce_only: 1 } }), /never reduce-only/);
   // leverage: queue entries 1x only; volume mode 1..10 and <= the market max
   assert.deepEqual(JSON.parse(Q.leverageRequest('US100', 5, { volume: true, maxLev: 30 }).body), { symbol: 'US100-USD', leverage: 5 });
@@ -257,7 +264,8 @@ test('weekly loss: realised_pnl_change minus fee since Monday 00:00 UTC; second/
 
 test('QFEX loss limits: $3/trade (fees + stop slippage), ≤ 5% of live equity, ≤ remaining of the $30 week; env-configurable with ceilings', async () => {
   const c = cfgOf(); assert.equal(c.qfex.weeklyLossCap, 30); assert.equal(c.qfex.maxTradeLossUsd, 3);
-  assert.throws(() => cfgOf({ QFEX_WEEKLY_LOSS_CAP_USD: '60' }), /<= 50/);
+  assert.equal(cfgOf({ QFEX_WEEKLY_LOSS_CAP_USD: '85' }).qfex.weeklyLossCap, 85); // Loss Refunds taker ceiling
+  assert.throws(() => cfgOf({ QFEX_WEEKLY_LOSS_CAP_USD: '101' }), /<= 100/);
   assert.throws(() => cfgOf({ QFEX_MAX_TRADE_LOSS_USD: '40' }), /weekly cap/);
   assert.equal(cfgOf({ QFEX_WEEKLY_LOSS_CAP_USD: '20', QFEX_MAX_TRADE_LOSS_USD: '2' }).qfex.maxTradeLossUsd, 2);
   const ev = async (q, st, cx) => { const t = setup(st, cx); try { return await C.evaluate(q, t.cfg, t.net); } finally { t.restore(); } };
@@ -274,7 +282,7 @@ test('QFEX loss limits: $3/trade (fees + stop slippage), ≤ 5% of live equity, 
   assert.ok(e.reasons.some((x) => /weekly loss cap reached \(\$30\.00 \/ \$30\)/.test(x)));
   // Arcus / Entropy unchanged: 1 % of capital, $50/week
   const { POLICY, policyFor, checkPolicy } = await import('../src/risk.js');
-  assert.equal(policyFor('arcus'), POLICY); assert.equal(policyFor('hl'), POLICY); assert.equal(POLICY.weeklyLossCap, 50);
+  assert.equal(policyFor('arcus'), POLICY); assert.equal(policyFor('hl'), POLICY); assert.equal(POLICY.weeklyLossCap, 50); assert.equal(C.QFEX_WEEKLY_CAP_CEILING, 100);
   const r = { slLoss: 3.5, margin: 1 };
   assert.match(checkPolicy({ pf: 'arcus', act: 'open', et: 'limit', lev: 1, sl: 1 }, r).blocks.join(), /\(1\.0% of \$300\)/);
   assert.equal(checkPolicy({ pf: 'qfex', act: 'open', et: 'limit', lev: 1, sl: 1 }, r, { policy: policyFor('qfex') }).maxLoss, 3); // web app: 5 % of $100 = $5 -> $3

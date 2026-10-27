@@ -27,6 +27,20 @@ test('config: OFF by default; leverage and limits validated', () => {
   assert.throws(() => V.loadVolumeConfig({ QFEX_VOL_SL_PCT: '0.1' }), /SL_PCT/);
   assert.equal(V.loadVolumeConfig({ QFEX_LEVERAGE: '10' }).leverage, 10);
   assert.deepEqual(V.loadVolumeConfig({}).prefer, ['US100-USD', 'US500-USD']);
+  assert.equal(V.loadVolumeConfig({}).style, 'maker');
+  const taker = V.loadVolumeConfig({ QFEX_VOL_STYLE: 'taker' });
+  assert.equal(taker.style, 'taker');
+  assert.deepEqual(taker.markets, ['CL-USD']);
+  assert.equal(taker.maxMarkets, 1);
+  assert.deepEqual(taker.prefer, ['CL-USD']);
+  assert.deepEqual(taker.avoid, ['US100-USD', 'US500-USD']);
+  assert.equal(taker.takerWeeklyCap, 85);
+  assert.equal(taker.takerDailyCap, 34); // 0.4 * 85
+  assert.equal(taker.takerArmUtc, V.TAKER_ARM_UTC_DEFAULT);
+  assert.equal(V.loadVolumeConfig({ QFEX_VOL_TAKER: '1' }).style, 'taker');
+  assert.deepEqual(V.loadVolumeConfig({ QFEX_VOL_STYLE: 'taker', QFEX_VOL_MARKETS: 'US100,US500,CL' }).markets, ['CL-USD']);
+  assert.deepEqual(V.loadVolumeConfig({ QFEX_VOL_STYLE: 'taker', QFEX_VOL_TAKER_MARKETS: 'CL,SILVER' }).markets, ['CL-USD', 'SILVER-USD']);
+  assert.throws(() => V.loadVolumeConfig({ QFEX_VOL_STYLE: 'taker', QFEX_VOL_TAKER_WEEKLY_LOSS_CAP_USD: '150' }), /TAKER_WEEKLY_LOSS_CAP/);
 });
 
 test('session: regular session only, and still open 15 min later', () => {
@@ -241,4 +255,61 @@ test('a post-only entry QFEX cancels on placement (never seen resting) is re-quo
   Object.assign(vs.markets['CL-USD'], { phase: 'entry', seenResting: true, requotes: [], cooldownUntil: 0 });
   const r3 = V.decideVolume({ vc, st: ST(), refs: REFS, fees: FEES, quotes: QUOTES, vstate: vs, now: T0, rng: rng0, limits: LIM });
   assert.equal(r3.actions.filter((a) => a.kind === 'enter').length, 0); assert.equal(vs.stats.stopsOrOther, 1);
+});
+
+
+test('taker style: IOC entry through the touch, prefer CL, avoid US100, flatten via close_position', () => {
+  const vc = VC({ QFEX_VOL_STYLE: 'taker', QFEX_VOL_TAKER_MARKETS: 'CL,US100', QFEX_VOL_AVOID: 'US100-USD', QFEX_VOL_PREFER: 'CL-USD', QFEX_VOL_TAKER_NOTIONAL_USD: '800-800', QFEX_VOL_SIZE_JITTER: '0' });
+  const lim = { perTrade: 3, weeklyCap: 30, takerWeeklyCap: 85, takerDailyCap: 34 };
+  const { actions } = V.decideVolume({ vc, st: ST({ equity: 300, free: 300 }), refs: REFS, fees: FEES, quotes: QUOTES, vstate: {}, now: T0, rng: () => 0.25, canEnter: true, limits: lim });
+  assert.equal(actions.length, 1);
+  const a = actions[0];
+  assert.equal(a.kind, 'enter'); assert.equal(a.market, 'CL-USD'); assert.equal(a.style, 'taker');
+  assert.equal(a.side, 'long'); assert.equal(a.px, 98.01); // taker BUY at ask
+  assert.ok(a.risk.worstLoss <= 3 && a.risk.notional >= 400, JSON.stringify(a.risk)); // sized down to fit $3/trade with taker fees
+  const vs = { markets: { 'CL-USD': { phase: 'pos', filledAt: T0 - 1e3, risk: 1, requotes: [] } } };
+  const pos = { market: 'CL-USD', side: 'long', size: 8, entry: 98, mark: 98 };
+  const r2 = V.decideVolume({ vc, st: ST({ positions: [pos], equity: 300, free: 300 }), refs: REFS, fees: FEES, quotes: QUOTES, vstate: vs, now: T0, rng: rng0, canEnter: true, limits: lim });
+  assert.ok(r2.actions.some((x) => x.kind === 'close' && /IOC flatten/.test(x.why)), JSON.stringify(r2.actions));
+  assert.ok(!r2.actions.some((x) => x.kind === 'exit'));
+});
+
+test('taker arm gate: before Nov 2 00:00 UTC live sends blocked; after arm LIMIT IOC', async () => {
+  assert.equal(V.takerArmed({ takerArmUtc: V.TAKER_ARM_UTC_DEFAULT }, Date.parse('2026-11-01T23:59:59Z')), false);
+  assert.equal(V.takerArmed({ takerArmUtc: V.TAKER_ARM_UTC_DEFAULT }, Date.parse('2026-11-02T00:00:00Z')), true);
+  const s = setupNet({ levNow: 1, balance: { available_balance: '300', deposit: '300', realised_pnl: '0', unrealised_pnl: '0', net_funding: '0' }, equitySeries: [300] });
+  try {
+    const vc = V.loadVolumeConfig({ QFEX_VOLUME_MODE: '1', QFEX_VOL_STYLE: 'taker', QFEX_LEVERAGE: '5', QFEX_VOL_TAKER_MARKETS: 'US100',
+      QFEX_VOL_TAKER_NOTIONAL_USD: '200-200', QFEX_VOL_SIZE_JITTER: '0', QFEX_VOL_AVOID: 'GOLD-USD', QFEX_VOL_PREFER: 'US100-USD' });
+    s.cfg.qfexVol = { ...vc, avoid: [], prefer: ['US100-USD'] }; // mock only serves US100
+    s.net.now = () => Date.UTC(2026, 9, 27, 14); // 27 Oct 2026 — before arm
+    const r = await V.volumeTick(s.cfg, s.net, {}, s.io);
+    assert.equal(r.armed, false); assert.equal(r.style, 'taker');
+    assert.ok(r.notes.some((n) => /armed for/.test(n)));
+    assert.ok((r.actions || []).every((a) => a.kind === 'halt' || a.sent === false));
+    assert.deepEqual(sentOrders(s.log), []);
+    // after arm
+    s.net.now = () => Date.UTC(2026, 10, 2, 15); // Mon 2 Nov 2026 15:00 UTC (Chicago open)
+    V._resetCache();
+    const r2 = await V.volumeTick(s.cfg, s.net, {}, s.io);
+    assert.equal(r2.armed, true);
+    const enter = r2.actions.find((a) => a.kind === 'enter');
+    assert.ok(enter && enter.ok, JSON.stringify(r2.actions));
+    const e = sentOrders(s.log).find((m) => m.type === 'add_order' && !m.params.reduce_only && m.params.order_type !== 'STOP_LOSS' && m.params.order_type !== 'TAKE_PROFIT');
+    assert.ok(e, 'expected taker entry'); assert.equal(e.params.order_type, 'LIMIT'); assert.equal(e.params.order_time_in_force, 'IOC');
+  } finally { s.restore(); }
+});
+
+test('volume stats: maker vs taker split from order_type', () => {
+  const f = (t, px, sz, fee, pnl = 0, type = 'ALO') => ({ time: t, px, sz, fee, closedPnl: pnl, type });
+  const v = C.volumeStats([
+    f(T0 - 3600e3, 100, 1, 0.02, 0, 'ALO'),
+    f(T0 - 1800e3, 100, 2, 0.05, -0.1, 'LIMIT'),
+    f(T0 - 900e3, 50, 1, 0.01, 0, 'MARKET'),
+  ], T0);
+  assert.equal(v.day.volume, 350);
+  assert.equal(v.day.makerVolume, 100);
+  assert.equal(v.day.takerVolume, 250);
+  assert.equal(v.day.makerTrades, 1);
+  assert.equal(v.day.takerTrades, 2);
 });

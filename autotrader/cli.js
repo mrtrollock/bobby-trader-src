@@ -190,8 +190,13 @@ function hlVolumeStatus() {
 function volumeStatus(cfg) {
   const vc = cfg.qfexVol; if (!vc) return null;
   const vs = loadState().volume || {};
-  return { enabled: vc.enabled, sending: vc.enabled && cfg.enabled && cfg.live, leverage: vc.leverage, maxMarkets: vc.maxMarkets, markets: vc.markets, tpPct: vc.tpPct, slPct: vc.slPct,
-    dailyLossStop: +(vc.dailyLossFrac * cfg.qfex.weeklyLossCap).toFixed(2), halted: vs.halted || null, stats: vs.stats || null,
+  const armed = vc.style !== 'taker' || V.takerArmed(vc, Date.now());
+  const weeklyCap = vc.style === 'taker' ? vc.takerWeeklyCap : cfg.qfex.weeklyLossCap;
+  const dailyCap = vc.style === 'taker' ? vc.takerDailyCap : +(vc.dailyLossFrac * cfg.qfex.weeklyLossCap).toFixed(2);
+  return { enabled: vc.enabled, style: vc.style, armed, takerArmUtc: vc.takerArmUtc, sending: vc.enabled && cfg.enabled && cfg.live && armed,
+    leverage: vc.leverage, maxMarkets: vc.maxMarkets, markets: vc.markets, tpPct: vc.tpPct, slPct: vc.slPct,
+    weeklyLossCap: weeklyCap, dailyLossStop: dailyCap, takerTargetWeekUsd: vc.takerTargetWeekUsd,
+    halted: vs.halted || null, stats: vs.stats || null,
     active: Object.entries(vs.markets || {}).filter(([, m]) => m.phase !== 'idle').map(([k, m]) => ({ market: k, phase: m.phase })) };
 }
 async function status(sinceMs, only) {
@@ -236,7 +241,7 @@ async function loop() {
   const every = Math.max(15, Number(process.env.AUTOTRADER_INTERVAL_S || 60)) * 1000;
   // the startup verify still aborts on ANY doubt (incl. a 403); only failures while running are retried
   let ctx = await boot(), verifiedAt = Date.now(), stopping = false, hot = false, volTick = null;
-  log('INFO', `loop started (${ctx.cfg.network}, ${ctx.cfg.live ? 'LIVE' : 'DRY RUN'}, every ${every / 1000}s, QFEX volume mode ${ctx.cfg.qfexVol && ctx.cfg.qfexVol.enabled ? 'ON (' + ctx.cfg.qfexVol.leverage + 'x)' : 'off'})`);
+  log('INFO', `loop started (${ctx.cfg.network}, ${ctx.cfg.live ? 'LIVE' : 'DRY RUN'}, every ${every / 1000}s, QFEX volume mode ${ctx.cfg.qfexVol && ctx.cfg.qfexVol.enabled ? 'ON (' + ctx.cfg.qfexVol.style + ' ' + ctx.cfg.qfexVol.leverage + 'x)' : 'off'})`);
   for (const sig of ['SIGINT', 'SIGTERM']) process.on(sig, () => { stopping = true; log('INFO', 'stopping on ' + sig); });
   const health = C.readHealth();
   // tick watchdog: a tick running longer than AUTOTRADER_TICK_TIMEOUT_S (240) is abandoned (its remaining sends are

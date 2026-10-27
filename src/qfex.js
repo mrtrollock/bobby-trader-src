@@ -103,12 +103,18 @@ export function assertQfexMessage(m) {
   if (m.type === 'add_order' && STOP_TYPES.has(p.order_type)) { // standalone protective stop (attached to an OPEN position by the guard)
     if (!(Number(p.price) > 0) || !(Number(p.quantity) > 0)) throw new Error('QFEX policy: stop order needs a trigger price and a quantity');
     if (Number(p.stop_loss) > 0 || Number(p.take_profit) > 0) throw new Error('QFEX policy: a stop order carries no further stops');
-  } else if (m.type === 'add_order' && p.reduce_only === true) { // volume mode: maker exit of an OPEN position (can only reduce)
-    if (p.order_type !== 'ALO' || p.order_time_in_force !== 'GTC') throw new Error('QFEX policy: exits must be post-only (ALO, GTC)');
+  } else if (m.type === 'add_order' && p.reduce_only === true) { // volume mode: exit of an OPEN position (can only reduce)
+    // maker: ALO GTC; taker flatten (Loss Refunds): LIMIT IOC (or use close_position). Exchange STP cancels self-matches.
+    const makerExit = p.order_type === 'ALO' && p.order_time_in_force === 'GTC';
+    const takerExit = p.order_type === 'LIMIT' && p.order_time_in_force === 'IOC';
+    if (!makerExit && !takerExit) throw new Error('QFEX policy: exits must be ALO GTC (maker) or LIMIT IOC (taker)');
     if (!(Number(p.price) > 0) || !(Number(p.quantity) > 0)) throw new Error('QFEX policy: an exit needs a price and a quantity');
     if (Number(p.stop_loss) > 0 || Number(p.take_profit) > 0) throw new Error('QFEX policy: a reduce-only exit carries no stops (the position keeps its own)');
   } else if (m.type === 'add_order') {
-    if (p.order_type !== 'ALO' || p.order_time_in_force !== 'GTC') throw new Error('QFEX policy: entries must be post-only (ALO, GTC)');
+    // maker Season 0: ALO GTC; taker Loss Refunds volume: LIMIT IOC (crosses the book). Both still require SL + TP.
+    const makerEntry = p.order_type === 'ALO' && p.order_time_in_force === 'GTC';
+    const takerEntry = p.order_type === 'LIMIT' && p.order_time_in_force === 'IOC';
+    if (!makerEntry && !takerEntry) throw new Error('QFEX policy: entries must be ALO GTC (maker) or LIMIT IOC (taker)');
     if (!(Number(p.stop_loss) > 0) || !(Number(p.take_profit) > 0)) throw new Error('QFEX policy: stop_loss and take_profit are mandatory on every entry');
     if (p.reduce_only) throw new Error('QFEX policy: entries are never reduce-only');
   }
@@ -150,6 +156,25 @@ export function buildEntry({ symbol, isLong, qty, px, sl, tp, clientOrderId: cid
   if (isLong ? !(sl < px && tp > px) : !(sl > px && tp < px)) throw new Error('QFEX entry: SL/TP on the wrong side of the entry');
   const m = { type: 'add_order', params: { symbol: normSymbol(symbol), side: isLong ? 'BUY' : 'SELL', order_type: 'ALO', order_time_in_force: 'GTC',
     quantity: qty, price: px, take_profit: tp, stop_loss: sl, client_order_id: cid } };
+  assertQfexMessage(m); return m;
+}
+// Taker volume (Loss Refunds): LIMIT IOC that crosses the book. Hard SL + backup TP still attached; flatten ASAP via close_position.
+// Prefer a price at/through the touch (ask for BUY, bid for SELL). Exchange STP cancels self-matches (CANCELLED_STP).
+export function buildTakerEntry({ symbol, isLong, qty, px, sl, tp, clientOrderId: cid }) {
+  if (!(px > 0) || !(qty > 0)) throw new Error('QFEX taker entry: price and quantity required');
+  if (!(sl > 0) || !(tp > 0)) throw new Error('QFEX taker entry: stop-loss and take-profit required');
+  if (cid != null && !(String(cid).length >= 1 && String(cid).length <= CID_MAX)) throw new Error('QFEX taker entry: client_order_id must be 1-36 characters');
+  if (isLong ? !(sl < px && tp > px) : !(sl > px && tp < px)) throw new Error('QFEX taker entry: SL/TP on the wrong side of the entry');
+  const m = { type: 'add_order', params: { symbol: normSymbol(symbol), side: isLong ? 'BUY' : 'SELL', order_type: 'LIMIT', order_time_in_force: 'IOC',
+    quantity: qty, price: px, take_profit: tp, stop_loss: sl, client_order_id: cid } };
+  assertQfexMessage(m); return m;
+}
+// Optional explicit taker flatten (LIMIT IOC reduce-only). Prefer buildClosePosition when closing the full position.
+export function buildTakerExit({ symbol, positionIsLong, qty, px, clientOrderId: cid }) {
+  if (!(px > 0) || !(qty > 0)) throw new Error('QFEX taker exit: price and quantity required');
+  if (cid != null && !(String(cid).length >= 1 && String(cid).length <= CID_MAX)) throw new Error('QFEX taker exit: client_order_id must be 1-36 characters');
+  const m = { type: 'add_order', params: { symbol: normSymbol(symbol), side: positionIsLong ? 'SELL' : 'BUY', order_type: 'LIMIT', order_time_in_force: 'IOC',
+    quantity: qty, price: px, take_profit: 0, stop_loss: 0, reduce_only: true, client_order_id: cid } };
   assertQfexMessage(m); return m;
 }
 // Reduce-only protective stop for an open position (docs: add_order with order_type STOP_LOSS | TAKE_PROFIT; side = the
@@ -206,10 +231,16 @@ export function classify(msg) {
   return { kind: 'other', msg };
 }
 export const OK_ENTRY = new Set(['ACK']);
-export function entryError(order, want) {
+// IOC entries may fill immediately (FILLED / IOC_PARTIALLY_FILLED) instead of resting as ACK.
+export const OK_TAKER_ENTRY = new Set(['ACK', 'FILLED', 'IOC_PARTIALLY_FILLED']);
+export function entryError(order, want, { taker = false } = {}) {
   if (!order) return 'no order response (state unknown: check status before retrying)';
-  if (!OK_ENTRY.has(order.status)) return 'order ' + order.status;
-  if (want && (!(Number(order.stop_loss) > 0) || !(Number(order.take_profit) > 0))) return 'order ACKed but the exchange echoed no stop_loss/take_profit';
+  const ok = taker ? OK_TAKER_ENTRY : OK_ENTRY;
+  if (!ok.has(order.status)) return 'order ' + order.status;
+  // IOC cancelled with the full size remaining = no fill (not a successful entry)
+  if (taker && order.status === 'IOC_CANCELLED') return 'order IOC_CANCELLED (no fill)';
+  // Immediate IOC fills may not echo staged stops the same way as a resting ACK; only enforce on ACK.
+  if (want && order.status === 'ACK' && (!(Number(order.stop_loss) > 0) || !(Number(order.take_profit) > 0))) return 'order ACKed but the exchange echoed no stop_loss/take_profit';
   return null;
 }
 // Shapes confirmed on mainnet with a live fill (2026-10-21):
@@ -406,9 +437,10 @@ export function makeNet(b, creds, { WS, stopsMs: defStopsMs = 1500 } = {}) {
           if (c.kind === 'err') { out.push({ label: r.label, ok: false, error: c.err.error_code + (c.err.message ? ': ' + c.err.message : '') }); break; }
           const stStatus = c.kind === 'stop' ? c.stop.status : c.order.status;
           if (isStopCancel) { const e2 = /CANCEL|ACK/i.test(String(stStatus)) ? null : 'cancel stop ' + stStatus; out.push({ label: r.label, ok: !e2, error: e2, status: stStatus }); if (e2) break; continue; }
+          const isTakerEntry = m.type === 'add_order' && !isStop && !isExit && m.params.order_type === 'LIMIT' && m.params.order_time_in_force === 'IOC';
           let err = isStop ? (c.order.status === 'ACK' ? null : 'stop order ' + c.order.status)
-            : isExit ? entryError(c.order, false)
-            : m.type === 'add_order' ? entryError(c.order, true) : m.type === 'cancel_order' ? (c.order.status === 'CANCELLED' ? null : 'cancel ' + c.order.status)
+            : isExit ? entryError(c.order, false, { taker: m.params.order_time_in_force === 'IOC' })
+            : m.type === 'add_order' ? entryError(c.order, true, { taker: isTakerEntry }) : m.type === 'cancel_order' ? (c.order.status === 'CANCELLED' ? null : 'cancel ' + c.order.status)
             : (['ACK', 'FILLED', 'IOC_PARTIALLY_FILLED', 'IOC_CANCELLED'].includes(c.order.status) ? null : 'close ' + c.order.status);
           if (m.type === 'add_order' && !isStop && !isExit && c.order.status === 'ACK' && err) { // safety: never leave an entry without its stops
             try { s.send(buildCancel(m.params.symbol, c.order.order_id)); err += ' -> entry cancelled'; } catch (e) { err += ' -> CANCEL FAILED: ' + e.message; }

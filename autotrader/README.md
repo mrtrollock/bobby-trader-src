@@ -129,6 +129,8 @@ hedge legs anywhere (Arcus points terms disqualify delta-neutral / hedged farmin
 protection guard, every `QFEX_VOL_TICK_S`; it only sends with `QFEX_VOLUME_MODE=1` **and** `AUTOTRADER_ENABLED=1` **and**
 `AUTOTRADER_LIVE=1` and no `STOP` file. Otherwise it only reports what it would do.
 
+**Taker style (Loss Refunds):** `QFEX_VOL_STYLE=taker` runs LIMIT IOC entry → immediate `close_position` flatten on **CL** by default (avoid US100/US500 for fees). Live sends stay blocked until `QFEX_VOL_TAKER_ARM_UTC` (default Mon 2 Nov 2026 00:00 UTC). Keep maker until then for Season 0.
+
 Per market (at most `QFEX_VOL_MAX_MARKETS`, one position per market, never an entry and an exit at the same time):
 1. after a random cooldown (`QFEX_VOL_COOLDOWN_S`, e.g. `20-90`): ALO GTC entry at the touch (bid for long, ask for short;
    sides alternate with some randomness, size jittered by `QFEX_VOL_SIZE_JITTER`), with an attached **protective
@@ -167,6 +169,13 @@ Tracking: `status` shows `volume` (day / week / month volume, fees, PnL, % of th
 | Variable | Default | Meaning |
 |---|---|---|
 | `QFEX_VOLUME_MODE` | off | `1` enables the mode (plus `AUTOTRADER_ENABLED=1` + `AUTOTRADER_LIVE=1` to send) |
+| `QFEX_VOL_STYLE` / `QFEX_VOL_TAKER` | maker | `maker` (Season 0) or `taker` / `QFEX_VOL_TAKER=1` (Loss Refunds). Default stays maker. |
+| `QFEX_VOL_TAKER_ARM_UTC` | 2026-11-02T00:00:00.000Z | Live taker sends hard-blocked until this instant (Mon 2 Nov 2026 00:00 UTC). |
+| `QFEX_VOL_TAKER_WEEKLY_LOSS_CAP_USD` / `QFEX_VOL_TAKER_DAILY_LOSS_CAP_USD` | 85 / 40% of weekly | Taker-mode loss caps (auto-halt). Maker still uses `QFEX_WEEKLY_LOSS_CAP_USD`. |
+| `QFEX_VOL_TAKER_NOTIONAL_USD` | 800-2000 | Taker sprint notional band (when style=taker). |
+| `QFEX_VOL_TAKER_TARGET_USD` | 100000 | Loss Refunds weekly taker-notional target (tracking). |
+| `QFEX_VOL_TAKER_MAX_MARKETS` | 1 | Taker concurrency (isolated from maker `QFEX_VOL_MAX_MARKETS`). |
+| `QFEX_VOL_TAKER_MARKETS` | CL-USD | Taker market list (ignores maker `QFEX_VOL_MARKETS`). |
 | `QFEX_LEVERAGE` | 5 | per-market leverage for volume entries (1..10); queue entries stay 1x |
 | `QFEX_VOL_MAX_MARKETS` | 3 | concurrent markets |
 | `QFEX_VOL_MARKETS` | auto | comma list, e.g. `CL,GOLD,US500,US100,SILVER` |
