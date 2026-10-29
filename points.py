@@ -42,8 +42,8 @@ from zoneinfo import ZoneInfo
 
 UTC, ET = timezone.utc, ZoneInfo("America/New_York")
 DAY = 86400
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric", "tradexyz")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric", "tradexyz": "📊 trade.xyz"}
 VARIATIONAL_NEXT_DROP = "https://omni.variational.io/api/points/next_drop_ts"
 HISTORY_KEEP = 60
 # Where the points numbers come from. Checked 2026-10-21: no documented API exposes a user's points on any platform, so
@@ -56,6 +56,7 @@ POINTS_SRC = {
     "qfex": "manual: the QFEX API (api.qfex.com/openapi.yaml) has no points or season endpoint (only referral rewards); Season 0 points are not published yet",
     "extended": "manual: Extended's points (GET /api/v1/user/rewards/earned) and account volume/PnL are only readable with an Extended API key, which Bobby does not have and does not request (tracking only)",
     "risex": "manual: RiseX documents wallet points endpoints (GET /v1/points/..., developer.rise.trade) but they need a JWT from a wallet-signed login; Bobby has no RiseX signer and does not request one (tracking only). Points are shown on rise.trade/points",
+    "tradexyz": "none announced: trade[XYZ] has no points program or token (docs.trade.xyz, Oct 2026); volume / fees / PnL from the public Hyperliquid fills on the xyz dex (tracking only)",
     "metric": "manual: Metric (metric.xyz) shows points in the app UI only; no documented public points/balances API and Bobby does not hold a Metric trading key (tracking only). Enter points from screenshots / the app",
     "entropy": "rebates, not points: Entropy pays USDC/HYPE fee rebates every 2 weeks (claimable on the Entropy profile, no API); enter them as \"rebates\" by week",
 }
@@ -140,6 +141,18 @@ SCHED = {
                     ["RiseX API docs", "https://developer.rise.trade/reference/general-information"],
                     ["@risextrade on X (weekly drop posts)", "https://x.com/risextrade"]],
         "unverified": [],
+    },
+    "tradexyz": {
+        "kind": "not announced", "tracking": True, "program": "No points program · no token announced", "unit": "Week",
+        "boundary": lambda k: _utc_midnight(date(2026, 10, 12) + timedelta(days=7 * k)),
+        "number": lambda k: None, "drop": lambda s, e: None, "dropExact": False,
+        "rule": "trade[XYZ] (Hyperliquid HIP-3 dex \u201cxyz\u201d) has no official points, season or token. Its trades are Hyperliquid trades too (same wallet, same matching engine). Not valued until something official is published",
+        "window": "No official points week: tracking week Monday 00:00 \u2192 Monday 00:00 UTC",
+        "endsBy": None, "endsNote": None,
+        "sources": [["trade[XYZ] docs", "https://docs.trade.xyz/"],
+                    ["trade[XYZ] docs: relationship to Hyperliquid (HIP-3 \u201cxyz\u201d)", "https://docs.trade.xyz/overview/relationship-to-hyperliquid"],
+                    ["@tradexyz on X", "https://x.com/tradexyz"]],
+        "unverified": ["any points / token / airdrop"],
     },
     "metric": {
         "kind": "not announced", "tracking": True, "program": "Points UI live · schedule / formula not announced", "unit": "Week",
@@ -536,6 +549,9 @@ def collect_live(B, testnet, ledger, readings, now_ts, scrub_secrets):
                 pass
             return a
         guard("risex", rx)
+    xa = (readings.get("tradexyz") or {}).get("activity")
+    if xa:  # trade.xyz fills were already read (and cached) by balances.py
+        act["tradexyz"] = {**xa, "note": "Tracking only · not farmed: volume / fees / PnL from the public Hyperliquid fills on the xyz dex (main wallet + subaccounts, Bobby excluded); no points program"}
     if os.environ.get("BOBBY_VARIATIONAL_ADDRESS"):
         try:
             act["variational"] = {"connected": False, "apiNextDrop": variational_next_drop(),

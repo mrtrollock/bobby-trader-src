@@ -5,8 +5,8 @@ const usd = (x) => (num(x) == null ? '—' : (x < 0 ? '-$' : '$') + Math.abs(x).
 const sgn = (x) => (num(x) == null ? '—' : Number(x) === 0 ? '$0.00' : (x < 0 ? '-$' : '+$') + Math.abs(x).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }));
 const cls = (x) => (num(x) == null ? '' : x >= 0 ? 'green' : 'redtxt');
 export const berlin = (t) => (t ? new Date(t * 1000).toLocaleString('en-GB', { timeZone: 'Europe/Berlin', weekday: 'short', day: 'numeric', month: 'short', hour: '2-digit', minute: '2-digit' }) : '—');
-const PF = { qfex: '📈 QFEX', entropy: '🤖 Entropy', arcus: '🏹 Arcus', txflow: '🌊 TxFlow', variational: '🌀 Variational', extended: '🟣 Extended', risex: '⚡ RiseX', metric: '🔷 Metric' };
-const ORDER = ['qfex', 'entropy', 'arcus', 'txflow', 'variational', 'extended', 'risex', 'metric'];
+const PF = { qfex: '📈 QFEX', entropy: '🤖 Entropy', arcus: '🏹 Arcus', txflow: '🌊 TxFlow', variational: '🌀 Variational', extended: '🟣 Extended', risex: '⚡ RiseX', metric: '🔷 Metric', tradexyz: '📊 trade.xyz' };
+const ORDER = ['qfex', 'entropy', 'arcus', 'txflow', 'variational', 'extended', 'risex', 'metric', 'tradexyz'];
 
 // The newest positions document: positions.enc.json (every ~5 min) or the copy inside balances.enc.json.
 export function latestPositions(data) {
@@ -20,7 +20,7 @@ const STATE_CLASS = { live: 'ok', waiting: 'warn', paused: '', halted: 'warn', s
 export function bobbyPills(h, doc) {
   const b = doc && doc.bobby;
   if (!b) return [h('span', { class: 'badge', id: 'bobbystatus', title: 'Bobby status not published yet' }, 'Bobby: no status yet')];
-  const rows = (b.platforms || []).filter((r) => r.id !== 'extended' && r.id !== 'variational' && r.id !== 'metric');
+  const rows = (b.platforms || []).filter((r) => r.id !== 'extended' && r.id !== 'variational' && r.id !== 'metric' && r.id !== 'tradexyz');
   const age = doc.generated ? Math.round((Date.now() / 1000 - doc.generated) / 60) : null;
   const stale = age != null && age > 30;
   return [h('span', { class: 'badge pills' + (stale ? ' warn' : ''), id: 'bobbystatus', title: (b.platforms || []).map((r) => `${r.label}: ${r.state}${r.detail ? ' (' + r.detail + ')' : ''}`).join('\n') + `\nas of ${berlin(doc.generated)} Berlin` },
@@ -49,6 +49,7 @@ export function publishedPositions(h, doc) {
     const meta = (doc.platforms || {})[pf] || {}, mine = pos.filter((p) => p.pf === pf), ords = oo.filter((o) => o.pf === pf);
     const card = h('section', { class: 'card', id: 'pos-' + pf }, h('h2', {}, PF[pf], ' ', h('span', { class: 'badge' }, mine.length ? `${mine.length} open` : meta.status === 'ok' ? 'flat' : meta.status || 'no data')));
     if (pf === 'risex') card.append(h('div', { class: 'small' }, h('span', { class: 'badge warn' }, 'tracking only · not farmed'), h('span', { class: 'muted' }, ' your own trades, read from the public RiseX API')));
+    if (pf === 'tradexyz') card.append(h('div', { class: 'small' }, h('span', { class: 'badge warn' }, 'tracking only · not farmed'), h('span', { class: 'muted' }, ' your own trades on the Hyperliquid xyz dex (trade.xyz), public API')));
     if (pf === 'metric') card.append(h('div', { class: 'small' }, h('span', { class: 'badge warn' }, 'tracking only · not farmed'), h('span', { class: 'muted' }, ' spot propAMM (metric.xyz); points from screenshots, no Metric key')));
     if (meta.status === 'error') card.append(h('div', { class: 'alert warn' }, 'Could not read: ' + (meta.error || 'error')));
     else if (meta.status === 'manual' || meta.status === 'not connected') card.append(h('p', { class: 'muted small' }, meta.note || meta.status));

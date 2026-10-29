@@ -1,7 +1,7 @@
 // Airdrop / TGE announcements (announcements.enc.json, written by tools/announce.py). Pure logic + DOM builders; `h` is app.js's helper.
 // action = the user must do something (sign / register / claim), usually with a deadline; info = TGE date, allocation, FDV, ...
 export const DISMISS_KEY = 'bobby_ann_dismissed_v1';
-const PF = { extended: '🟣 Extended', variational: '🌀 Variational', txflow: '🌊 TxFlow', arcus: '🏹 Arcus', risex: '⚡ RiseX', qfex: '📈 QFEX', entropy: '🤖 Entropy', metric: '🔷 Metric' };
+const PF = { extended: '🟣 Extended', variational: '🌀 Variational', txflow: '🌊 TxFlow', arcus: '🏹 Arcus', risex: '⚡ RiseX', qfex: '📈 QFEX', entropy: '🤖 Entropy', metric: '🔷 Metric', tradexyz: '📊 trade.xyz' };
 export const projectLabel = (p) => PF[String(p || '').toLowerCase()] || String(p || '');
 const ms = (iso) => { if (!iso) return null; const t = Date.parse(iso); return Number.isFinite(t) ? t : null; };
 // only plain https links are ever rendered (official sources); anything else is dropped

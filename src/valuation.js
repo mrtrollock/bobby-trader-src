@@ -15,8 +15,8 @@ export function userPointsFor(pointsDoc, id) {
 }
 const badge = (h, b) => (b ? h('span', { class: 'badge' + (b === 'official' ? ' ok' : ' warn') + (b === 'user assumption' ? ' user' : '') }, b) : null);
 const link = (h, url, text) => (url ? h('a', { href: url, target: '_blank', rel: 'noopener noreferrer' }, text || 'source') : null);
-const NAME = { extended: '♟️ Extended', variational: '🌀 Variational', arcus: '🏹 Arcus', txflow: '🌊 TxFlow', qfex: '📈 QFEX', entropy: '🤖 Entropy', risex: '⚡ RiseX', metric: '🔷 Metric' };
-const ORDER = ['extended', 'variational', 'risex', 'metric', 'arcus', 'txflow', 'qfex', 'entropy'];
+const NAME = { extended: '♟️ Extended', variational: '🌀 Variational', arcus: '🏹 Arcus', txflow: '🌊 TxFlow', qfex: '📈 QFEX', entropy: '🤖 Entropy', risex: '⚡ RiseX', metric: '🔷 Metric', tradexyz: '📊 trade.xyz' };
+const ORDER = ['extended', 'variational', 'risex', 'metric', 'tradexyz', 'arcus', 'txflow', 'qfex', 'entropy'];
 
 export function valuationCard(h, doc) {
   const V = doc && doc.valuation, P = doc && doc.points;

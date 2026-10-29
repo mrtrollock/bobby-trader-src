@@ -444,6 +444,10 @@ function viewBalances(app) {
   if (vol && vol.month) { const k = (x) => '$' + (x >= 1000 ? (x / 1000).toFixed(1) + 'K' : Math.round(x));
     card.append(h('div', { class: 'small', id: 'volumeline' }, h('b', {}, '📈 QFEX volume: '),
       `this week ${k(vol.week.volume)} · this month ${k(vol.month.volume)} · goal ${k(vol.goal)}: ${fmt(vol.monthPct, 1)}% · fees this week $${fmt(vol.week.fees, 2)} · PnL this week ${sgn2(vol.week.pnl)}`)); }
+  for (const r of j.platforms || []) if (r.xyzVolume) { const v = r.xyzVolume, k = (x) => '$' + (Math.abs(x) >= 1000 ? (x / 1000).toFixed(1) + 'K' : Math.round(x));
+    card.append(h('div', { class: 'small', id: 'xyzvolumeline' }, h('b', {}, '📊 trade.xyz volume (tracking only): '),
+      `all-time ${k(v.volume)} (${v.fills} fills; taker ${k(v.taker)} · maker ${k(v.maker)}) · this week ${k((v.week || {}).volume || 0)} · last 30 days ${k((v.last30d || {}).volume || 0)} · fees $${fmt(v.fees, 2)} · realized PnL ${sgn2(v.pnl)}`
+      + (v.first ? ` · ${new Date(v.first).toLocaleDateString('en-GB', { timeZone: 'Europe/Berlin', day: 'numeric', month: 'short', year: 'numeric' })} → ${new Date(v.last).toLocaleDateString('en-GB', { timeZone: 'Europe/Berlin', day: 'numeric', month: 'short', year: 'numeric' })}` : '') + (v.historyNote ? ' · ⚠️ ' + v.historyNote : ''))); }
   const cls = (x) => (x == null ? '' : x >= 0 ? 'green' : 'redtxt');
   const row = (name, r, tot) => (r.status === 'ok' || tot
     ? h('tr', { class: tot ? 'total' : '' }, h('th', {}, name), h('td', {}, usd0(r.start)), h('td', {}, usd0(r.current)), h('td', {}, sgn2(r.netDeposits)),

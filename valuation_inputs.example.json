@@ -43,6 +43,30 @@
       "valuable": false,
       "cannotValue": "no token/points formula announced: can't value",
       "notes": "TRACKING ONLY"
+    },
+    {
+      "id": "tradexyz",
+      "platform": "trade.xyz (trade[XYZ], Hyperliquid HIP-3 dex \u201cxyz\u201d)",
+      "tgeStatus": "not announced: no token, points program or TGE",
+      "tgeDate": null,
+      "token": "none. trade[XYZ] runs on Hyperliquid (HIP-3); any 'XYZ token' claim/checker site is not official: only use trade.xyz, docs.trade.xyz and @tradexyz",
+      "airdropPct": null,
+      "airdropBadge": null,
+      "airdropPctSource": "none published",
+      "totalPoints": null,
+      "totalPointsBadge": null,
+      "totalPointsSource": "no points program published (as of 2026-10-29)",
+      "raiseValuation": null,
+      "marketReference": null,
+      "notes": "TRACKING ONLY, not farmed. Your own trades on the xyz dex (main wallet + subaccounts; the Bobby subaccount is excluded), read from the public Hyperliquid API. Volume also counts as Hyperliquid volume (same wallet).",
+      "valuable": false,
+      "cannotValue": "no token/points program announced: can't value",
+      "warning": "Only trade.xyz, docs.trade.xyz and @tradexyz are official. No token exists: any claim/checker site is a scam",
+      "sources": [
+        "https://trade.xyz/",
+        "https://docs.trade.xyz/",
+        "https://x.com/tradexyz"
+      ]
     }
   ]
 }

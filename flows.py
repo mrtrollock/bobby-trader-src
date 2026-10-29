@@ -6,11 +6,12 @@ Pure functions (tested) + small public readers. Unknown values stay None and car
   TxFlow:     TxFlow userNonFundingLedgerUpdates from the beginning (bridge deposits/withdrawals, transfers, vault moves)
   QFEX:       balance `deposit` (net deposited; separate totals are not exposed to a single-account key)
   RiseX:      public transfer history (deposits / withdrawals summed from the beginning; tracking only, not traded)
+  trade.xyz:  Hyperliquid ledger sends into / out of the xyz dex (unified-account trades use the shared balance; tracking only)
   Variational / Extended / Metric: manual (points_manual.json "<pf>": {"flows": {"deposits", "withdrawals"}}) or not tracked
 """
 STABLES = ("USDC", "USDT0", "USDT", "USDH", "USDE")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "🟣 Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric"}
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "🟣 Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric", "tradexyz": "📊 trade.xyz"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric", "tradexyz")
 _f = lambda x: float(x or 0)
 
 
@@ -115,6 +116,10 @@ def build(readings, manual):
         elif pf in ("entropy", "txflow", "risex"):
             at = r.get("allTime")
             rows.append(row(pf, eq, at, reason=None if at else (r.get("allTimeError") or ("not read: " + str(r.get("status") or "no data") if pf == "risex" else "ledger not read"))))
+        elif pf == "tradexyz":
+            at = r.get("allTime")
+            rows.append(row(pf, eq, at, reason=None if at else "not read: " + str(r.get("status") or "no data"),
+                            note="xyz-dex sends only: in a unified account trade.xyz trades use the shared Hyperliquid USDC balance, so realized PnL is on the Balances card"))
         elif pf == "qfex":
             d = r.get("deposit")
             rows.append(row(pf, eq, {"net": round(float(d), 2), "src": "QFEX balance deposit field"} if d is not None else None,

@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 
 ROOT = Path(__file__).resolve().parent.parent
 sys.path.insert(0, str(ROOT))
-PROJECTS = ("extended", "variational", "txflow", "arcus", "risex", "qfex", "entropy", "metric")
+PROJECTS = ("extended", "variational", "txflow", "arcus", "risex", "qfex", "entropy", "metric", "tradexyz")
 SEVERITIES = ("action", "info")
 BERLIN = ZoneInfo("Europe/Berlin")
 ADDR = re.compile(r"0x[0-9a-fA-F]{40}")

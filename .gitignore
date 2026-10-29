@@ -37,3 +37,4 @@ public/positions.json
 # airdrop / TGE announcements (private; published only as public/announcements.enc.json)
 announcements.json
 public/announcements.json
+tradexyz_cache.json

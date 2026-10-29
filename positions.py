@@ -15,9 +15,9 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).parent
-PFS = ("qfex", "entropy", "arcus", "txflow", "variational", "extended", "risex", "metric")
-LABEL = {"qfex": "QFEX", "entropy": "Entropy", "arcus": "Arcus", "txflow": "TxFlow", "variational": "Variational", "extended": "Extended", "risex": "RiseX", "metric": "Metric"}
-TRACKING = ("extended", "risex", "metric")  # shown, never traded by Bobby
+PFS = ("qfex", "entropy", "arcus", "txflow", "variational", "extended", "risex", "metric", "tradexyz")
+LABEL = {"qfex": "QFEX", "entropy": "Entropy", "arcus": "Arcus", "txflow": "TxFlow", "variational": "Variational", "extended": "Extended", "risex": "RiseX", "metric": "Metric", "tradexyz": "trade.xyz"}
+TRACKING = ("extended", "risex", "metric", "tradexyz")  # shown, never traded by Bobby
 STRIP = ("ARCUS_API_PRIVATE_KEY", "ARCUS_API_KEY", "HL_AGENT_PRIVATE_KEY")
 num = lambda x: None if x in (None, "") else float(x)
 
@@ -159,6 +159,7 @@ def bobby_status(env, st, entropy, qhealth, loop_running, stops, now_ts):
     add("extended", "tracking", "points tracking only")
     add("risex", "tracking", "tracking only · not farmed (you trade RiseX yourself)")
     add("metric", "tracking", "tracking only · not farmed (spot swaps; no Metric key)")
+    add("tradexyz", "tracking", "tracking only · not farmed (you trade trade.xyz yourself)")
     return {"loopRunning": bool(loop_running), "live": live and not stopped, "platforms": rows,
             "summary": " · ".join(f"{r['label']} {r['state']}" for r in rows if r["id"] not in TRACKING)}
 
@@ -210,7 +211,7 @@ def finish(pos, orders, meta, bobby, now_ts, manual):
             "platforms": {pf: {**meta.get(pf, {"status": "no data"}), "t": now_ts} for pf in PFS}, "bobby": bobby}
 
 
-def collect(B, testnet, now_ts, secrets, txflow_positions=None, risex_positions=None):
+def collect(B, testnet, now_ts, secrets, txflow_positions=None, risex_positions=None, tradexyz_positions=None):
     import points as PT
     ep = B.ENDPOINTS[testnet]
     scrub = lambda t: B.scrub(str(t), secrets)[:160]
@@ -260,6 +261,23 @@ def collect(B, testnet, now_ts, secrets, txflow_positions=None, risex_positions=
         meta["risex"] = {"status": "ok", "count": len(risex_positions), "src": "RiseX public API (tracking only)"}
     elif "risex" not in meta:
         meta["risex"] = {"status": "not connected"}
+    xyz_addr = os.environ.get("BOBBY_TRADEXYZ_ADDRESS") or main
+    if tradexyz_positions is None and xyz_addr:
+        try:
+            import tradexyz as TX
+            url = ep["hl"]
+            accts = TX.accounts(B, url, xyz_addr, (os.environ.get("BOBBY_HL_ADDRESS", ""), os.environ.get("HL_SUBACCOUNT_ADDRESS", "")))
+            secrets = list(secrets) + accts
+            states = [B._post(url, {"type": "clearinghouseState", "user": a, "dex": TX.DEX}) or {} for a in accts]
+            orders = [o for a, s in zip(accts, states) if s.get("assetPositions") for o in (B._post(url, {"type": "frontendOpenOrders", "user": a, "dex": TX.DEX}) or [])]
+            tradexyz_positions = TX.positions(states, orders)
+        except Exception as e:  # noqa: BLE001
+            meta["tradexyz"] = {"status": "error", "error": scrub(f"{type(e).__name__}: {e}")}
+    if tradexyz_positions is not None:
+        pos += [norm("tradexyz", p, "manual") for p in tradexyz_positions]
+        meta["tradexyz"] = {"status": "ok", "count": len(tradexyz_positions), "src": "Hyperliquid public API, xyz dex (tracking only)"}
+    elif "tradexyz" not in meta:
+        meta["tradexyz"] = {"status": "not connected"}
     stops = {"all": (HERE / "autotrader" / "STOP").exists(), "volume": (HERE / "autotrader" / "STOP_VOLUME").exists(),
              "entropy": (HERE / "autotrader" / "STOP_ENTROPY").exists()}
     bobby = bobby_status(env_switches(), st, _fresh(HERE / "autotrader" / "entropy_status.json", now_ts, 30 * 60),
@@ -270,7 +288,7 @@ def collect(B, testnet, now_ts, secrets, txflow_positions=None, risex_positions=
 
 def from_mock(readings, now_ts):
     pos = [norm(pf, p, p.get("by") or ("Bobby" if pf in ("qfex", "entropy") else "manual")) for pf in PFS for p in ((readings.get(pf) or {}).get("positions") or [])]
-    meta = {pf: {"status": "ok", "count": sum(1 for p in pos if p["pf"] == pf)} for pf in ("qfex", "entropy", "arcus", "txflow", "risex")}
+    meta = {pf: {"status": "ok", "count": sum(1 for p in pos if p["pf"] == pf)} for pf in ("qfex", "entropy", "arcus", "txflow", "risex", "tradexyz")}
     bobby = readings.get("bobby") or bobby_status({"AUTOTRADER_ENABLED": "1", "AUTOTRADER_LIVE": "1", "QFEX_VOLUME_MODE": "1", "QFEX_API_PUBLIC_KEY": "1",
                                                    "HL_AGENT_PRIVATE_KEY_SET": "1", "AUTOTRADER_ENTROPY_VOLUME": "1"}, {}, {"state": "active"}, None, True, {}, now_ts)
     return finish(pos, [], meta, bobby, now_ts, {})
@@ -279,7 +297,7 @@ def from_mock(readings, now_ts):
 def secrets_env():
     """Values that must never appear in a published document (addresses, account ids, keys)."""
     return [v for v in (os.environ.get(k, "") for k in ("BOBBY_ACCOUNT_ADDRESS", "BOBBY_HL_ADDRESS", "BOBBY_TXFLOW_ADDRESS", "ARCUS_ACCOUNT_ADDRESS", "HL_ACCOUNT_ADDRESS",
-            "HL_SUBACCOUNT_ADDRESS", "QFEX_ACCOUNT_ID", "QFEX_API_PUBLIC_KEY", "QFEX_API_SECRET_KEY", "BOBBY_VARIATIONAL_ADDRESS", "BOBBY_RISEX_ADDRESS", "ARCUS_API_KEY")) if len(v) > 6]
+            "HL_SUBACCOUNT_ADDRESS", "QFEX_ACCOUNT_ID", "QFEX_API_PUBLIC_KEY", "QFEX_API_SECRET_KEY", "BOBBY_VARIATIONAL_ADDRESS", "BOBBY_RISEX_ADDRESS", "BOBBY_TRADEXYZ_ADDRESS", "ARCUS_API_KEY")) if len(v) > 6]
 
 
 def main(argv=None):

@@ -12,6 +12,8 @@ subaccount (BOBBY_HL_ADDRESS): userAbstraction + main dex + io (+ BOBBY_HL_DEXES
 (QFEX key in the env; `deposit` tracks net transfers in/out of the account). A platform without data shows
 "not connected yet".
 RiseX (tracking only, not traded) from the public RiseX API (risex.py, BOBBY_RISEX_ADDRESS or BOBBY_ACCOUNT_ADDRESS).
+trade.xyz (tracking only, not traded) = Hyperliquid HIP-3 dex "xyz" from the public info API (tradexyz.py, BOBBY_TRADEXYZ_ADDRESS or
+BOBBY_ACCOUNT_ADDRESS, plus its subaccounts except the Bobby one in BOBBY_HL_ADDRESS).
 Variational (no public per-address API) comes from points_manual.json; points weeks (volume / fees / PnL per points week,
 countdown schedule) are built by points.py and published inside the same encrypted file under "points".
 
@@ -31,11 +33,13 @@ import flows as FL
 import positions as POS
 import vaultpy
 import risex as RX
+import tradexyz as TX
 
 HERE = Path(__file__).parent
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "risex": "⚡ RiseX"}
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "risex": "⚡ RiseX", "tradexyz": "📊 trade.xyz"}
 # variational: manual (points_manual.json), no public per-address API; risex: tracking only (public API, not traded by Bobby)
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "risex")
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "risex", "tradexyz")
+# tradexyz: tracking only (trade.xyz = Hyperliquid HIP-3 dex "xyz"; main wallet + subaccounts except Bobby; public info API)
 f = lambda x: None if x in (None, "") else float(x)
 
 
@@ -134,7 +138,8 @@ def read_live(testnet, start):
     dexes = ["" if d.strip() == "main" else d.strip() for d in (os.environ.get("BOBBY_HL_DEXES") or "io").split(",") if d.strip()]
     qkey = bool(os.environ.get("QFEX_API_PUBLIC_KEY") and os.environ.get("QFEX_API_SECRET_KEY"))
     rx_addr = os.environ.get("BOBBY_RISEX_ADDRESS", "") or addr
-    secrets = [addr, hl_addr, tx_addr, rx_addr] + [os.environ.get(k, "") for k in ("QFEX_ACCOUNT_ID", "QFEX_API_PUBLIC_KEY", "QFEX_API_SECRET_KEY")]
+    xyz_addr = os.environ.get("BOBBY_TRADEXYZ_ADDRESS", "") or addr
+    secrets = [addr, hl_addr, tx_addr, rx_addr, xyz_addr] + [os.environ.get(k, "") for k in ("QFEX_ACCOUNT_ID", "QFEX_API_PUBLIC_KEY", "QFEX_API_SECRET_KEY")]
 
     def arcus():
         a = B._get(ep["arcus"] + "/v1/account", {"address": addr, "accountIndex": int(os.environ.get("ARCUS_ACCOUNT_INDEX", "0") or 0)})
@@ -194,8 +199,15 @@ def read_live(testnet, start):
     def risex():  # tracking only: public RiseX API by address (no key)
         return RX.read(B, testnet, rx_addr)
 
+    def tradexyz():  # tracking only: public Hyperliquid info API, xyz dex, main wallet + subaccounts (Bobby excluded)
+        now = int(time.time())
+        r = TX.read(B, testnet, xyz_addr, exclude=(os.environ.get("BOBBY_HL_ADDRESS", ""), os.environ.get("HL_SUBACCOUNT_ADDRESS", "")),
+                    now_s=now, week_start_s=now - (now - 345600) % 604800)  # Monday 00:00 UTC
+        secrets.extend(TX.accounts(B, ep["hl"], xyz_addr))  # subaccount addresses never go into a published field
+        return r
+
     out = {}
-    for pf, ok, fn in (("arcus", addr, arcus), ("entropy", hl_addr, entropy), ("txflow", tx_addr, txflow), ("qfex", qkey, qfex), ("risex", rx_addr, risex)):
+    for pf, ok, fn in (("arcus", addr, arcus), ("entropy", hl_addr, entropy), ("txflow", tx_addr, txflow), ("qfex", qkey, qfex), ("risex", rx_addr, risex), ("tradexyz", xyz_addr, tradexyz)):
         if not ok:
             out[pf] = {"status": "not connected yet"}
             continue
@@ -212,7 +224,7 @@ def update(ledger, readings, starts, now_ts):
     rows, snap = [], {"t": now_ts, "p": {}}
     for pf in ORDER:
         r = readings.get(pf) or {"status": "not connected yet"}
-        row = {"id": pf, "name": NAMES[pf], **({"note": r["note"]} if r.get("note") else {}), **{k: r[k] for k in ("split", "splitBasis", "mode") if r.get(k)}}
+        row = {"id": pf, "name": NAMES[pf], **({"note": r["note"]} if r.get("note") else {}), **{k: r[k] for k in ("split", "splitBasis", "mode", "xyzVolume") if r.get(k)}}
         if r.get("equity") is None:
             row.update(status=r.get("status") or "no data", error=r.get("error"))
             rows.append(row); continue
@@ -327,7 +339,8 @@ def main(argv=None):
         pdoc = POS.from_mock(readings, now_ts)
     else:
         pdoc = POS.collect(B, a.testnet, now_ts, secrets, txflow_positions=(readings.get("txflow") or {}).get("positions"),
-                           risex_positions=(readings.get("risex") or {}).get("positions"))
+                           risex_positions=(readings.get("risex") or {}).get("positions"),
+                           tradexyz_positions=(readings.get("tradexyz") or {}).get("positions"))
         doc["positions"] = pdoc["positions"]
     doc["positionsMeta"], doc["bobby"], doc["orders"] = pdoc["platforms"], pdoc["bobby"], pdoc["orders"]
     doc["volume"] = volume_line((readings.get("qfex") or {}).get("volume"))
