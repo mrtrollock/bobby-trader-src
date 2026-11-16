@@ -7,11 +7,11 @@ Pure functions (tested) + small public readers. Unknown values stay None and car
   QFEX:       balance `deposit` (net deposited; separate totals are not exposed to a single-account key)
   RiseX:      public transfer history (deposits / withdrawals summed from the beginning; tracking only, not traded)
   trade.xyz:  Hyperliquid ledger sends into / out of the xyz dex (unified-account trades use the shared balance; tracking only)
-  Variational / Extended / Metric: manual (points_manual.json "<pf>": {"flows": {"deposits", "withdrawals"}}) or not tracked
+  Variational / Extended / Metric / Opal Dex: manual (points_manual.json "<pf>": {"flows": {"deposits", "withdrawals"}}) or not tracked
 """
 STABLES = ("USDC", "USDT0", "USDT", "USDH", "USDE")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "🟣 Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric", "tradexyz": "📊 trade.xyz"}
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric", "tradexyz")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "🟣 Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric", "tradexyz": "📊 trade.xyz", "opaldex": "💎 Opal Dex"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric", "tradexyz", "opaldex")
 _f = lambda x: float(x or 0)
 
 
@@ -132,6 +132,8 @@ def build(readings, manual):
             rows.append(row(pf, eq, None, reason="not tracked (needs an Extended API key)"))
         elif pf == "metric":
             rows.append(row(pf, eq, None, reason="not tracked (no public balances API; enter flows/points by hand from the Metric app)"))
+        elif pf == "opaldex":
+            rows.append(row(pf, eq, None, reason="not tracked (no documented public balances API; tracking only, Bobby does not trade Opal Dex)"))
         else:
             rows.append(row(pf, eq, None, reason="not tracked"))
     known = [x for x in rows if x["net"] is not None and x["current"] is not None]

@@ -6,7 +6,7 @@
 
 Read-only. QFEX / Arcus / Entropy (Bobby subaccount) come from `node autotrader/cli.js status` with every private
 signing key removed from its environment (only the QFEX read key stays, as in balances.py); TxFlow and the Hyperliquid
-main wallet and RiseX (tracking only) from public APIs; Variational / Extended / Metric from points_manual.json ("variational": {"positions": [...]}) or "manual".
+main wallet and RiseX (tracking only) from public APIs; Variational / Extended / Metric / Opal Dex from points_manual.json ("variational": {"positions": [...]}) or "manual".
 The same document is embedded in balances.enc.json (tools/publish.sh) and published alone by tools/positions_publish.sh.
 No addresses, account ids, order ids or keys are ever written.
 """
@@ -15,9 +15,9 @@ from datetime import datetime
 from pathlib import Path
 
 HERE = Path(__file__).parent
-PFS = ("qfex", "entropy", "arcus", "txflow", "variational", "extended", "risex", "metric", "tradexyz")
-LABEL = {"qfex": "QFEX", "entropy": "Entropy", "arcus": "Arcus", "txflow": "TxFlow", "variational": "Variational", "extended": "Extended", "risex": "RiseX", "metric": "Metric", "tradexyz": "trade.xyz"}
-TRACKING = ("extended", "risex", "metric", "tradexyz")  # shown, never traded by Bobby
+PFS = ("qfex", "entropy", "arcus", "txflow", "variational", "extended", "risex", "metric", "tradexyz", "opaldex")
+LABEL = {"qfex": "QFEX", "entropy": "Entropy", "arcus": "Arcus", "txflow": "TxFlow", "variational": "Variational", "extended": "Extended", "risex": "RiseX", "metric": "Metric", "tradexyz": "trade.xyz", "opaldex": "Opal Dex"}
+TRACKING = ("extended", "risex", "metric", "tradexyz", "opaldex")  # shown, never traded by Bobby
 STRIP = ("ARCUS_API_PRIVATE_KEY", "ARCUS_API_KEY", "HL_AGENT_PRIVATE_KEY")
 num = lambda x: None if x in (None, "") else float(x)
 
@@ -160,6 +160,7 @@ def bobby_status(env, st, entropy, qhealth, loop_running, stops, now_ts):
     add("risex", "tracking", "tracking only · not farmed (you trade RiseX yourself)")
     add("metric", "tracking", "tracking only · not farmed (spot swaps; no Metric key)")
     add("tradexyz", "tracking", "tracking only · not farmed (you trade trade.xyz yourself)")
+    add("opaldex", "tracking", "tracking only · not farmed (privacy perps on Base; no Opal key)")
     return {"loopRunning": bool(loop_running), "live": live and not stopped, "platforms": rows,
             "summary": " · ".join(f"{r['label']} {r['state']}" for r in rows if r["id"] not in TRACKING)}
 
@@ -191,7 +192,7 @@ def cli_status():
 
 def manual_positions(manual):
     out = []
-    for pf in ("variational", "extended", "metric"):
+    for pf in ("variational", "extended", "metric", "opaldex"):
         for p in ((manual or {}).get(pf) or {}).get("positions") or []:
             out.append(norm(pf, p, "manual"))
     return out
@@ -200,10 +201,11 @@ def manual_positions(manual):
 def finish(pos, orders, meta, bobby, now_ts, manual):
     mp = manual_positions(manual)
     pos = pos + mp
-    for pf in ("variational", "extended", "metric"):
+    for pf in ("variational", "extended", "metric", "opaldex"):
         n = sum(1 for p in mp if p["pf"] == pf)
         note = ("no public API: open positions are not readable" if pf == "variational"
                 else "tracking only · not farmed (spot DEX; no public positions API)" if pf == "metric"
+                else "tracking only · not farmed (privacy perp DEX; no documented public positions API)" if pf == "opaldex"
                 else "tracking only (not traded)")
         meta[pf] = ({"status": "ok", "count": n, "src": "manual entry (points_manual.json)"} if n else
                     {"status": "manual", "note": note})

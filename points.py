@@ -30,6 +30,9 @@ Schedules (primary sources, checked 2026-10-21):
                and Robinhood Chain. Points UI exists but no official formula, season schedule or token/TGE announced (as of Oct 2026).
                Referrals are live; wash trading / self-deals banned (terms). No public per-address points/balances API -> manual
                (screenshots). Genuine swap volume on Metric's own quotes is what scores; farming plan is a separate build.
+  opaldex      TRACKING ONLY (not farmed). Privacy-first perp DEX (opaldex.com / app.opaldex.com) for tokenized RWAs on Base.
+               $OPAL token is already live; official rewards are weekly ETH payouts to $OPAL holders (not a trading points
+               program). No documented public per-address balance/points API was found, so nothing is read automatically.
 
 Ledger (git-ignored, chmod 600) points_ledger.json: {"v": 1, "weeks": {pf: {"<window start unix>": row}}, "cov": {pf: unix}}.
 Manual entries (git-ignored) points_manual.json, see points_manual.example.json: per platform "equity" (balance for
@@ -42,8 +45,8 @@ from zoneinfo import ZoneInfo
 
 UTC, ET = timezone.utc, ZoneInfo("America/New_York")
 DAY = 86400
-ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric", "tradexyz")
-NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric", "tradexyz": "📊 trade.xyz"}
+ORDER = ("arcus", "entropy", "txflow", "qfex", "variational", "extended", "risex", "metric", "tradexyz", "opaldex")
+NAMES = {"arcus": "🏹 Arcus", "entropy": "🤖 Entropy", "txflow": "🌊 TxFlow", "qfex": "📈 QFEX", "variational": "🌀 Variational", "extended": "♟️ Extended", "risex": "⚡ RiseX", "metric": "🔷 Metric", "tradexyz": "📊 trade.xyz", "opaldex": "💎 Opal Dex"}
 VARIATIONAL_NEXT_DROP = "https://omni.variational.io/api/points/next_drop_ts"
 HISTORY_KEEP = 60
 # Where the points numbers come from. Checked 2026-10-21: no documented API exposes a user's points on any platform, so
@@ -58,6 +61,7 @@ POINTS_SRC = {
     "risex": "manual: RiseX documents wallet points endpoints (GET /v1/points/..., developer.rise.trade) but they need a JWT from a wallet-signed login; Bobby has no RiseX signer and does not request one (tracking only). Points are shown on rise.trade/points",
     "tradexyz": "none announced: trade[XYZ] has no points program or token (docs.trade.xyz, Oct 2026); volume / fees / PnL from the public Hyperliquid fills on the xyz dex (tracking only)",
     "metric": "manual: Metric (metric.xyz) shows points in the app UI only; no documented public points/balances API and Bobby does not hold a Metric trading key (tracking only). Enter points from screenshots / the app",
+    "opaldex": "none announced: Opal Dex has no trading points program; official rewards are weekly ETH distributions to $OPAL holders (opaldex.com / docs.opaldex.com, Nov 2026). No documented public balance/points API; tracking only, Bobby does not trade it",
     "entropy": "rebates, not points: Entropy pays USDC/HYPE fee rebates every 2 weeks (claimable on the Entropy profile, no API); enter them as \"rebates\" by week",
 }
 KEEP = ("points", "pointsSrc", "rebates", "rebatesSrc")  # survive a recompute of the week from fills
@@ -166,6 +170,20 @@ SCHED = {
                     ["@metricxyz on X", "https://x.com/metricxyz"],
                     ["@metricxyz: referrals live", "https://x.com/metricxyz/status/2112922190349844551"]],
         "unverified": ["points formula / season schedule / drop time", "token / TGE / airdrop share"],
+    },
+    "opaldex": {
+        "kind": "not announced", "tracking": True, "program": "No trading points program · weekly ETH rewards to $OPAL holders", "unit": "Week",
+        "boundary": lambda k: _utc_midnight(date(2026, 10, 12) + timedelta(days=7 * k)),
+        "number": lambda k: None, "drop": lambda s, e: None, "dropExact": False,
+        "rule": "Opal Dex (privacy-first perp DEX on Base) has no official trading points, season or points-to-token formula. $OPAL is already live; 100% of protocol fees are paid weekly in ETH to $OPAL holders (opaldex.com; docs.opaldex.com/tokenomics/revenue-model-and-holder-rewards). Not valued as a points farm. Bobby never trades it",
+        "window": "No official points week: tracking week Monday 00:00 → Monday 00:00 UTC",
+        "endsBy": None, "endsNote": None,
+        "sources": [["Opal Dex", "https://www.opaldex.com/"],
+                    ["Opal Dex app", "https://app.opaldex.com/"],
+                    ["Opal Dex docs", "https://docs.opaldex.com/"],
+                    ["Opal Dex docs: holder rewards", "https://docs.opaldex.com/tokenomics/revenue-model-and-holder-rewards"],
+                    ["@opal_dex on X", "https://x.com/opal_dex"]],
+        "unverified": ["any trading points program / points-to-token formula"],
     },
     "qfex": {
         "kind": "not announced", "program": "Season 0 announced · schedule not announced", "unit": "Week",

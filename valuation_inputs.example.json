@@ -67,6 +67,31 @@
         "https://docs.trade.xyz/",
         "https://x.com/tradexyz"
       ]
+    },
+    {
+      "id": "opaldex",
+      "platform": "Opal Dex",
+      "tgeStatus": "token already live on Base ($OPAL); no trading-points TGE announced",
+      "tgeDate": null,
+      "token": "none for a points farm. $OPAL already exists on Base; any unofficial claim/checker site is not official: only use opaldex.com, app.opaldex.com, docs.opaldex.com and @opal_dex",
+      "airdropPct": null,
+      "airdropBadge": null,
+      "airdropPctSource": "none published (holder ETH rewards are not a points airdrop)",
+      "totalPoints": null,
+      "totalPointsBadge": null,
+      "totalPointsSource": "no trading points program published (as of 2026-11-16)",
+      "raiseValuation": null,
+      "marketReference": null,
+      "notes": "TRACKING ONLY, not farmed, added 2026-11-16.",
+      "valuable": false,
+      "cannotValue": "no trading points program or points-to-token formula announced: can't value",
+      "warning": "Only opaldex.com, app.opaldex.com, docs.opaldex.com and @opal_dex are official. Any claim/checker site is a scam",
+      "sources": [
+        "https://www.opaldex.com/",
+        "https://app.opaldex.com/",
+        "https://docs.opaldex.com/",
+        "https://x.com/opal_dex"
+      ]
     }
   ]
 }

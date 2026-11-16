@@ -173,5 +173,9 @@ P10 = {p["id"]: p for p in PT.update({}, {}, M10, NOW)["platforms"]}
 m10 = P10["metric"]
 assert m10["tracking"] and m10["kind"] == "not announced" and m10["earned"]["points"] == 12.5 and "Metric" in m10["name"]
 assert PT.valuation_inputs({"platforms": [{"id": "metric", "valuable": False, "cannotValue": "x", "userPoints": 1}]})["platforms"][0]["id"] == "metric"
+# Opal Dex: tracking only, no trading points program
+o10 = P10["opaldex"]
+assert o10["tracking"] and o10["kind"] == "not announced" and "Opal Dex" in o10["name"]
+assert PT.valuation_inputs({"platforms": [{"id": "opaldex", "valuable": False, "cannotValue": "x", "userPoints": 1}]})["platforms"][0]["id"] == "opaldex"
 
 print(json.dumps({"ok": True}))
