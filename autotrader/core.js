@@ -78,6 +78,13 @@ export function loadConfig(env = process.env) {
   cfg.bases.qfex = Q.bases(testnet);
   // volume mode: OFF unless QFEX_VOLUME_MODE=1 (and still needs AUTOTRADER_ENABLED=1 + AUTOTRADER_LIVE=1 to send anything)
   cfg.qfexVol = cfg.qfex ? loadVolumeConfig(env) : null;
+  // master switch: QFEX trades only with AUTOTRADER_QFEX=1 (default off). Credentials stay loaded so read-only
+  // `status` / dashboard refreshes keep working; the key-scope check is skipped while trading is off.
+  if (cfg.qfex && env.AUTOTRADER_QFEX !== '1') {
+    cfg.disabled.qfex = 'AUTOTRADER_QFEX is not 1: QFEX trading is disabled (no orders, no key-scope check)';
+    cfg.qfex.trade = false;
+    cfg.qfexVol = null;
+  }
   cfg.caps = lossCaps(env);
   return cfg;
 }
@@ -263,7 +270,8 @@ export async function verifyKeys(cfg, net) {
     try { out.hl = await verifyHl(cfg, net); }
     catch (e) { out.hlDisabled = 'Entropy disabled: ' + e.message; cfg.disabled = cfg.disabled || {}; cfg.disabled.entropy = out.hlDisabled; cfg.hl = null; }
   }
-  if (cfg.qfex) out.qfex = await verifyQfex(cfg, net);
+  if (cfg.qfex && cfg.qfex.trade !== false) out.qfex = await verifyQfex(cfg, net);
+  else if (cfg.disabled && cfg.disabled.qfex) out.qfexDisabled = cfg.disabled.qfex;
   return out;
 }
 
@@ -331,6 +339,7 @@ function basicChecks(p, cfg, nowS) {
   if (p.pf === 'txflow') b.push('TxFlow is manual only: use the app');
   else if (!PLATFORMS.includes(p.pf)) b.push('unknown platform ' + p.pf);
   else if (!cfg[KEY_OF[p.pf]]) b.push(`${p.pf}: no key configured`);
+  else if (p.pf === 'qfex' && cfg.qfex.trade === false) b.push(cfg.disabled && cfg.disabled.qfex || 'QFEX trading is disabled');
   if (p.pf === 'entropy' && !cfg.dexes.includes(H.dexOf(String(p.m || '')))) b.push(`Entropy market must be on dex ${cfg.dexes.join('/')} (e.g. io:ANTH)`);
   if (!p.m) b.push('missing market');
   if (!['long', 'short'].includes(p.sd)) b.push('side must be long or short');

@@ -52,9 +52,11 @@ assert by[("qfex", "SILVER-USD")] == "Bobby" and by[("qfex", "GOLD-USD")] != "Bo
 assert len(orders) == 1 and "id" not in orders[0] and "secret-id" not in json.dumps(orders) and meta["qfex"]["count"] == 2
 assert next(p for p in pos if p["market"] == "SILVER-USD")["protected"] and not next(p for p in pos if p["market"] == "GOLD-USD")["protected"]
 # --- Bobby status (top bar)
-env = {"AUTOTRADER_ENABLED": "1", "AUTOTRADER_LIVE": "1", "AUTOTRADER_ARCUS": "0", "QFEX_VOLUME_MODE": "1", "QFEX_API_PUBLIC_KEY": "1", "HL_AGENT_PRIVATE_KEY_SET": "1", "AUTOTRADER_ENTROPY_VOLUME": "1"}
+env = {"AUTOTRADER_ENABLED": "1", "AUTOTRADER_LIVE": "1", "AUTOTRADER_ARCUS": "0", "AUTOTRADER_QFEX": "1", "QFEX_VOLUME_MODE": "1", "QFEX_API_PUBLIC_KEY": "1", "HL_AGENT_PRIVATE_KEY_SET": "1", "AUTOTRADER_ENTROPY_VOLUME": "1"}
 b = POS.bobby_status(env, {}, {"state": "active"}, None, True, {}, 0)
 assert b["summary"] == "QFEX live · Entropy live · Arcus paused · TxFlow manual · Variational manual", b["summary"]
+b0 = POS.bobby_status({**env, "AUTOTRADER_QFEX": "0"}, {}, {"state": "active"}, None, True, {}, 0)
+assert b0["platforms"][0]["state"] == "paused" and "AUTOTRADER_QFEX" in b0["platforms"][0]["detail"], b0["platforms"][0]
 b = POS.bobby_status(env, {}, {"state": "waiting"}, {"down": True, "downMin": 12}, True, {}, 0)
 assert b["platforms"][0]["state"] == "paused" and b["platforms"][1]["state"] == "waiting"
 b = POS.bobby_status(env, {}, {"state": "active"}, None, False, {}, 0)

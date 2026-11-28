@@ -8,7 +8,7 @@ import { randHex } from './helpers.mjs';
 import { fakeWsClass, fakeFetch, ACCT } from './qfex_mock.mjs';
 
 const T0 = Date.UTC(2026, 9, 21, 12, 0, 0);
-const ENV = { AUTOTRADER_NETWORK: 'testnet', QFEX_API_PUBLIC_KEY: 'pk_' + randHex(8), QFEX_API_SECRET_KEY: randHex(24), QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1' };
+const ENV = { AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_QFEX: '1', QFEX_API_PUBLIC_KEY: 'pk_' + randHex(8), QFEX_API_SECRET_KEY: randHex(24), QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1' };
 const POS = (over = {}) => ({ symbol: 'US100-USD', position: 0.003, average_price: 29600, unrealised_pnl: 0, leverage: 1, ...over });
 const SL = { stop_order_id: 's-sl', account_id: ACCT, symbol: 'US100-USD', price: 29300, quantity: 0.003, direction: 'SELL', stop_order_type: 'STOPLOSS' };
 const TP = { stop_order_id: 's-tp', account_id: ACCT, symbol: 'US100-USD', price: 30100, quantity: 0.003, direction: 'SELL', stop_order_type: 'TAKEPROFIT' };

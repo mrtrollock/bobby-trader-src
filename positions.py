@@ -119,6 +119,8 @@ def bobby_status(env, st, entropy, qhealth, loop_running, stops, now_ts):
     vm = (plat.get("qfex") or {}).get("volumeMode") or {}
     if env.get("QFEX_VOLUME_MODE") != "1" and not env.get("QFEX_API_PUBLIC_KEY"):
         add("qfex", "off", "no key")
+    elif env.get("AUTOTRADER_QFEX") != "1":
+        add("qfex", "paused", "AUTOTRADER_QFEX is not 1")
     elif stopped:
         add("qfex", "stopped", stopped)
     elif stops.get("volume"):
@@ -174,7 +176,7 @@ def loop_running():
 
 def env_switches():
     e = os.environ
-    keep = ("AUTOTRADER_ENABLED", "AUTOTRADER_LIVE", "AUTOTRADER_ARCUS", "AUTOTRADER_ENTROPY_VOLUME", "QFEX_VOLUME_MODE", "QFEX_LEVERAGE")
+    keep = ("AUTOTRADER_ENABLED", "AUTOTRADER_LIVE", "AUTOTRADER_ARCUS", "AUTOTRADER_QFEX", "AUTOTRADER_ENTROPY_VOLUME", "QFEX_VOLUME_MODE", "QFEX_LEVERAGE")
     out = {k: e.get(k, "") for k in keep}
     out["QFEX_API_PUBLIC_KEY"] = "1" if e.get("QFEX_API_PUBLIC_KEY") else ""  # presence only, never the value
     out["HL_AGENT_PRIVATE_KEY_SET"] = "1" if e.get("HL_AGENT_PRIVATE_KEY") else ""
@@ -291,7 +293,7 @@ def collect(B, testnet, now_ts, secrets, txflow_positions=None, risex_positions=
 def from_mock(readings, now_ts):
     pos = [norm(pf, p, p.get("by") or ("Bobby" if pf in ("qfex", "entropy") else "manual")) for pf in PFS for p in ((readings.get(pf) or {}).get("positions") or [])]
     meta = {pf: {"status": "ok", "count": sum(1 for p in pos if p["pf"] == pf)} for pf in ("qfex", "entropy", "arcus", "txflow", "risex", "tradexyz")}
-    bobby = readings.get("bobby") or bobby_status({"AUTOTRADER_ENABLED": "1", "AUTOTRADER_LIVE": "1", "QFEX_VOLUME_MODE": "1", "QFEX_API_PUBLIC_KEY": "1",
+    bobby = readings.get("bobby") or bobby_status({"AUTOTRADER_ENABLED": "1", "AUTOTRADER_LIVE": "1", "AUTOTRADER_QFEX": "1", "QFEX_VOLUME_MODE": "1", "QFEX_API_PUBLIC_KEY": "1",
                                                    "HL_AGENT_PRIVATE_KEY_SET": "1", "AUTOTRADER_ENTROPY_VOLUME": "1"}, {}, {"state": "active"}, None, True, {}, now_ts)
     return finish(pos, [], meta, bobby, now_ts, {})
 

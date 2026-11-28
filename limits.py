@@ -48,7 +48,8 @@ def read_switches():
     e = os.environ
     return {"enabled": e.get("AUTOTRADER_ENABLED") == "1", "live": e.get("AUTOTRADER_LIVE") == "1",
             "arcus": e.get("AUTOTRADER_ARCUS") == "1" and bool(e.get("ARCUS_API_PRIVATE_KEY")), "entropy": bool(e.get("HL_AGENT_PRIVATE_KEY")),
-            "qfex": bool(e.get("QFEX_API_PUBLIC_KEY") and e.get("QFEX_API_SECRET_KEY")), "qfexVolume": e.get("QFEX_VOLUME_MODE") == "1"}
+            "qfex": e.get("AUTOTRADER_QFEX") == "1" and bool(e.get("QFEX_API_PUBLIC_KEY") and e.get("QFEX_API_SECRET_KEY")),
+            "qfexVolume": e.get("AUTOTRADER_QFEX") == "1" and e.get("QFEX_VOLUME_MODE") == "1"}
 
 
 def read_status(pf, scrub):

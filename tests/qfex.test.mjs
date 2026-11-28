@@ -11,7 +11,7 @@ import { fakeWsClass, fakeFetch, ACCT, USER } from './qfex_mock.mjs';
 
 const NOW = Date.UTC(2026, 9, 21, 12, 0, 0);
 const PUB = 'pk_' + randHex(8), SEC = randHex(24);
-const ENV = { AUTOTRADER_NETWORK: 'testnet', QFEX_API_PUBLIC_KEY: PUB, QFEX_API_SECRET_KEY: SEC, QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1' };
+const ENV = { AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_QFEX: '1', QFEX_API_PUBLIC_KEY: PUB, QFEX_API_SECRET_KEY: SEC, QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1' };
 const cfgOf = (x = {}) => C.loadConfig({ ...ENV, ...x });
 const exp = NOW / 1000 + 3600;
 // US100 ~ 29,600: 0.003 lots ~ $88.8 notional, SL 300 pts away -> $0.90 + fees
@@ -139,6 +139,30 @@ test('key safety: ack required; 403 on the cross-account listing = single-accoun
   try { await assert.rejects(C.verifyKeys(t.cfg, t.net), /account identity/); } finally { t.restore(); }
   t = setup({ authOk: false });
   try { await assert.rejects(C.accountState('qfex', t.cfg, t.net), /authentication failed/); } finally { t.restore(); }
+});
+
+test('AUTOTRADER_QFEX master switch: off unless =1 (keys kept for status, no key-scope check, no volume mode, proposals rejected)', async () => {
+  const off = cfgOf({ AUTOTRADER_QFEX: '0', QFEX_VOLUME_MODE: '1' });
+  assert.ok(off.qfex);
+  assert.equal(off.qfex.trade, false);
+  assert.equal(off.qfexVol, null);
+  assert.match(off.disabled.qfex, /AUTOTRADER_QFEX/);
+  const ev = await C.evaluate(QX, off, { now: () => NOW });
+  assert.equal(ev.ok, false);
+  assert.ok(ev.reasons.some((r) => /AUTOTRADER_QFEX|QFEX trading is disabled/.test(r)), ev.reasons.join(' | '));
+  const net = { qfex: { getRaw: async () => { throw new Error('verifyQfex should not run when QFEX is disabled'); },
+    wsRead: async () => { throw new Error('verifyQfex should not run when QFEX is disabled'); } } };
+  const v = await C.verifyKeys(off, net);
+  assert.match(v.qfexDisabled, /AUTOTRADER_QFEX/);
+  assert.equal(v.qfex, undefined);
+
+  const on = cfgOf({ AUTOTRADER_QFEX: '1', QFEX_VOLUME_MODE: '1' });
+  assert.notEqual(on.qfex.trade, false);
+  assert.equal(on.qfexVol.enabled, true);
+
+  const unset = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', QFEX_API_PUBLIC_KEY: PUB, QFEX_API_SECRET_KEY: SEC, QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1', QFEX_VOLUME_MODE: '1' });
+  assert.equal(unset.qfex.trade, false);
+  assert.equal(unset.qfexVol, null);
 });
 
 test('state: equity = deposit + pnl + funding, capped by the latest account-equity point; free = available_balance', async () => {

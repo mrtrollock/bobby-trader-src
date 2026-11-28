@@ -21,7 +21,7 @@ const entryRow = (o = {}) => ({ id: 'e1', market: 'US100-USD', side: 'BUY', kind
 
 test('config: OFF by default; leverage and limits validated', () => {
   assert.equal(V.loadVolumeConfig({}).enabled, false);
-  const cfg = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', QFEX_API_PUBLIC_KEY: 'pk_' + randHex(8), QFEX_API_SECRET_KEY: randHex(24), QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1' });
+  const cfg = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_QFEX: '1', QFEX_API_PUBLIC_KEY: 'pk_' + randHex(8), QFEX_API_SECRET_KEY: randHex(24), QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1' });
   assert.equal(cfg.qfexVol.enabled, false);
   for (const lev of ['11', '0', '2.5']) assert.throws(() => V.loadVolumeConfig({ QFEX_LEVERAGE: lev }), /QFEX_LEVERAGE/);
   assert.throws(() => V.loadVolumeConfig({ QFEX_VOL_SL_PCT: '0.1' }), /SL_PCT/);
@@ -141,7 +141,7 @@ test('stale entry re-quoted (rate-limited); fill -> maker reduce-only exit; part
 });
 
 function setupNet(stateOver = {}) {
-  const cfg = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', QFEX_API_PUBLIC_KEY: 'pk_' + randHex(8), QFEX_API_SECRET_KEY: randHex(24), QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1',
+  const cfg = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_QFEX: '1', QFEX_API_PUBLIC_KEY: 'pk_' + randHex(8), QFEX_API_SECRET_KEY: randHex(24), QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1',
     QFEX_VOLUME_MODE: '1', QFEX_LEVERAGE: '5', QFEX_VOL_MARKETS: 'US100' });
   const state = { mark: 25000, bid: 24999, ask: 25001, positions: [], stops: [], orders: [], balance: { available_balance: '100', deposit: '100', realised_pnl: '0', unrealised_pnl: '0', net_funding: '0' }, equitySeries: [100], ...stateOver };
   const log = [], rest = [], realFetch = globalThis.fetch; globalThis.fetch = fakeFetch(state, rest);

@@ -15,7 +15,7 @@ TxFlow stays manual (web app). Runs on this box with Node 20; reuses the web app
     `ARCUS_ACCOUNT_INDEX` (or all subaccounts), with **no extra `permissions`** (e.g. `withdraw` ⇒ abort).
   * Hyperliquid: `POST /info {type:"userRole", user:<agent>}` must be `agent` of `HL_ACCOUNT_ADDRESS`;
     the main account key itself is refused.
-  * QFEX: see [QFEX](#qfex) — `QFEX_KEY_SINGLE_ACCOUNT_ACK=1` is mandatory; the cross-account listing
+  * QFEX (only when `AUTOTRADER_QFEX=1`): see [QFEX](#qfex) — `QFEX_KEY_SINGLE_ACCOUNT_ACK=1` is mandatory; the cross-account listing
     `GET /user/subaccounts/balance` must answer **403** (single-account key; a 200 means "All accounts", the only scope
     that can hold `deposit_withdraw`, and is refused); a random foreign account id must be refused; the trade socket must
     authenticate and its balance snapshot `id` must be `QFEX_ACCOUNT_ID`; the account must not be the primary account
@@ -81,6 +81,7 @@ Stall protection (incident 2026-10-21/22):
 | `AUTOTRADER_NETWORK` | `testnet` or `mainnet` (required) |
 | `AUTOTRADER_ENABLED` | `1` to allow sending (otherwise kill switch) |
 | `AUTOTRADER_LIVE` | `1` to really send (otherwise dry run) |
+| `AUTOTRADER_QFEX` | `1` to allow QFEX orders and the QFEX key-scope check (default off; keys stay loaded so read-only `status` works) |
 | `ARCUS_API_PRIVATE_KEY` | Ed25519 private key, 64 hex, of a **trade-only** Arcus API key |
 | `ARCUS_ACCOUNT_ADDRESS` | Arcus owner (master) address |
 | `ARCUS_ACCOUNT_INDEX` | subaccount, default 0 |
@@ -257,6 +258,7 @@ can read another of your accounts is refused), subaccount only, and a code path 
 
 ## Arcus master switch, capital cap, low-OI picks and liquidity gate
 - `AUTOTRADER_ARCUS=1` is required for Arcus orders (default off; the key is still validated, read-only `status` works without it).
+- `AUTOTRADER_QFEX=1` is required for QFEX orders and the startup key-scope check (default off). The key stays loaded so read-only `status` and dashboard refreshes keep working; volume mode and queued QFEX proposals stay off. Existing QFEX positions (if any) are still covered by the protection guard.
 - Usable capital = live equity capped at `ARCUS_CAPITAL_USD` / `HL_CAPITAL_USD` (default and maximum $300); per-trade loss = 1 % of it.
 - `node autotrader/cli.js picks [--pf arcus|entropy|txflow]`: key-less, read-only list of the lowest-OI markets that pass the
   liquidity rules (src/lowoi.js). `ARCUS_PREFER_LOW_OI` / `ENTROPY_PREFER_LOW_OI` / `TXFLOW_PREFER_LOW_OI` (default 1) sort low OI first;

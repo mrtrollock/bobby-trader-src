@@ -29,7 +29,7 @@ wss.on('connection', (sock, req) => {
   });
 });
 const PUB = 'pk_' + randHex(8), SEC = randHex(24);
-const cfg = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ENABLED: '1', QFEX_API_PUBLIC_KEY: PUB, QFEX_API_SECRET_KEY: SEC, QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1' });
+const cfg = C.loadConfig({ AUTOTRADER_NETWORK: 'testnet', AUTOTRADER_ENABLED: '1', AUTOTRADER_QFEX: '1', QFEX_API_PUBLIC_KEY: PUB, QFEX_API_SECRET_KEY: SEC, QFEX_ACCOUNT_ID: ACCT, QFEX_KEY_SINGLE_ACCOUNT_ACK: '1' });
 assert.equal(cfg.live, false, 'dry run must be the default');
 const bases = { ...cfg.bases.qfex, trade: `ws://127.0.0.1:${port}/trade`, mds: `ws://127.0.0.1:${port}/mds` };
 const restLog = []; globalThis.fetch = fakeFetch(state, restLog);
